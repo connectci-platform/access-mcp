@@ -821,6 +821,11 @@ Which would you like to do?`,
           ...(limit < requestedLimit ? { capped: true as const } : {}),
         },
         query_relevance: filters.query ? ("loose_match" as const) : ("exact" as const),
+        filters_applied: {
+          query: filters.query ?? null,
+          tags: filters.tags ?? null,
+          date: filters.date ?? null,
+        },
       },
       documentation: {
         links: this.listingLinks("search"),
