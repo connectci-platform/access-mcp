@@ -54,12 +54,12 @@ export class AffinityGroupsServer extends BaseAccessServer {
               type: "string",
               enum: ["events", "kb", "all"],
               description:
-                "What to include with each group result. events = upcoming events for each group; kb = knowledge base articles (also activates query filtering on KB content); all = both events and KB articles",
+                "What to include with each group result. events = upcoming events for each group; kb = knowledge base articles; all = both events and KB articles",
             },
             query: {
               type: "string",
               description:
-                "Filter groups by name and description. When used with include=kb or include=all, also searches knowledge base article content within each group.",
+                "Filter groups by name, description, and category. Only applies when retrieving a list of affinity groups (when id is omitted).",
             },
             limit: {
               type: "number",
