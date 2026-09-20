@@ -172,15 +172,28 @@ jobs:
           username: ${{ secrets.PRODUCTION_USER }}
           key: ${{ secrets.PRODUCTION_SSH_KEY }}
           script: |
-            echo "Waiting for services to be ready..."
-            sleep 15
-
             FAILED=0
 
             # Check each MCP server's health AND that it's on the pulled image
             # (`/health` alone passes on a stale container). Compose resolves the
             # expected image id; compare it to what the container is running.
+            #
+            # Health is POLLED, not checked once after a fixed sleep: the deploy
+            # force-recreates all app containers at once, so they cold-start
+            # together and a fixed `sleep` races their boot. Retry each server's
+            # /health for up to ~90s before declaring it down.
             COMPOSE="docker compose -f docker-compose.prod.yml"
+            wait_for_health() {
+              # $1 = port; returns 0 once /health responds, 1 after the timeout
+              local port="$1" i
+              for i in $(seq 1 45); do
+                if curl -sf "http://localhost:${port}/health" > /dev/null 2>&1; then
+                  return 0
+                fi
+                sleep 2
+              done
+              return 1
+            }
             for server in auth compute-resources system-status software-discovery xdmod allocations nsf-awards xdmod-data announcements documentation events affinity-groups jsm; do
               CONTAINER="access-mcp-mcp-${server}-1"
               PORT=$(docker port "$CONTAINER" 3000/tcp 2>/dev/null | head -1 | cut -d: -f2)
@@ -189,8 +202,8 @@ jobs:
                 FAILED=1
                 continue
               fi
-              if ! curl -sf "http://localhost:${PORT}/health" > /dev/null 2>&1; then
-                echo "FAIL: mcp-${server} — health check failed"
+              if ! wait_for_health "$PORT"; then
+                echo "FAIL: mcp-${server} — health check failed (not ready after ~90s)"
                 FAILED=1
                 continue
               fi
