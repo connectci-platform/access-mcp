@@ -241,7 +241,7 @@ export class SystemStatusServer extends BaseAccessServer {
       case "past":
         return await this.getPastOutages(resource, outage_type, limit, offset, fields);
       case "all":
-        return await this.getSystemAnnouncements(outage_type, limit, offset, fields);
+        return await this.getSystemAnnouncements(resource, outage_type, limit, offset, fields);
       default:
         throw new Error(
           `Invalid time parameter: ${time}. Must be one of: current, scheduled, past, all`
@@ -695,6 +695,7 @@ export class SystemStatusServer extends BaseAccessServer {
   }
 
   private async getSystemAnnouncements(
+    resourceFilter?: string,
     outageTypeFilter?: string,
     limit?: number,
     offset?: number,
@@ -717,6 +718,24 @@ export class SystemStatusServer extends BaseAccessServer {
       currentOutages = currentOutages.filter((o) => o.OutageType?.toLowerCase() === typeFilter);
       futureOutages = futureOutages.filter((o) => o.OutageType?.toLowerCase() === typeFilter);
       pastOutagesData = pastOutagesData.filter((o) => o.OutageType?.toLowerCase() === typeFilter);
+    }
+
+    // Filter by resource if specified. Applied here (before recentPastOutages
+    // is derived) so total/aggregations downstream describe the same
+    // filtered universe as items -- filtering later (e.g. at fullSorted)
+    // would leave total/aggregations counting the unfiltered arrays.
+    if (resourceFilter) {
+      const filter = resourceFilter.toLowerCase();
+      const matchesResource = (outage: OutageItem) =>
+        outage.Subject?.toLowerCase().includes(filter) ||
+        outage.AffectedResources?.some(
+          (resource: AffectedResource) =>
+            resource.ResourceName?.toLowerCase().includes(filter) ||
+            resource.ResourceID?.toString().includes(filter)
+        );
+      currentOutages = currentOutages.filter(matchesResource);
+      futureOutages = futureOutages.filter(matchesResource);
+      pastOutagesData = pastOutagesData.filter(matchesResource);
     }
 
     // Filter recent past outages (last 30 days) for announcements

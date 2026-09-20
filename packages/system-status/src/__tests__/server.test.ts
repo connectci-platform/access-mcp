@@ -690,6 +690,159 @@ describe("SystemStatusServer", () => {
       expect(response.metadata.aggregations.categories.scheduled).toBe(1);
       expect(response.metadata.aggregations.categories.recent_past).toBe(1);
     });
+
+    it("honors the resource filter, keeping total and aggregations consistent with items", async () => {
+      // current: 2 Delta + 3 Bridges2 = 5; future: 1 Delta; past (within 30d): 1 Delta.
+      // Unfiltered total would be 7; filtered by "Delta" should be 4.
+      const currentDelta = Array(2)
+        .fill(0)
+        .map((_, i) => ({
+          ...mockCurrentOutagesData[0],
+          id: `cur-delta-${i}`,
+          Subject: `Current outage on Delta ${i}`,
+          AffectedResources: [{ ResourceName: "Delta", ResourceID: `delta-${i}` }],
+        }));
+      const currentBridges2 = Array(3)
+        .fill(0)
+        .map((_, i) => ({
+          ...mockCurrentOutagesData[0],
+          id: `cur-bridges2-${i}`,
+          Subject: `Current outage on Bridges2 ${i}`,
+          AffectedResources: [{ ResourceName: "Bridges2", ResourceID: `bridges2-${i}` }],
+        }));
+      const currentMixed = [...currentDelta, ...currentBridges2];
+
+      const futureDelta = [
+        {
+          ...mockFutureOutagesData[0],
+          id: "fut-delta-0",
+          Subject: "Future outage on Delta",
+          AffectedResources: [{ ResourceName: "Delta", ResourceID: "delta-fut-0" }],
+        },
+      ];
+
+      const pastDelta = [
+        {
+          ...mockPastOutagesData[0],
+          id: "past-delta-0",
+          Subject: "Past outage on Delta",
+          OutageEnd: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(), // within 30 days
+          AffectedResources: [{ ResourceName: "Delta", ResourceID: "delta-past-0" }],
+        },
+      ];
+
+      mockHttpClient.get
+        .mockResolvedValueOnce({ status: 200, data: { results: currentMixed } })
+        .mockResolvedValueOnce({ status: 200, data: { results: futureDelta } })
+        .mockResolvedValueOnce({ status: 200, data: { results: pastDelta } });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "get_infrastructure_news",
+          arguments: { resource: "Delta", time: "all" },
+        },
+      });
+      const response = JSON.parse((result.content[0] as TextContent).text);
+
+      expect(mockHttpClient.get).toHaveBeenCalledTimes(3);
+
+      // items: all reference Delta
+      expect(response.items).toHaveLength(4);
+      for (const item of response.items) {
+        expect(
+          item.AffectedResources?.some((r: { ResourceName?: string }) =>
+            r.ResourceName?.toLowerCase().includes("delta")
+          )
+        ).toBe(true);
+      }
+
+      // total must reflect the FILTERED set (4), not the unfiltered 7.
+      expect(response.total).toBe(4);
+
+      // per-category aggregations must also reflect the filtered set, not the
+      // unfiltered arrays -- this is what catches a late (fullSorted-only) filter.
+      expect(response.metadata.aggregations.current_outages).toBe(2);
+      expect(response.metadata.aggregations.scheduled_maintenance).toBe(1);
+      expect(response.metadata.aggregations.recent_past_outages).toBe(1);
+      expect(response.metadata.aggregations.categories.current).toBe(2);
+      expect(response.metadata.aggregations.categories.scheduled).toBe(1);
+      expect(response.metadata.aggregations.categories.recent_past).toBe(1);
+    });
+
+    it("matches the resource filter via Subject, same as the sibling handlers, even when AffectedResources doesn't match", async () => {
+      // This outage's AffectedResources does NOT mention "Delta" -- it only
+      // matches via Subject, exactly like getCurrentOutages/getScheduledMaintenance/
+      // getPastOutages do. Should still be included when filtering by "Delta".
+      const subjectOnlyMatch = {
+        ...mockCurrentOutagesData[0],
+        id: "cur-subject-only",
+        Subject: "Emergency maintenance affecting Delta users",
+        AffectedResources: [{ ResourceName: "Bridges2", ResourceID: "bridges2-x" }],
+      };
+
+      mockHttpClient.get
+        .mockResolvedValueOnce({ status: 200, data: { results: [subjectOnlyMatch] } })
+        .mockResolvedValueOnce({ status: 200, data: { results: [] } })
+        .mockResolvedValueOnce({ status: 200, data: { results: [] } });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "get_infrastructure_news",
+          arguments: { resource: "Delta", time: "all" },
+        },
+      });
+      const response = JSON.parse((result.content[0] as TextContent).text);
+
+      expect(response.items).toHaveLength(1);
+      expect(response.items[0].id).toBe("cur-subject-only");
+      expect(response.total).toBe(1);
+      expect(response.metadata.aggregations.current_outages).toBe(1);
+    });
+
+    it("returns the unfiltered baseline count when no resource is given", async () => {
+      mockHttpClient.get
+        .mockResolvedValueOnce({ status: 200, data: { results: mockCurrentOutagesData } })
+        .mockResolvedValueOnce({ status: 200, data: { results: mockFutureOutagesData } })
+        .mockResolvedValueOnce({ status: 200, data: { results: mockPastOutagesData } });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: { name: "get_infrastructure_news", arguments: { time: "all" } },
+      });
+      const response = JSON.parse((result.content[0] as TextContent).text);
+
+      expect(response.total).toBe(4); // 2 current + 1 scheduled + 1 recent past
+      expect(response.metadata.aggregations.current_outages).toBe(2);
+      expect(response.metadata.aggregations.scheduled_maintenance).toBe(1);
+      expect(response.metadata.aggregations.recent_past_outages).toBe(1);
+    });
+
+    it("returns empty items/total/aggregations for a resource with no matches, without error", async () => {
+      mockHttpClient.get
+        .mockResolvedValueOnce({ status: 200, data: { results: mockCurrentOutagesData } })
+        .mockResolvedValueOnce({ status: 200, data: { results: mockFutureOutagesData } })
+        .mockResolvedValueOnce({ status: 200, data: { results: mockPastOutagesData } });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "get_infrastructure_news",
+          arguments: { resource: "Nonexistent", time: "all" },
+        },
+      });
+      const response = JSON.parse((result.content[0] as TextContent).text);
+
+      expect(response.items).toEqual([]);
+      expect(response.total).toBe(0);
+      expect(response.metadata.aggregations.current_outages).toBe(0);
+      expect(response.metadata.aggregations.scheduled_maintenance).toBe(0);
+      expect(response.metadata.aggregations.recent_past_outages).toBe(0);
+      expect(response.metadata.aggregations.categories.current).toBe(0);
+      expect(response.metadata.aggregations.categories.scheduled).toBe(0);
+      expect(response.metadata.aggregations.categories.recent_past).toBe(0);
+    });
   });
 
   describe("checkResourceStatus", () => {
