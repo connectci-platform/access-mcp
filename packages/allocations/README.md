@@ -66,7 +66,6 @@ Cross-reference ACCESS allocations with NSF awards for funding analysis.
 | `project_id` | number | Analyze funding for specific project |
 | `institution` | string | Generate an institutional funding profile. Use the full name; an ambiguous name (a multi-campus system, or a shared word like "Washington") returns a list of candidate institutions to re-query. |
 | `pi_name` | string | Find funded projects by PI name |
-| `has_nsf_funding` | boolean | Filter to only NSF-funded projects |
 | `field_of_science` | string | Filter by field |
 | `limit` | number | Max results (default: 20) |
 
@@ -79,7 +78,7 @@ analyze_funding({ project_id: 12345 })
 analyze_funding({ institution: "University of Illinois at Urbana-Champaign" })
 
 // Find PI's funded projects
-analyze_funding({ pi_name: "John Smith", has_nsf_funding: true })
+analyze_funding({ pi_name: "John Smith" })
 ```
 
 ### `get_allocation_statistics`

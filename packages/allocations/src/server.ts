@@ -503,11 +503,6 @@ export class AllocationsServer extends BaseAccessServer {
               description:
                 "Find funded projects by principal investigator name. Cross-references ACCESS and NSF data.",
             },
-            has_nsf_funding: {
-              type: "boolean",
-              description:
-                "Filter to only show ACCESS projects with corresponding NSF funding. Combine with pi_name, institution, or field_of_science.",
-            },
             field_of_science: {
               type: "string",
               description: "Filter funded projects by field of science.",
@@ -538,14 +533,12 @@ export class AllocationsServer extends BaseAccessServer {
               name: "Find funded projects by PI",
               arguments: {
                 pi_name: "John Smith",
-                has_nsf_funding: true,
               },
             },
             {
-              name: "Find NSF-funded projects in field",
+              name: "Find funded projects in a field",
               arguments: {
                 field_of_science: "Computer Science",
-                has_nsf_funding: true,
                 limit: 15,
               },
             },
