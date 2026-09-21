@@ -117,13 +117,35 @@ export function projectFields<T extends Record<string, unknown>>(
   // structural metadata the agent's prompt is explicitly told to consult.
   // Individual sub-paths are still honored (e.g. metadata.pagination[].limit
   // wins over the bare "metadata" preservation).
+  let metadataAddedWhole = false;
   for (const sticky of ["total", "metadata", "documentation"]) {
     if (
       Object.prototype.hasOwnProperty.call(response, sticky) &&
       !paths.some((p) => p === sticky || p.startsWith(`${sticky}.`) || p.startsWith(`${sticky}[`))
     ) {
       paths.push(sticky);
+      if (sticky === "metadata") metadataAddedWhole = true;
     }
+  }
+
+  // Sticky-within-metadata for filters_applied (disclosure contract, Phase 4b).
+  // When the caller narrows into a metadata.* subpath (so the whole-container
+  // stickiness above did NOT fire), filters_applied would otherwise be
+  // silently dropped — it isn't discoverable from the fields schema, so a
+  // caller has no way to know to ask for it explicitly. Rescue only
+  // filters_applied here; the rest of metadata still honors the caller's
+  // subpath projection.
+  if (
+    !metadataAddedWhole &&
+    typeof (response as Record<string, unknown>).metadata === "object" &&
+    (response as Record<string, unknown>).metadata !== null &&
+    Object.prototype.hasOwnProperty.call(
+      (response as Record<string, unknown>).metadata as object,
+      "filters_applied",
+    ) &&
+    !paths.some((p) => p === "metadata" || p === "metadata.filters_applied")
+  ) {
+    paths.push("metadata.filters_applied");
   }
 
   const root = buildWantedTree(paths);

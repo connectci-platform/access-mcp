@@ -1140,6 +1140,15 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       metadata: {
         pagination,
         query_relevance: params.query ? ("loose_match" as const) : ("exact" as const),
+        filters_applied: {
+          query: params.query ?? null,
+          type: params.type ?? null,
+          tags: params.tags ?? null,
+          date: params.date ?? null,
+          date_range: params.date_range ?? null,
+          skill: params.skill ?? null,
+          has_video: params.has_video ?? null,
+        },
       },
       documentation: {
         links: this.listingLinks("search"),

@@ -70,6 +70,27 @@ interface ResourceGroup {
   group_descriptive_name?: string;
 }
 
+interface FiltersApplied {
+  resource: string | null;
+  outage_type: string | null;
+}
+
+/**
+ * Build the `filters_applied` disclosure object from the router's original
+ * args. Both narrowing params (resource/outage_type) are disclosed on EVERY
+ * sub-handler branch (current/scheduled/past/all) — including branches that
+ * ran under a different `time` value — so a consumer sees an identical key
+ * set regardless of which time-routing branch ran (Phase 4b design §2/§3).
+ * `time` and `ids` are mode selectors, not result-narrowing filters, so they
+ * are excluded here (see design doc + task-5 brief).
+ */
+function buildFiltersApplied(resource?: string, outageType?: string): FiltersApplied {
+  return {
+    resource: resource ?? null,
+    outage_type: outageType ?? null,
+  };
+}
+
 export class SystemStatusServer extends BaseAccessServer {
   constructor() {
     super("access-mcp-system-status", version, "https://operations-api.access-ci.org");
@@ -337,6 +358,7 @@ export class SystemStatusServer extends BaseAccessServer {
     );
 
     let outages: OutageItem[] = response.data.results || [];
+    const filtersApplied = buildFiltersApplied(resourceFilter, outageTypeFilter);
 
     // Filter by outage type if specified
     if (outageTypeFilter) {
@@ -411,6 +433,7 @@ export class SystemStatusServer extends BaseAccessServer {
           severity_counts: severityCounts,
         },
         pagination,
+        filters_applied: filtersApplied,
       },
       documentation: {
         links: this.listingLinks("list"),
@@ -454,6 +477,7 @@ export class SystemStatusServer extends BaseAccessServer {
     );
 
     let maintenance: OutageItem[] = response.data.results || [];
+    const filtersApplied = buildFiltersApplied(resourceFilter, outageTypeFilter);
 
     // Filter by outage type if specified
     if (outageTypeFilter) {
@@ -543,6 +567,7 @@ export class SystemStatusServer extends BaseAccessServer {
           affected_resources: Array.from(affectedResources),
         },
         pagination,
+        filters_applied: filtersApplied,
       },
       documentation: {
         links: this.listingLinks("list"),
@@ -571,6 +596,7 @@ export class SystemStatusServer extends BaseAccessServer {
     );
 
     let pastOutages: OutageItem[] = response.data.results || [];
+    const filtersApplied = buildFiltersApplied(resourceFilter, outageTypeFilter);
 
     // Filter by outage type if specified
     if (outageTypeFilter) {
@@ -678,6 +704,7 @@ export class SystemStatusServer extends BaseAccessServer {
           average_duration_hours: averageDurationHours,
         },
         pagination,
+        filters_applied: filtersApplied,
       },
       documentation: {
         links: this.listingLinks("list"),
@@ -711,6 +738,7 @@ export class SystemStatusServer extends BaseAccessServer {
     let currentOutages: OutageItem[] = currentResponse.data.results || [];
     let futureOutages: OutageItem[] = futureResponse.data.results || [];
     let pastOutagesData: OutageItem[] = pastResponse.data.results || [];
+    const filtersApplied = buildFiltersApplied(resourceFilter, outageTypeFilter);
 
     // Filter by outage type if specified
     if (outageTypeFilter) {
@@ -794,6 +822,7 @@ export class SystemStatusServer extends BaseAccessServer {
           },
         },
         pagination,
+        filters_applied: filtersApplied,
       },
       documentation: {
         links: this.listingLinks("list"),

@@ -14,10 +14,15 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      // Subpath first — alias matching is order-sensitive, and the bare entry
-      // below would otherwise shadow "@access-mcp/shared/testkit". Points at the
-      // testkit source so vitest resolves it the same way it resolves the bare
-      // import (src, not dist), independent of package.json "exports".
+      // Subpaths first — alias matching is order-sensitive, and the bare entry
+      // below would otherwise shadow the more specific "@access-mcp/shared/..."
+      // entries. Points at testkit source so vitest resolves it the same way
+      // it resolves the bare import (src, not dist), independent of
+      // package.json "exports".
+      "@access-mcp/shared/testkit/filters-applied": resolve(
+        __dirname,
+        "./packages/shared/src/filters-applied-conformance"
+      ),
       "@access-mcp/shared/testkit": resolve(
         __dirname,
         "./packages/shared/src/write-contract-testkit"

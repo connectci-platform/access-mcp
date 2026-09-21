@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach, Mock } from "vitest";
 import { SystemStatusServer } from "../server.js";
+import { assertFiltersAppliedShape } from "@access-mcp/shared/testkit/filters-applied";
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const { version } = require("../../package.json");
@@ -1298,6 +1299,154 @@ describe("SystemStatusServer", () => {
       expect(response.metadata.pagination.limit).toBe(500);
       expect(response.metadata.pagination.capped).toBe(true);
       expect(response.metadata.pagination.total).toBe(600);
+    });
+  });
+
+  describe("filters_applied disclosure (Phase 4b)", () => {
+    const EXPECTED_KEYS = ["resource", "outage_type"];
+
+    // All four time-routed branches must be stubbed the same way each test
+    // uses them: current/scheduled/past hit a single endpoint; "all" fans
+    // out to all three (per #83's getSystemAnnouncements convention above).
+    function mockSingleEndpoint(results: unknown[]) {
+      mockHttpClient.get.mockResolvedValue({ status: 200, data: { results } });
+    }
+
+    function mockAllBranchEndpoints() {
+      mockHttpClient.get
+        .mockResolvedValueOnce({ status: 200, data: { results: mockCurrentOutagesData } })
+        .mockResolvedValueOnce({ status: 200, data: { results: mockFutureOutagesData } })
+        .mockResolvedValueOnce({ status: 200, data: { results: mockPastOutagesData } });
+    }
+
+    it("time=current: conforms to the canonical two-key shape", async () => {
+      mockSingleEndpoint(mockCurrentOutagesData);
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: { name: "get_infrastructure_news", arguments: { time: "current" } },
+      });
+
+      assertFiltersAppliedShape(result, EXPECTED_KEYS, expect);
+    });
+
+    it("time=scheduled: conforms to the canonical two-key shape", async () => {
+      mockSingleEndpoint(mockFutureOutagesData);
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: { name: "get_infrastructure_news", arguments: { time: "scheduled" } },
+      });
+
+      assertFiltersAppliedShape(result, EXPECTED_KEYS, expect);
+    });
+
+    it("time=past: conforms to the canonical two-key shape", async () => {
+      mockSingleEndpoint(mockPastOutagesData);
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: { name: "get_infrastructure_news", arguments: { time: "past" } },
+      });
+
+      assertFiltersAppliedShape(result, EXPECTED_KEYS, expect);
+    });
+
+    it("time=all: conforms to the canonical two-key shape", async () => {
+      mockAllBranchEndpoints();
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: { name: "get_infrastructure_news", arguments: { time: "all" } },
+      });
+
+      assertFiltersAppliedShape(result, EXPECTED_KEYS, expect);
+    });
+
+    it("time=current discloses resource and outage_type as applied", async () => {
+      mockSingleEndpoint(mockCurrentOutagesData);
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "get_infrastructure_news",
+          arguments: { time: "current", resource: "Anvil", outage_type: "Full" },
+        },
+      });
+
+      const response = JSON.parse((result.content[0] as TextContent).text);
+      expect(response.metadata.filters_applied).toEqual({
+        resource: "Anvil",
+        outage_type: "Full",
+      });
+    });
+
+    it("time=current with no filters discloses both keys as null", async () => {
+      mockSingleEndpoint(mockCurrentOutagesData);
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: { name: "get_infrastructure_news", arguments: { time: "current" } },
+      });
+
+      const response = JSON.parse((result.content[0] as TextContent).text);
+      expect(response.metadata.filters_applied).toEqual({
+        resource: null,
+        outage_type: null,
+      });
+    });
+
+    it("time=all discloses resource and outage_type as applied (post-#83, the all branch applies both)", async () => {
+      mockAllBranchEndpoints();
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "get_infrastructure_news",
+          arguments: { time: "all", resource: "Bridges-2", outage_type: "Partial" },
+        },
+      });
+
+      const response = JSON.parse((result.content[0] as TextContent).text);
+      expect(response.metadata.filters_applied).toEqual({
+        resource: "Bridges-2",
+        outage_type: "Partial",
+      });
+    });
+
+    it("time=all with no filters discloses both keys as null", async () => {
+      mockAllBranchEndpoints();
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: { name: "get_infrastructure_news", arguments: { time: "all" } },
+      });
+
+      const response = JSON.parse((result.content[0] as TextContent).text);
+      expect(response.metadata.filters_applied).toEqual({
+        resource: null,
+        outage_type: null,
+      });
+    });
+
+    it("time=past: fields projection targeting a metadata subpath still discloses filters_applied", async () => {
+      mockSingleEndpoint(mockPastOutagesData);
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "get_infrastructure_news",
+          arguments: {
+            time: "past",
+            resource: "Stampede3",
+            fields: ["metadata.pagination.has_more"],
+          },
+        },
+      });
+
+      assertFiltersAppliedShape(result, EXPECTED_KEYS, expect);
+      const response = JSON.parse((result.content[0] as TextContent).text);
+      expect(response.metadata.filters_applied.resource).toBe("Stampede3");
     });
   });
 });

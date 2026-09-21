@@ -17,6 +17,10 @@
     "./testkit": {
       "import": "./dist/write-contract-testkit.js",
       "types": "./dist/write-contract-testkit.d.ts"
+    },
+    "./testkit/filters-applied": {
+      "import": "./dist/filters-applied-conformance.js",
+      "types": "./dist/filters-applied-conformance.d.ts"
     }
   },
   "files": [

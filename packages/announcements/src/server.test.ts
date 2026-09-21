@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi, Mock } from "vitest";
 import { AnnouncementsServer } from "./server.js";
 import { DrupalAuthProvider, DrupalApiError, requestContextStorage, RequestContext } from "@access-mcp/shared";
 import { assertWriteEnvelope } from "@access-mcp/shared/testkit";
+import { assertFiltersAppliedShape } from "@access-mcp/shared/testkit/filters-applied";
 
 // Mock the DrupalAuthProvider
 vi.mock("@access-mcp/shared", async () => {
@@ -230,6 +231,109 @@ describe("AnnouncementsServer", () => {
         const responseData = JSON.parse((result.content[0] as TextContent).text);
         expect(responseData.items[0].tags).toContain("gpu");
         expect(responseData.items[0].tags).toContain("maintenance");
+      });
+    });
+
+    describe("filters_applied disclosure", () => {
+      it("conforms to the canonical shape (exactly query, tags, date)", async () => {
+        mockHttpClient.get.mockResolvedValue({ status: 200, data: [] });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "search_announcements",
+            arguments: { tags: "gpu" },
+          },
+        });
+
+        assertFiltersAppliedShape(result, ["query", "tags", "date"], expect);
+      });
+
+      it("discloses the applied tag filter and the result reflects it", async () => {
+        mockHttpClient.get.mockResolvedValue({
+          status: 200,
+          data: [
+            {
+              title: "GPU Maintenance",
+              body: "GPU nodes maintenance",
+              published_date: "2024-03-15",
+              author: "Support",
+              tags: ["gpu"],
+              affinity_group: [],
+              url: "https://support.access-ci.org/announcements/gpu-maintenance",
+            },
+          ],
+        });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "search_announcements",
+            arguments: { tags: "gpu" },
+          },
+        });
+
+        const url = mockHttpClient.get.mock.calls[0][0];
+        expect(url).toContain("tags=gpu");
+
+        const responseData = JSON.parse((result.content[0] as TextContent).text);
+        expect(responseData.metadata.filters_applied).toEqual({
+          query: null,
+          tags: "gpu",
+          date: null,
+        });
+        expect(responseData.items[0].tags).toContain("gpu");
+      });
+
+      it("discloses all-null filters_applied when no filters are supplied", async () => {
+        mockHttpClient.get.mockResolvedValue({ status: 200, data: [] });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "search_announcements",
+            arguments: {},
+          },
+        });
+
+        const responseData = JSON.parse((result.content[0] as TextContent).text);
+        expect(responseData.metadata.filters_applied).toEqual({
+          query: null,
+          tags: null,
+          date: null,
+        });
+      });
+
+      it("survives a fields projection that does not explicitly include metadata", async () => {
+        mockHttpClient.get.mockResolvedValue({
+          status: 200,
+          data: [
+            {
+              title: "GPU Maintenance",
+              body: "GPU nodes maintenance",
+              published_date: "2024-03-15",
+              author: "Support",
+              tags: ["gpu"],
+              affinity_group: [],
+              url: "https://support.access-ci.org/announcements/gpu-maintenance",
+            },
+          ],
+        });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "search_announcements",
+            arguments: { tags: "gpu", fields: ["total", "items[].title"] },
+          },
+        });
+
+        // metadata is a sticky projection container (see projection.ts), so
+        // filters_applied is expected to already survive here — this test
+        // guards that behavior rather than fixing a gap.
+        assertFiltersAppliedShape(result, ["query", "tags", "date"], expect);
+        const responseData = JSON.parse((result.content[0] as TextContent).text);
+        expect(responseData.metadata.filters_applied.tags).toBe("gpu");
       });
     });
 

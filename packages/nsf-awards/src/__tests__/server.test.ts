@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, Mock } from "vitest";
 import { NSFAwardsServer } from "../server.js";
+import { assertFiltersAppliedShape } from "@access-mcp/shared/testkit/filters-applied";
 
 // Mock the global fetch function
 global.fetch = vi.fn();
@@ -1211,6 +1212,240 @@ describe("NSFAwardsServer", () => {
       expect(result).toHaveProperty("isError", true);
       const response = JSON.parse(result.content[0].text);
       expect(response.error.message).toContain("Limit must be at least 1");
+    });
+  });
+
+  describe("filters_applied disclosure (Phase 4b)", () => {
+    const EXPECTED_KEYS = ["query", "pi", "institution", "primary_only"];
+
+    function makeAward(id: string, overrides: Record<string, unknown> = {}) {
+      return {
+        id,
+        title: `Award ${id}`,
+        awardeeName: "University A",
+        piFirstName: "John",
+        piLastName: "Smith",
+        estimatedTotalAmt: "500000",
+        startDate: "09/01/2021",
+        expDate: "08/31/2024",
+        primaryProgram: "Computer Science",
+        ...overrides,
+      };
+    }
+
+    function mockAwardsPage(totalCount: number, awards: ReturnType<typeof makeAward>[]) {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          response: { metadata: { offset: 1, rpp: 100, totalCount }, award: awards },
+        }),
+      });
+    }
+
+    // The four distinct router branches, keyed by the args that route to them.
+    it("PI branch: conforms to the canonical four-key shape", async () => {
+      mockAwardsPage(1, [makeAward("1")]);
+
+      const result = await server["handleToolCall"]({
+        params: { name: "search_nsf_awards", arguments: { pi: "John Smith" } },
+      });
+
+      assertFiltersAppliedShape(result, EXPECTED_KEYS, expect);
+    });
+
+    it("institution branch (non-primary_only): conforms to the canonical four-key shape", async () => {
+      mockAwardsPage(1, [makeAward("1", { awardeeName: "Stanford University" })]);
+
+      const result = await server["handleToolCall"]({
+        params: {
+          name: "search_nsf_awards",
+          arguments: { institution: "Stanford University" },
+        },
+      });
+
+      assertFiltersAppliedShape(result, EXPECTED_KEYS, expect);
+    });
+
+    it("institution branch (primary_only=true): conforms to the canonical four-key shape", async () => {
+      mockAwardsPage(1, [makeAward("1", { awardeeName: "MIT" })]);
+
+      const result = await server["handleToolCall"]({
+        params: {
+          name: "search_nsf_awards",
+          arguments: { institution: "MIT", primary_only: true },
+        },
+      });
+
+      assertFiltersAppliedShape(result, EXPECTED_KEYS, expect);
+    });
+
+    it("keywords branch: conforms to the canonical four-key shape", async () => {
+      mockAwardsPage(1, [makeAward("1")]);
+
+      const result = await server["handleToolCall"]({
+        params: {
+          name: "search_nsf_awards",
+          arguments: { query: "machine learning" },
+        },
+      });
+
+      assertFiltersAppliedShape(result, EXPECTED_KEYS, expect);
+    });
+
+    it("institution branch discloses institution and primary_only as applied", async () => {
+      mockAwardsPage(1, [makeAward("1", { awardeeName: "MIT" })]);
+
+      const result = await server["handleToolCall"]({
+        params: {
+          name: "search_nsf_awards",
+          arguments: { institution: "MIT", primary_only: true },
+        },
+      });
+
+      const response = JSON.parse(result.content[0].text);
+      expect(response.metadata.filters_applied).toEqual({
+        query: null,
+        pi: null,
+        institution: "MIT",
+        primary_only: true,
+      });
+    });
+
+    it("PI branch discloses pi as applied and primary_only as null (not consulted, not omitted)", async () => {
+      mockAwardsPage(1, [makeAward("1")]);
+
+      const result = await server["handleToolCall"]({
+        params: {
+          name: "search_nsf_awards",
+          arguments: { pi: "John Smith" },
+        },
+      });
+
+      const response = JSON.parse(result.content[0].text);
+      expect(response.metadata.filters_applied).toEqual({
+        query: null,
+        pi: "John Smith",
+        institution: null,
+        primary_only: null,
+      });
+    });
+
+    it("institution branch: primary_only=false survives as false, not null", async () => {
+      mockAwardsPage(1, [makeAward("1", { awardeeName: "Stanford University" })]);
+
+      const result = await server["handleToolCall"]({
+        params: {
+          name: "search_nsf_awards",
+          arguments: { institution: "Stanford University", primary_only: false },
+        },
+      });
+
+      const response = JSON.parse(result.content[0].text);
+      expect(response.metadata.filters_applied.primary_only).toBe(false);
+      expect(response.metadata.filters_applied).toEqual({
+        query: null,
+        pi: null,
+        institution: "Stanford University",
+        primary_only: false,
+      });
+    });
+
+    it("keywords branch: fields projection targeting a metadata subpath still discloses filters_applied", async () => {
+      mockAwardsPage(1, [makeAward("1")]);
+
+      const result = await server["handleToolCall"]({
+        params: {
+          name: "search_nsf_awards",
+          arguments: { query: "machine learning", fields: ["metadata.pagination.has_more"] },
+        },
+      });
+
+      assertFiltersAppliedShape(result, EXPECTED_KEYS, expect);
+      const response = JSON.parse(result.content[0].text);
+      expect(response.metadata.filters_applied.query).toBe("machine learning");
+    });
+
+    // Regression: the router's pi/institution/query params are independent
+    // optionals with no mutual exclusion in the schema — a caller CAN pass
+    // more than one at once. Only one branch runs (pi is checked first,
+    // then institution, then query), so filters_applied must disclose ONLY
+    // the param that branch actually applied, not every param the caller
+    // happened to pass. Building filters_applied from the raw router args
+    // wholesale (instead of a per-branch allowlist) would falsely disclose
+    // the unread sibling param as "applied" here.
+    it("multi-param call {pi, institution}: routes to pi branch, discloses pi only (institution NOT falsely applied)", async () => {
+      mockAwardsPage(1, [makeAward("1")]);
+
+      const result = await server["handleToolCall"]({
+        params: {
+          name: "search_nsf_awards",
+          arguments: { pi: "X", institution: "Y" },
+        },
+      });
+
+      const response = JSON.parse(result.content[0].text);
+      // Routed to the pi branch: the mocked PI-search response is what came back.
+      expect(response.items[0].principalInvestigator).toBeDefined();
+      expect(response.metadata.filters_applied).toEqual({
+        query: null,
+        pi: "X",
+        institution: null,
+        primary_only: null,
+      });
+      // The institution branch's request URL (awardeeName=) must never have
+      // been built — confirms institution was never read, not just that its
+      // disclosed value happens to be null.
+      const requestedUrl = String(mockFetch.mock.calls[0][0]);
+      expect(requestedUrl).toContain("pdPIName=");
+      expect(requestedUrl).not.toContain("awardeeName=");
+    });
+
+    it("multi-param call {institution, query}: routes to institution branch, discloses institution only (query NOT falsely applied)", async () => {
+      mockAwardsPage(1, [makeAward("1", { awardeeName: "Y" })]);
+
+      const result = await server["handleToolCall"]({
+        params: {
+          name: "search_nsf_awards",
+          arguments: { institution: "Y", query: "Z" },
+        },
+      });
+
+      const response = JSON.parse(result.content[0].text);
+      // primary_only defaults to false (not null) on the institution branch —
+      // it's always consulted there (args.primary_only || false), so an
+      // unset caller value still yields a real applied value of `false`,
+      // consistent with the single-param institution-branch test above.
+      expect(response.metadata.filters_applied).toEqual({
+        query: null,
+        pi: null,
+        institution: "Y",
+        primary_only: false,
+      });
+      const requestedUrl = String(mockFetch.mock.calls[0][0]);
+      expect(requestedUrl).toContain("awardeeName=");
+      expect(requestedUrl).not.toContain("keyword=");
+    });
+
+    it("multi-param call {pi, query}: routes to pi branch, discloses pi only (query NOT falsely applied)", async () => {
+      mockAwardsPage(1, [makeAward("1")]);
+
+      const result = await server["handleToolCall"]({
+        params: {
+          name: "search_nsf_awards",
+          arguments: { pi: "X", query: "Z" },
+        },
+      });
+
+      const response = JSON.parse(result.content[0].text);
+      expect(response.metadata.filters_applied).toEqual({
+        query: null,
+        pi: "X",
+        institution: null,
+        primary_only: null,
+      });
+      const requestedUrl = String(mockFetch.mock.calls[0][0]);
+      expect(requestedUrl).toContain("pdPIName=");
+      expect(requestedUrl).not.toContain("keyword=");
     });
   });
 });
