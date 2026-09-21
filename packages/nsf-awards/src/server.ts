@@ -64,6 +64,38 @@ interface SearchNSFAwardsArgs {
   fields?: string[];
 }
 
+interface FiltersApplied {
+  query: string | null;
+  pi: string | null;
+  institution: string | null;
+  primary_only: boolean | null;
+}
+
+/**
+ * Build the `filters_applied` disclosure object from an explicit per-branch
+ * allowlist — NOT the router's raw args wholesale. The router's four
+ * narrowing params (query/pi/institution/primary_only) are independent
+ * optionals with no mutual exclusion in the schema, so a caller can pass
+ * e.g. `{ pi, institution }` together; the router still dispatches to a
+ * single branch (pi is checked first) that applies only ITS param. Building
+ * from raw args would falsely disclose the sibling param as applied even
+ * though that branch never read it. Each call site below passes only the
+ * args its branch actually consults; every key not passed defaults to
+ * `null` here, so the object still always carries the full four-key shape
+ * (Phase 4b design §2/§3) — just with the unapplied siblings correctly
+ * null instead of falsely populated. Mirrors allocations' per-branch
+ * `buildFiltersApplied` allowlist fix (search_projects, same false-
+ * disclosure class).
+ */
+function buildFiltersApplied(args: SearchNSFAwardsArgs): FiltersApplied {
+  return {
+    query: args.query ?? null,
+    pi: args.pi ?? null,
+    institution: args.institution ?? null,
+    primary_only: args.primary_only ?? null,
+  };
+}
+
 // Raw NSF API award response structure
 interface RawNSFAward {
   id?: string;
@@ -195,31 +227,51 @@ export class NSFAwardsServer extends BaseAccessServer {
       return await this.get_nsf_award({ award_number: args.id });
     }
 
+    // filters_applied is built PER BRANCH below, from an explicit allowlist
+    // of only the args that branch actually applies — NOT from the raw
+    // `args` wholesale (see buildFiltersApplied's doc comment for why: the
+    // three routing params aren't mutually exclusive in the schema, so a
+    // caller can pass e.g. `{ pi, institution }` together and only one
+    // branch runs).
+
     if (args.pi) {
+      // pi branch applies pi ONLY (find_nsf_awards_by_pi never reads
+      // institution/query/primary_only) — disclose pi alone.
       return await this.find_nsf_awards_by_pi({
         pi_name: args.pi,
         limit: args.limit,
         offset: args.offset,
         fields: args.fields,
+        filtersApplied: buildFiltersApplied({ pi: args.pi }),
       });
     }
 
     if (args.institution) {
+      // institution branch applies institution + primary_only (the only
+      // branch that reads primary_only at all) — disclose both.
+      const primaryOnly = args.primary_only || false;
       return await this.find_nsf_awards_by_institution({
         institution_name: args.institution,
         limit: args.limit,
         offset: args.offset,
-        primary_only: args.primary_only || false,
+        primary_only: primaryOnly,
         fields: args.fields,
+        filtersApplied: buildFiltersApplied({
+          institution: args.institution,
+          primary_only: primaryOnly,
+        }),
       });
     }
 
     if (args.query) {
+      // keywords branch applies query ONLY (find_nsf_awards_by_keywords
+      // never reads pi/institution/primary_only) — disclose query alone.
       return await this.find_nsf_awards_by_keywords({
         keywords: args.query,
         limit: args.limit,
         offset: args.offset,
         fields: args.fields,
+        filtersApplied: buildFiltersApplied({ query: args.query }),
       });
     }
 
@@ -231,6 +283,7 @@ export class NSFAwardsServer extends BaseAccessServer {
     limit?: number;
     offset?: number;
     fields?: string[];
+    filtersApplied: FiltersApplied;
   }) {
     // Coerce offset via the shared helper BEFORE the fetch, so the NSF request
     // and the reported metadata use the identical value. Doing this after the
@@ -261,7 +314,7 @@ export class NSFAwardsServer extends BaseAccessServer {
       // Defensive: the upstream API is trusted to honor rpp, but slice to
       // pagination.limit so an over-returning response can't leak extra rows.
       items: awards.slice(0, pagination.limit),
-      metadata: { pagination },
+      metadata: { pagination, filters_applied: args.filtersApplied },
     };
     return {
       content: [
@@ -291,6 +344,7 @@ export class NSFAwardsServer extends BaseAccessServer {
     offset?: number;
     primary_only?: boolean;
     fields?: string[];
+    filtersApplied: FiltersApplied;
   }) {
     // Coerce offset via the shared helper BEFORE the fetch — see the comment in
     // find_nsf_awards_by_pi for why (silent-wrong-fetch otherwise).
@@ -328,7 +382,7 @@ export class NSFAwardsServer extends BaseAccessServer {
     const envelope = {
       total: totalCount,
       items: awards,
-      metadata: { pagination },
+      metadata: { pagination, filters_applied: args.filtersApplied },
     };
 
     return {
@@ -351,7 +405,12 @@ export class NSFAwardsServer extends BaseAccessServer {
    * filtered set.
    */
   private async findNSFAwardsByInstitutionPrimaryOnly(
-    args: { institution_name: string; limit?: number; fields?: string[] },
+    args: {
+      institution_name: string;
+      limit?: number;
+      fields?: string[];
+      filtersApplied: FiltersApplied;
+    },
     offset: number
   ) {
     const fetchRpp = 500;
@@ -419,7 +478,7 @@ export class NSFAwardsServer extends BaseAccessServer {
       // ceiling-saturated count) by falling back to total_lower_bound.
       total: pagination.total ?? (pagination.total_lower_bound as number),
       items: awards,
-      metadata: { pagination },
+      metadata: { pagination, filters_applied: args.filtersApplied },
     };
 
     return {
@@ -437,6 +496,7 @@ export class NSFAwardsServer extends BaseAccessServer {
     limit?: number;
     offset?: number;
     fields?: string[];
+    filtersApplied: FiltersApplied;
   }) {
     // Coerce offset via the shared helper BEFORE the fetch — see the comment in
     // find_nsf_awards_by_pi for why (silent-wrong-fetch otherwise).
@@ -463,7 +523,7 @@ export class NSFAwardsServer extends BaseAccessServer {
       // Defensive: the upstream API is trusted to honor rpp, but slice to
       // pagination.limit so an over-returning response can't leak extra rows.
       items: awards.slice(0, pagination.limit),
-      metadata: { pagination },
+      metadata: { pagination, filters_applied: args.filtersApplied },
     };
     return {
       content: [
