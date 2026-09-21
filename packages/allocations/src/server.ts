@@ -74,6 +74,38 @@ interface SearchProjectsArgs {
   fields?: string[];
 }
 
+interface SearchProjectsFiltersApplied {
+  query: string | null;
+  field_of_science: string | null;
+  resource_name: string | null;
+  allocation_type: string | null;
+  date_range: { start_date?: string; end_date?: string } | null;
+  min_allocation: number | null;
+}
+
+/**
+ * Build the `filters_applied` disclosure object from the router's original
+ * args. All six narrowing params (query/field_of_science/resource_name/
+ * allocation_type/date_range/min_allocation) are disclosed on EVERY
+ * search_projects sub-handler — including branches that structurally never
+ * consult a given param (e.g. listProjectsByField never applies
+ * resource_name) — so a consumer sees an identical key set regardless of
+ * which routing branch ran (Phase 4b design §2/§3, mirrors nsf-awards'
+ * buildFiltersApplied). A key a branch DOES apply must always carry that
+ * branch's actually-applied value, never null — see each sub-handler's
+ * per-branch test.
+ */
+function buildFiltersApplied(args: SearchProjectsArgs): SearchProjectsFiltersApplied {
+  return {
+    query: args.query ?? null,
+    field_of_science: args.field_of_science ?? null,
+    resource_name: args.resource_name ?? null,
+    allocation_type: args.allocation_type ?? null,
+    date_range: args.date_range ?? null,
+    min_allocation: args.min_allocation ?? null,
+  };
+}
+
 interface AnalyzeFundingArgs {
   project_id?: number;
   institution?: string;
@@ -909,7 +941,24 @@ sort_by: "date_desc"
       );
     }
 
-    // List projects by resource
+    // filters_applied is built PER BRANCH below, from only the args that
+    // branch actually consults — never from the router's raw args wholesale.
+    // The schema declares all six narrowing params as independent optionals
+    // (no mutual exclusion), so a caller can pass e.g. resource_name AND
+    // field_of_science together; the router still dispatches on resource_name
+    // alone (`if (args.resource_name && !args.query)`), landing on
+    // listProjectsByResource, which never consults field_of_science or
+    // allocation_type. Disclosing the caller's field_of_science there would
+    // be a false disclosure — a filter shown as applied that never touched
+    // the result set. Each branch below builds its own filters_applied from
+    // exactly the params it reads, so an inapplicable key is always null
+    // regardless of what the caller passed alongside the routing param.
+    // Lookup and similar-projects branches above return before this point
+    // and don't disclose filters_applied at all.
+
+    // List projects by resource — applies resource_name, date_range,
+    // min_allocation ONLY (verified: no field_of_science/allocation_type
+    // read anywhere in listProjectsByResource).
     if (args.resource_name && !args.query) {
       return await this.listProjectsByResource(
         args.resource_name,
@@ -918,11 +967,20 @@ sort_by: "date_desc"
         args.date_range,
         args.min_allocation,
         args.sort_by,
-        args.offset ?? 0
+        args.offset ?? 0,
+        buildFiltersApplied({
+          resource_name: args.resource_name,
+          date_range: args.date_range,
+          min_allocation: args.min_allocation,
+        })
       );
     }
 
-    // List projects by field (when field provided without query)
+    // List projects by field — applies field_of_science, date_range,
+    // min_allocation ONLY. The router guard already excludes resource_name/
+    // allocation_type/query from reaching here, but building from an
+    // explicit allowlist (not args) keeps that guarantee independent of the
+    // guard's exact shape.
     if (args.field_of_science && !args.query && !args.resource_name && !args.allocation_type) {
       return await this.listProjectsByField(
         args.field_of_science,
@@ -931,11 +989,19 @@ sort_by: "date_desc"
         args.date_range,
         args.min_allocation,
         args.sort_by,
-        args.offset ?? 0
+        args.offset ?? 0,
+        buildFiltersApplied({
+          field_of_science: args.field_of_science,
+          date_range: args.date_range,
+          min_allocation: args.min_allocation,
+        })
       );
     }
 
-    // List/filter projects by allocation_type (when provided without query)
+    // List/filter projects by allocation_type — applies allocation_type
+    // (always) and field_of_science (optionally, verified: consulted as
+    // fosNeedle in listProjectsByAllocationType's filter), plus date_range/
+    // min_allocation. resource_name never reaches here (router guard).
     if (args.allocation_type && !args.query && !args.resource_name) {
       return await this.listProjectsByAllocationType(
         args.allocation_type,
@@ -945,11 +1011,24 @@ sort_by: "date_desc"
         args.date_range,
         args.min_allocation,
         args.sort_by,
-        args.offset ?? 0
+        args.offset ?? 0,
+        buildFiltersApplied({
+          allocation_type: args.allocation_type,
+          field_of_science: args.field_of_science,
+          date_range: args.date_range,
+          min_allocation: args.min_allocation,
+        })
       );
     }
 
-    // Standard search with optional filters
+    // Standard search — applies query, field_of_science, allocation_type
+    // (verified as hard filters inside calculateAdvancedSearchScore),
+    // date_range, min_allocation (via applyCorpusFilters). resource_name is
+    // NEVER consulted by this branch — including when the caller passes both
+    // resource_name AND query, which still lands here (the router guard
+    // `args.resource_name && !args.query` is false once query is set, so it
+    // falls through past listProjectsByResource) — so resource_name must
+    // always be null, regardless of what the caller passed.
     if (args.query) {
       return await this.searchProjects(
         args.query,
@@ -960,7 +1039,14 @@ sort_by: "date_desc"
         args.min_allocation,
         args.sort_by,
         args.fields,
-        args.offset ?? 0
+        args.offset ?? 0,
+        buildFiltersApplied({
+          query: args.query,
+          field_of_science: args.field_of_science,
+          allocation_type: args.allocation_type,
+          date_range: args.date_range,
+          min_allocation: args.min_allocation,
+        })
       );
     }
 
@@ -1054,7 +1140,8 @@ sort_by: "date_desc"
     minAllocation?: number,
     sortBy: string = "relevance",
     fields?: string[],
-    offset: number = 0
+    offset: number = 0,
+    filtersApplied?: SearchProjectsFiltersApplied
   ) {
     // Input validation
     if (!query || query.trim().length === 0) {
@@ -1070,7 +1157,7 @@ sort_by: "date_desc"
     const allProjects = snapshot.records;
 
     // Apply filters
-    const { filtered: filteredProjects, applied } = this.applyCorpusFilters(allProjects, {
+    const { filtered: filteredProjects } = this.applyCorpusFilters(allProjects, {
       dateRange,
       minAllocation,
     });
@@ -1112,18 +1199,24 @@ sort_by: "date_desc"
     // calculateAdvancedSearchScore (a non-match scores 0 and is excluded), so
     // they must be disclosed here too — otherwise a caller sees a narrowed
     // result set with no filter reported, mirroring listProjectsByAllocationType.
-    const queryFilters = {
-      ...(fieldOfScience && { field_of_science: fieldOfScience }),
-      ...(allocationType && { allocation_type: allocationType }),
-      ...applied,
-    };
+    // Falls back to building from the raw params (rather than requiring a
+    // caller-supplied object) so this method stays directly callable/testable.
+    const resolvedFiltersApplied: SearchProjectsFiltersApplied =
+      filtersApplied ??
+      buildFiltersApplied({
+        query,
+        field_of_science: fieldOfScience,
+        allocation_type: allocationType,
+        date_range: dateRange,
+        min_allocation: minAllocation,
+      });
 
     const envelope = {
       total: sortedAll.length,
       items: items,
       metadata: {
         pagination,
-        filters_applied: queryFilters,
+        filters_applied: resolvedFiltersApplied,
         query_relevance: "loose_match" as const,
         fetched_at: new Date(snapshot.fetchedAt).toISOString(),
         ...(snapshot.truncated ? { corpus_truncated: true } : {}),
@@ -1398,6 +1491,7 @@ sort_by: "date_desc"
     minAllocation?: number,
     sortBy: string = "relevance",
     offset: number = 0,
+    filtersApplied?: SearchProjectsFiltersApplied,
   ) {
     // Input validation
     if (
@@ -1414,7 +1508,7 @@ sort_by: "date_desc"
     const needle = fieldOfScience.toLowerCase();
     const matched = snapshot.records.filter((project) => project.fos.toLowerCase().includes(needle));
 
-    const { filtered, applied } = this.applyCorpusFilters(matched, {
+    const { filtered } = this.applyCorpusFilters(matched, {
       dateRange,
       minAllocation,
     });
@@ -1422,10 +1516,17 @@ sort_by: "date_desc"
     const sorted = this.applySorting(wrapped, sortBy).map((w) => w.project);
 
     const base = this.corpusListingEnvelope(sorted, snapshot, limit, offset);
+    // This branch only ever applies field_of_science (+ date_range/min_allocation);
+    // query/resource_name/allocation_type are structurally never consulted here
+    // (the router only reaches this branch when those args are absent), so the
+    // fallback builder is safe — it can't report a value this branch didn't apply.
+    const resolvedFiltersApplied: SearchProjectsFiltersApplied =
+      filtersApplied ??
+      buildFiltersApplied({ field_of_science: fieldOfScience, date_range: dateRange, min_allocation: minAllocation });
     const envelope = {
       ...base,
       metadata: {
-        filters_applied: applied,
+        filters_applied: resolvedFiltersApplied,
         ...base.metadata,
       },
     };
@@ -1452,6 +1553,7 @@ sort_by: "date_desc"
     minAllocation?: number,
     sortBy: string = "relevance",
     offset: number = 0,
+    filtersApplied?: SearchProjectsFiltersApplied,
   ) {
     // Input validation
     if (
@@ -1473,7 +1575,7 @@ sort_by: "date_desc"
       return typeMatch && fieldMatch;
     });
 
-    const { filtered, applied } = this.applyCorpusFilters(matched, {
+    const { filtered } = this.applyCorpusFilters(matched, {
       dateRange,
       minAllocation,
     });
@@ -1481,14 +1583,22 @@ sort_by: "date_desc"
     const sorted = this.applySorting(wrapped, sortBy).map((w) => w.project);
 
     const base = this.corpusListingEnvelope(sorted, snapshot, limit, offset);
+    // This branch always applies allocation_type and optionally field_of_science
+    // (+ date_range/min_allocation); query/resource_name are structurally never
+    // consulted here (the router only reaches this branch when those args are
+    // absent), so the fallback builder is safe.
+    const resolvedFiltersApplied: SearchProjectsFiltersApplied =
+      filtersApplied ??
+      buildFiltersApplied({
+        allocation_type: allocationType,
+        field_of_science: fieldOfScience,
+        date_range: dateRange,
+        min_allocation: minAllocation,
+      });
     const envelope = {
       ...base,
       metadata: {
-        filters_applied: {
-          allocation_type: allocationType,
-          ...(fieldOfScience && { field_of_science: fieldOfScience }),
-          ...applied,
-        },
+        filters_applied: resolvedFiltersApplied,
         ...base.metadata,
       },
     };
@@ -1545,6 +1655,7 @@ sort_by: "date_desc"
     minAllocation?: number,
     sortBy: string = "relevance",
     offset: number = 0,
+    filtersApplied?: SearchProjectsFiltersApplied,
   ) {
     // Input validation
     if (!resourceName || typeof resourceName !== "string" || resourceName.trim().length === 0) {
@@ -1561,7 +1672,7 @@ sort_by: "date_desc"
       project.resources.some((resource) => resource.resourceName.toLowerCase().includes(needle)),
     );
 
-    const { filtered, applied } = this.applyCorpusFilters(matched, {
+    const { filtered } = this.applyCorpusFilters(matched, {
       dateRange,
       minAllocation,
     });
@@ -1569,10 +1680,17 @@ sort_by: "date_desc"
     const sorted = this.applySorting(wrapped, sortBy).map((w) => w.project);
 
     const base = this.corpusListingEnvelope(sorted, snapshot, limit, offset);
+    // This branch only ever applies resource_name (+ date_range/min_allocation);
+    // query/field_of_science/allocation_type are structurally never consulted
+    // here (the router only reaches this branch when query is absent), so the
+    // fallback builder is safe.
+    const resolvedFiltersApplied: SearchProjectsFiltersApplied =
+      filtersApplied ??
+      buildFiltersApplied({ resource_name: resourceName, date_range: dateRange, min_allocation: minAllocation });
     const envelope = {
       ...base,
       metadata: {
-        filters_applied: applied,
+        filters_applied: resolvedFiltersApplied,
         ...base.metadata,
       },
     };
