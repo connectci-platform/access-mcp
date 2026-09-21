@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach, Mock } from "vitest";
 import { requestContextStorage, RequestContext, DrupalApiError } from "@access-mcp/shared";
 import { assertWriteEnvelope } from "@access-mcp/shared/testkit";
+import { assertFiltersAppliedShape } from "@access-mcp/shared/testkit/filters-applied";
 
 const mockGet = vi.fn();
 const mockDelete = vi.fn();
@@ -834,6 +835,131 @@ describe("EventsServer", () => {
         const [e] = payload.items;
         // capacity '0' means unlimited → null (not the string "0", not the number 0)
         expect(e.access_registration).toEqual({ enabled: true, capacity: null, has_waitlist: false });
+      });
+    });
+
+    describe("filters_applied disclosure", () => {
+      it("conforms to the canonical shape (exactly query, type, tags, date, date_range, skill, has_video)", async () => {
+        mockHttpClient.get.mockResolvedValue({ status: 200, data: mockEventsData });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: { name: "search_events", arguments: { query: "python" } },
+        });
+
+        assertFiltersAppliedShape(
+          result,
+          ["query", "type", "tags", "date", "date_range", "skill", "has_video"],
+          expect
+        );
+      });
+
+      it("no filters → all seven keys null", async () => {
+        mockHttpClient.get.mockResolvedValue({ status: 200, data: mockEventsData });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: { name: "search_events", arguments: {} },
+        });
+
+        const responseData = JSON.parse(result.content[0].text);
+        expect(responseData.metadata.filters_applied).toEqual({
+          query: null,
+          type: null,
+          tags: null,
+          date: null,
+          date_range: null,
+          skill: null,
+          has_video: null,
+        });
+      });
+
+      it("date and date_range are distinct keys: a `date` call discloses date_range: null", async () => {
+        mockHttpClient.get.mockResolvedValue({ status: 200, data: mockEventsData });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: { name: "search_events", arguments: { date: "upcoming" } },
+        });
+
+        const responseData = JSON.parse(result.content[0].text);
+        expect(responseData.metadata.filters_applied.date).toBe("upcoming");
+        expect(responseData.metadata.filters_applied.date_range).toBeNull();
+      });
+
+      it("date and date_range are distinct keys: a `date_range` call discloses date: null", async () => {
+        mockHttpClient.get.mockResolvedValue({ status: 200, data: mockEventsData });
+
+        const dateRange = { start_date: "2026-09-17", end_date: "2026-09-25" };
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: { name: "search_events", arguments: { date_range: dateRange } },
+        });
+
+        const responseData = JSON.parse(result.content[0].text);
+        expect(responseData.metadata.filters_applied.date_range).toEqual(dateRange);
+        expect(responseData.metadata.filters_applied.date).toBeNull();
+      });
+
+      it("has_video: true is disclosed and the result set reflects it", async () => {
+        mockHttpClient.get.mockResolvedValue({
+          status: 200,
+          data: [
+            { ...mockEventsData[0], video: "https://example.com/recording.mp4" },
+            { ...mockEventsData[1], video: "" },
+          ],
+        });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: { name: "search_events", arguments: { has_video: true } },
+        });
+
+        const responseData = JSON.parse(result.content[0].text);
+        expect(responseData.metadata.filters_applied.has_video).toBe(true);
+        expect(responseData.items).toHaveLength(1);
+        expect(responseData.items[0].title).toBe(mockEventsData[0].title);
+      });
+
+      it("discloses has_video: false as false, not null (boolean-false must survive)", async () => {
+        mockHttpClient.get.mockResolvedValue({ status: 200, data: mockEventsData });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: { name: "search_events", arguments: { has_video: false } },
+        });
+
+        const responseData = JSON.parse(result.content[0].text);
+        expect(responseData.metadata.filters_applied.has_video).toBe(false);
+        expect(responseData.metadata.filters_applied).toEqual({
+          query: null,
+          type: null,
+          tags: null,
+          date: null,
+          date_range: null,
+          skill: null,
+          has_video: false,
+        });
+      });
+
+      it("survives a fields projection targeting a metadata subpath", async () => {
+        mockHttpClient.get.mockResolvedValue({ status: 200, data: mockEventsData });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "search_events",
+            arguments: { has_video: true, fields: ["metadata.pagination.has_more"] },
+          },
+        });
+
+        assertFiltersAppliedShape(
+          result,
+          ["query", "type", "tags", "date", "date_range", "skill", "has_video"],
+          expect
+        );
+        const responseData = JSON.parse(result.content[0].text);
+        expect(responseData.metadata.filters_applied.has_video).toBe(true);
       });
     });
 
