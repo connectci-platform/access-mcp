@@ -118,19 +118,20 @@ export class ComputeResourcesServer extends BaseAccessServer {
         description:
           "Search ACCESS-CI compute resources by name, type, or feature (ACCESS OnDemand, " +
           "Globus, preemption, NAIRR participation). Returns resource IDs for other services. " +
-          "Returns {total, items}. Data comes from CiDeR, which resource providers are " +
-          "responsible for updating and often do not, so treat every field as incomplete " +
-          "rather than authoritative. The feature flags are the only machine-readable source " +
-          "for which resources offer a given service, but they are not exhaustive: verified " +
-          "2026-09-20, Neocortex lacks the ACCESS OnDemand flag while appearing on " +
+          "Returns {total, items}. Use it to enumerate or filter the catalog; treat every " +
+          "field as incomplete rather than authoritative. Data comes from CiDeR, which " +
+          "resource providers are responsible for updating and largely do not. Verified " +
+          "2026-09-20: the feature flags disagree with ACCESS's own service pages in both " +
+          "directions — Neocortex lacks the ACCESS OnDemand flag while appearing on " +
           "support.access-ci.org/tools/ondemand, REPACSS and Nexus carry the flag without " +
           "appearing there, and FASTER and Ookami are on that page but absent from this " +
-          "catalog entirely. has_gpu is also unreliable — it includes resources whose " +
-          "hardware payload has no GPU block and excludes non-GPU accelerators such as " +
-          "Habana Gaudi. A display name may carry a stale 'COMING SOON' or 'NO NEW " +
-          "ALLOCATIONS' label contradicting its own accessAllocated flag. For hardware " +
-          "specifications prefer the per-resource pages under " +
-          "https://support.access-ci.org/documentation/resources.",
+          "catalog entirely. has_gpu is unreliable too: it includes resources whose hardware " +
+          "payload has no GPU block and excludes non-GPU accelerators such as Habana Gaudi. " +
+          "A display name may carry a stale 'COMING SOON' or 'NO NEW ALLOCATIONS' label " +
+          "contradicting its own accessAllocated flag. Prefer the documentation for anything " +
+          "a user acts on: hardware from the per-resource pages under " +
+          "https://support.access-ci.org/documentation/resources, and service availability " +
+          "from that service's own page, e.g. /tools/ondemand.",
         inputSchema: {
           type: "object",
           properties: {
