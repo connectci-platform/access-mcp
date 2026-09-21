@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi, Mock } from "vitest";
 import { ComputeResourcesServer } from "./server.js";
+import { assertFiltersAppliedShape } from "@access-mcp/shared/testkit/filters-applied";
 
 interface MockHttpClient {
   get: Mock<(url: string) => Promise<{ status: number; statusText?: string; data: unknown }>>;
@@ -325,6 +326,116 @@ describe("ComputeResourcesServer", () => {
       if (responseData.items.length > 0) {
         expect(responseData.items[0].resource_ids).toBeUndefined();
       }
+    });
+  });
+
+  describe("filters_applied disclosure", () => {
+    it("conforms to the canonical shape (exactly query, type, has_gpu, organization)", async () => {
+      mockHttpClient.get
+        .mockResolvedValueOnce({ status: 200, data: mockResourceGroups })
+        .mockResolvedValueOnce({ status: 200, data: mockOrganizations });
+
+      const result = await server["handleToolCall"]({
+        params: {
+          name: "search_resources",
+          arguments: { query: "gpu" },
+        },
+      });
+
+      assertFiltersAppliedShape(result, ["query", "type", "has_gpu", "organization"], expect);
+    });
+
+    it("discloses applied filters and the result reflects them", async () => {
+      mockHttpClient.get
+        .mockResolvedValueOnce({ status: 200, data: mockResourceGroups })
+        .mockResolvedValueOnce({ status: 200, data: mockOrganizations });
+
+      const result = await server["handleToolCall"]({
+        params: {
+          name: "search_resources",
+          arguments: { has_gpu: true, type: "GPU Compute" },
+        },
+      });
+
+      const responseData = JSON.parse(result.content[0].text);
+      expect(responseData.metadata.filters_applied).toEqual({
+        query: null,
+        type: "GPU Compute",
+        has_gpu: true,
+        organization: null,
+      });
+      expect(responseData.items.length).toBeGreaterThan(0);
+      expect(
+        responseData.items.every((r: { hasGpu: boolean; resourceTypes: string[] }) =>
+          r.hasGpu === true && r.resourceTypes.includes("GPU Compute")
+        )
+      ).toBe(true);
+    });
+
+    it("discloses null for unapplied filters alongside the one that was applied", async () => {
+      mockHttpClient.get
+        .mockResolvedValueOnce({ status: 200, data: mockResourceGroups })
+        .mockResolvedValueOnce({ status: 200, data: mockOrganizations });
+
+      // A fully empty call routes to listComputeResources (no filters_applied key at all —
+      // covered by the "list all" describe block), so exercise the searchResources path with
+      // one filter set and assert the other three keys are null.
+      const result = await server["handleToolCall"]({
+        params: {
+          name: "search_resources",
+          arguments: { organization: "NCSA" },
+        },
+      });
+
+      const responseData = JSON.parse(result.content[0].text);
+      expect(responseData.metadata.filters_applied).toEqual({
+        query: null,
+        type: null,
+        has_gpu: null,
+        organization: "NCSA",
+      });
+    });
+
+    it("discloses has_gpu: false as false, not null (boolean-false must survive)", async () => {
+      mockHttpClient.get
+        .mockResolvedValueOnce({ status: 200, data: mockResourceGroups })
+        .mockResolvedValueOnce({ status: 200, data: mockOrganizations });
+
+      const result = await server["handleToolCall"]({
+        params: {
+          name: "search_resources",
+          arguments: { has_gpu: false },
+        },
+      });
+
+      const responseData = JSON.parse(result.content[0].text);
+      expect(responseData.metadata.filters_applied.has_gpu).toBe(false);
+      expect(responseData.metadata.filters_applied).toEqual({
+        query: null,
+        type: null,
+        has_gpu: false,
+        organization: null,
+      });
+      expect(
+        responseData.items.every((r: { hasGpu: boolean }) => r.hasGpu === false)
+      ).toBe(true);
+    });
+
+    it("survives a fields projection targeting a metadata subpath", async () => {
+      mockHttpClient.get
+        .mockResolvedValueOnce({ status: 200, data: mockResourceGroups })
+        .mockResolvedValueOnce({ status: 200, data: mockOrganizations });
+
+      const result = await server["handleToolCall"]({
+        params: {
+          name: "search_resources",
+          arguments: { has_gpu: true, fields: ["metadata.pagination.has_more"] },
+        },
+      });
+
+      assertFiltersAppliedShape(result, ["query", "type", "has_gpu", "organization"], expect);
+      const responseData = JSON.parse(result.content[0].text);
+      expect(responseData.metadata.filters_applied.has_gpu).toBe(true);
     });
   });
 

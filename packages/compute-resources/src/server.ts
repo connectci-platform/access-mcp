@@ -1026,6 +1026,12 @@ Consider:
           offset: 0,
           has_more: false,
         },
+        filters_applied: {
+          query: query ?? null,
+          type: resource_type ?? null,
+          has_gpu: has_gpu ?? null,
+          organization: organization ?? null,
+        },
       },
       documentation: {
         links: this.listingLinks("search"),
