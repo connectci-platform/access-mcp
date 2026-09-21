@@ -92,13 +92,71 @@ describe("projectFields", () => {
     test("sticky preservation skipped when caller projects a sub-path", () => {
       // Explicit metadata.pagination.has_more in paths means caller is
       // narrowing into metadata — don't sticky-add the whole subtree.
+      // filters_applied still rides along (sticky-within-metadata), so it
+      // is asserted separately below rather than baked into this toEqual.
       const out = projectFields(sample, [
         "items[].name",
         "metadata.pagination.has_more",
       ]);
-      expect(out.metadata).toEqual({ pagination: { has_more: false } });
+      expect(out.metadata).toEqual({
+        pagination: { has_more: false },
+        filters_applied: sample.metadata.filters_applied,
+      });
       // documentation wasn't projected explicitly; still preserved.
       expect(out.documentation).toEqual(sample.documentation);
+    });
+  });
+
+  describe("filters_applied sticky-within-metadata", () => {
+    const sampleWithFilters = {
+      total: 2,
+      items: [{ id: 1 }],
+      metadata: {
+        pagination: { has_more: true, limit: 25 },
+        filters_applied: { query: "x", tags: null },
+        query_relevance: "exact",
+      },
+    };
+
+    test("subpath projection into metadata still rescues filters_applied, not the rest of metadata", () => {
+      const out = projectFields(sampleWithFilters, [
+        "metadata.pagination.has_more",
+      ]);
+      expect(out.metadata).toEqual({
+        pagination: { has_more: true },
+        filters_applied: { query: "x", tags: null },
+      });
+      // Proves this isn't just reverting to whole-metadata stickiness.
+      expect(out.metadata).not.toHaveProperty("query_relevance");
+    });
+
+    test("regression: no filters_applied in metadata — subpath projection unchanged", () => {
+      const noFilters = {
+        total: 1,
+        metadata: { pagination: { has_more: false, limit: 10 } },
+      };
+      const out = projectFields(noFilters, ["metadata.pagination.has_more"]);
+      expect(out).toEqual({
+        total: 1,
+        metadata: { pagination: { has_more: false } },
+      });
+      expect(out.metadata).not.toHaveProperty("filters_applied");
+    });
+
+    test("regression: whole-metadata sticky case (metadata unmentioned) is unchanged", () => {
+      const out = projectFields(sampleWithFilters, ["items[].id"]);
+      expect(out.metadata).toEqual(sampleWithFilters.metadata);
+    });
+
+    test("caller explicitly lists metadata.filters_applied — no double-add", () => {
+      const out = projectFields(sampleWithFilters, [
+        "metadata.pagination.has_more",
+        "metadata.filters_applied",
+      ]);
+      expect(out.metadata).toEqual({
+        pagination: { has_more: true },
+        filters_applied: { query: "x", tags: null },
+      });
     });
   });
 
@@ -135,7 +193,13 @@ describe("projectFields", () => {
       ]);
       expect(out).toEqual({
         total: 3,
-        metadata: { pagination: { has_more: false } },
+        // filters_applied rides along (sticky-within-metadata) even though
+        // only a pagination subpath was projected — see the dedicated
+        // "filters_applied sticky-within-metadata" describe block below.
+        metadata: {
+          pagination: { has_more: false },
+          filters_applied: sample.metadata.filters_applied,
+        },
         documentation: sample.documentation,
       });
     });
@@ -144,7 +208,10 @@ describe("projectFields", () => {
       const out = projectFields(sample, ["metadata.aggregations"]);
       expect(out).toEqual({
         total: 3,
-        metadata: { aggregations: sample.metadata.aggregations },
+        metadata: {
+          aggregations: sample.metadata.aggregations,
+          filters_applied: sample.metadata.filters_applied,
+        },
         documentation: sample.documentation,
       });
     });
@@ -177,7 +244,10 @@ describe("projectFields", () => {
           { id: "delta.ncsa.access-ci.org", name: "Delta" },
           { id: "bridges2.psc.access-ci.org", name: "Bridges-2" },
         ],
-        metadata: { pagination: { limit: 25, offset: 0, has_more: false } },
+        metadata: {
+          pagination: { limit: 25, offset: 0, has_more: false },
+          filters_applied: sample.metadata.filters_applied,
+        },
         documentation: { links: { see_all_url: "https://example.test/all" } },
       });
     });

@@ -9,10 +9,10 @@
  * the same structural shape against its own expected key list, so the
  * structural check lives here once as the single source of truth.
  *
- * This is test-only support code, exported from the dedicated `./testkit`
- * subpath (NOT the package root) so it stays off the runtime main entry —
- * consuming test suites import it as `@access-mcp/shared/testkit`, same as
- * `assertWriteEnvelope`.
+ * This is test-only support code, exported from the dedicated
+ * `./testkit/filters-applied` subpath (NOT the package root) so it stays off
+ * the runtime main entry — consuming test suites import it as
+ * `@access-mcp/shared/testkit/filters-applied`.
  */
 
 interface TextContent {
