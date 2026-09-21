@@ -116,7 +116,15 @@ export class ComputeResourcesServer extends BaseAccessServer {
       {
         name: "search_resources",
         description:
-          "Search ACCESS-CI compute resources (list, filter, get details). Returns resource IDs for other services. Returns {total, items}.",
+          "Search ACCESS-CI compute resources by name, type, or feature (ACCESS OnDemand, " +
+          "Globus, preemption, NAIRR participation). Returns resource IDs for other services. " +
+          "Returns {total, items}. Data comes from CiDeR, which resource providers are " +
+          "responsible for updating and often do not: feature flags are well maintained, but " +
+          "hardware descriptions and the has_gpu filter are unreliable, and a resource's " +
+          "display name may carry a stale 'COMING SOON' or 'NO NEW ALLOCATIONS' label that " +
+          "contradicts its own accessAllocated flag. For hardware specifications and " +
+          "availability, prefer the per-resource pages under " +
+          "https://support.access-ci.org/documentation/resources.",
         inputSchema: {
           type: "object",
           properties: {
@@ -162,7 +170,16 @@ export class ComputeResourcesServer extends BaseAccessServer {
       },
       {
         name: "get_resource_hardware",
-        description: "Get hardware specs (CPU, GPU, memory, storage). Returns detailed specs.",
+        description:
+          "Get a resource's hardware description from CiDeR (CPU, GPU, memory, storage). " +
+          "KNOWN STALE — prefer https://support.access-ci.org/documentation/resources, which " +
+          "is curated and corrected. CiDeR is updated by resource providers and often is not: " +
+          "verified 2026-09-20, it reports Delta at 124 CPU nodes (actually 132), omits the " +
+          "MI210 in Delta's AMD node, lists Bridges-2 as H100-only (it also has L40S and " +
+          "V100), and returns no specifications at all for Stampede3, KyRIC, Voyager or " +
+          "Neocortex. Where it does carry detail it can be the richer source, so treat what " +
+          "it returns as one input rather than authoritative, and never fill a missing figure " +
+          "from general knowledge of the hardware model.",
         inputSchema: {
           type: "object",
           properties: {
