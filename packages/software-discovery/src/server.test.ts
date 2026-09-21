@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi, Mock } from "vitest";
 import { SoftwareDiscoveryServer } from "./server.js";
+import { assertFiltersAppliedShape } from "@access-mcp/shared/testkit/filters-applied";
 
 interface MockResponse {
   status: number;
@@ -157,7 +158,7 @@ describe("SoftwareDiscoveryServer", () => {
       const responseData = JSON.parse((result.content[0] as TextContent).text);
       expect(responseData.total).toBe(3);
       expect(responseData.metadata.filters_applied.query).toBe("tensorflow");
-      expect(responseData.metadata.filters_applied.fuzzy_matching).toBe(true);
+      expect(responseData.metadata.filters_applied.fuzzy).toBe(true);
       expect(responseData.items).toBeDefined();
       expect(responseData.documentation.links.see_all_url).toBe("https://sds.access-ci.org/");
       expect(responseData.metadata.query_relevance).toBe("loose_match");
@@ -243,7 +244,7 @@ describe("SoftwareDiscoveryServer", () => {
       });
 
       const responseData = JSON.parse((result.content[0] as TextContent).text);
-      expect(responseData.metadata.filters_applied.resource_filter).toBe("delta");
+      expect(responseData.metadata.filters_applied.resource).toBe("delta");
     });
 
     it("should disable fuzzy matching when requested", async () => {
@@ -354,7 +355,7 @@ describe("SoftwareDiscoveryServer", () => {
 
       const responseData = JSON.parse((result.content[0] as TextContent).text);
       expect(responseData.total).toBe(3);
-      expect(responseData.metadata.filters_applied.resource_filter).toBe("all resources");
+      expect(responseData.metadata.filters_applied.resource).toBeNull();
     });
 
     it("should filter by resource", async () => {
@@ -380,7 +381,7 @@ describe("SoftwareDiscoveryServer", () => {
       });
 
       const responseData = JSON.parse((result.content[0] as TextContent).text);
-      expect(responseData.metadata.filters_applied.resource_filter).toBe("anvil");
+      expect(responseData.metadata.filters_applied.resource).toBe("anvil");
     });
 
     it("should exclude AI metadata by default", async () => {
@@ -1134,5 +1135,173 @@ describe("SoftwareDiscoveryServer", () => {
         expect(t?.inputSchema.properties?.offset).toBeDefined();
       });
     }
+  });
+
+  describe("filters_applied (Phase 4b canonical shape)", () => {
+    it("search_software discloses base keys [query, resource, fuzzy]", async () => {
+      mockSdsClient.post.mockResolvedValue({ status: 200, data: mockSoftwareWithAI });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "search_software",
+          arguments: { query: "tensorflow", resource: "delta" },
+        },
+      });
+
+      assertFiltersAppliedShape(result, ["query", "resource", "fuzzy"], expect);
+    });
+
+    it("search_software omits resource_normalized when the raw input is unchanged", async () => {
+      mockSdsClient.post.mockResolvedValue({ status: 200, data: mockSoftwareWithAI });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "search_software",
+          arguments: { query: "tensorflow", resource: "delta" },
+        },
+      });
+
+      const responseData = JSON.parse((result.content[0] as TextContent).text);
+      expect(responseData.metadata.filters_applied.resource).toBe("delta");
+      expect(responseData.metadata.filters_applied).not.toHaveProperty("resource_normalized");
+    });
+
+    it("search_software includes resource_normalized when normalization changes the input", async () => {
+      mockSdsClient.post.mockResolvedValue({ status: 200, data: mockSoftwareWithAI });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "search_software",
+          arguments: { query: "tensorflow", resource: "delta-gpu.ncsa.access-ci.org" },
+        },
+      });
+
+      const responseData = JSON.parse((result.content[0] as TextContent).text);
+      expect(responseData.metadata.filters_applied.resource).toBe("delta-gpu.ncsa.access-ci.org");
+      expect(responseData.metadata.filters_applied.resource_normalized).toBe(
+        "delta.ncsa.access-ci.org"
+      );
+    });
+
+    it("search_software discloses query/resource/fuzzy null when unset", async () => {
+      mockSdsClient.post.mockResolvedValue({ status: 200, data: mockSoftwareWithAI });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: { name: "search_software", arguments: {} },
+      });
+
+      const responseData = JSON.parse((result.content[0] as TextContent).text);
+      expect(responseData.metadata.filters_applied.query).toBeNull();
+      expect(responseData.metadata.filters_applied.resource).toBeNull();
+      // fuzzy defaults to true even when not passed, so it is disclosed as true, not null.
+      expect(responseData.metadata.filters_applied.fuzzy).toBe(true);
+      expect(responseData.metadata.filters_applied).not.toHaveProperty("resource_normalized");
+    });
+
+    it("search_software applied-vs-disclosed: fuzzy=false is both applied and disclosed", async () => {
+      mockSdsClient.post.mockResolvedValue({ status: 200, data: mockSoftwareWithAI });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "search_software",
+          arguments: { query: "tensorflow", fuzzy: false },
+        },
+      });
+
+      // Applied: no fuzz_software param sent to the upstream API.
+      expect(mockSdsClient.post).toHaveBeenCalledWith("/api/v1", {
+        software: ["tensorflow"],
+      });
+      // Disclosed: reflects the same false value, not null.
+      const responseData = JSON.parse((result.content[0] as TextContent).text);
+      expect(responseData.metadata.filters_applied.fuzzy).toBe(false);
+    });
+
+    it("search_software fields projection still discloses filters_applied", async () => {
+      mockSdsClient.post.mockResolvedValue({ status: 200, data: mockSoftwareWithAI });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "search_software",
+          arguments: {
+            query: "tensorflow",
+            resource: "delta",
+            fields: ["total", "items[].name"],
+          },
+        },
+      });
+
+      const responseData = JSON.parse((result.content[0] as TextContent).text);
+      expect(responseData.metadata.filters_applied).toEqual({
+        query: "tensorflow",
+        resource: "delta",
+        fuzzy: true,
+      });
+    });
+
+    it("list_all_software discloses shape [resource]", async () => {
+      mockSdsClient.post.mockResolvedValue({ status: 200, data: mockSoftwareWithAI });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: { name: "list_all_software", arguments: { resource: "anvil" } },
+      });
+
+      assertFiltersAppliedShape(result, ["resource"], expect);
+    });
+
+    it("list_all_software discloses null (not 'all resources') when unset", async () => {
+      mockSdsClient.post.mockResolvedValue({ status: 200, data: mockSoftwareWithAI });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: { name: "list_all_software", arguments: {} },
+      });
+
+      const responseData = JSON.parse((result.content[0] as TextContent).text);
+      expect(responseData.metadata.filters_applied.resource).toBeNull();
+      expect(responseData.metadata.filters_applied).not.toHaveProperty("resource_normalized");
+    });
+
+    it("list_all_software applied-vs-disclosed: resource narrows the upstream query and is disclosed", async () => {
+      mockSdsClient.post.mockResolvedValue({ status: 200, data: mockSoftwareWithAI });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: { name: "list_all_software", arguments: { resource: "anvil" } },
+      });
+
+      expect(mockSdsClient.post).toHaveBeenCalledWith("/api/v1", {
+        software: ["*"],
+        rps: ["anvil"],
+        fuzz_rp: true,
+      });
+      const responseData = JSON.parse((result.content[0] as TextContent).text);
+      expect(responseData.metadata.filters_applied.resource).toBe("anvil");
+    });
+
+    it("list_all_software includes resource_normalized when normalization changes the input", async () => {
+      mockSdsClient.post.mockResolvedValue({ status: 200, data: mockSoftwareWithAI });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "list_all_software",
+          arguments: { resource: "stampede2.tacc.xsede.org" },
+        },
+      });
+
+      const responseData = JSON.parse((result.content[0] as TextContent).text);
+      expect(responseData.metadata.filters_applied.resource).toBe("stampede2.tacc.xsede.org");
+      expect(responseData.metadata.filters_applied.resource_normalized).toBe(
+        "stampede2.tacc.access-ci.org"
+      );
+    });
   });
 });

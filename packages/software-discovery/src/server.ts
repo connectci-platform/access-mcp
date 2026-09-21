@@ -575,9 +575,12 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
         items: transformedResults,
         metadata: {
           filters_applied: {
-            query: query || null,
-            resource_filter: resource || null,
-            fuzzy_matching: fuzzy,
+            query: query ?? null,
+            resource: resource ?? null,
+            fuzzy: fuzzy ?? null,
+            ...(resource && normalizeGlobalResourceId(resource) !== resource
+              ? { resource_normalized: normalizeGlobalResourceId(resource) }
+              : {}),
           },
           ...(resource
             ? {
@@ -643,7 +646,10 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
         items: transformedResults,
         metadata: {
           filters_applied: {
-            resource_filter: resource || "all resources",
+            resource: resource ?? null,
+            ...(resource && normalizeGlobalResourceId(resource) !== resource
+              ? { resource_normalized: normalizeGlobalResourceId(resource) }
+              : {}),
           },
           ...(resource
             ? {
