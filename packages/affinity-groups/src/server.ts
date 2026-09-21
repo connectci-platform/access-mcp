@@ -143,7 +143,9 @@ export class AffinityGroupsServer extends BaseAccessServer {
         total: filtered.length,
         items: limited,
         metadata: {
-          query,
+          filters_applied: {
+            query: query ?? null,
+          },
           pagination: {
             limit: limit ?? filtered.length,
             offset: 0,
