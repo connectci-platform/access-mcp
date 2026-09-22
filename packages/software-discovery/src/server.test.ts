@@ -1304,4 +1304,192 @@ describe("SoftwareDiscoveryServer", () => {
       );
     });
   });
+
+  describe("filters_applied on get_software_details / compare_software_availability", () => {
+    describe("get_software_details", () => {
+      it("discloses base keys [resource, fuzzy] at metadata.filters_applied", async () => {
+        mockSdsClient.post.mockResolvedValue({
+          status: 200,
+          data: { data: [mockSoftwareWithAI.data[0]] },
+        });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "get_software_details",
+            arguments: { software_name: "tensorflow" },
+          },
+        });
+
+        assertFiltersAppliedShape(result, ["resource", "fuzzy"], expect);
+      });
+
+      it("applied-vs-disclosed: resource narrows the upstream query and is disclosed", async () => {
+        mockSdsClient.post.mockResolvedValue({
+          status: 200,
+          data: { data: [mockSoftwareWithAI.data[0]] },
+        });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "get_software_details",
+            arguments: { software_name: "tensorflow", resource: "expanse" },
+          },
+        });
+
+        expect(mockSdsClient.post).toHaveBeenCalledWith("/api/v1", {
+          software: ["tensorflow"],
+          fuzz_software: true,
+          rps: ["expanse"],
+          fuzz_rp: true,
+        });
+
+        const responseData = JSON.parse((result.content[0] as TextContent).text);
+        expect(responseData.metadata.filters_applied.resource).toBe("expanse");
+        // resource_matched carries the resolved/matched result info, distinct
+        // from the raw filter input now canonically disclosed above.
+        expect(responseData.resource_matched).toBeDefined();
+      });
+
+      it("applied-vs-disclosed: fuzzy true/false is disclosed as applied (false survives, not null)", async () => {
+        mockSdsClient.post.mockResolvedValue({
+          status: 200,
+          data: { data: [mockSoftwareWithAI.data[0]] },
+        });
+
+        const trueResult = await server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "get_software_details",
+            arguments: { software_name: "tensorflow", fuzzy: true },
+          },
+        });
+        const trueData = JSON.parse((trueResult.content[0] as TextContent).text);
+        expect(trueData.metadata.filters_applied.fuzzy).toBe(true);
+
+        const falseResult = await server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "get_software_details",
+            arguments: { software_name: "tensorflow", fuzzy: false },
+          },
+        });
+        const falseData = JSON.parse((falseResult.content[0] as TextContent).text);
+        expect(falseData.metadata.filters_applied.fuzzy).toBe(false);
+      });
+
+      it("discloses resource/fuzzy null when unset, and excludes software_name from filters_applied", async () => {
+        mockSdsClient.post.mockResolvedValue({
+          status: 200,
+          data: { data: [mockSoftwareWithAI.data[0]] },
+        });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "get_software_details",
+            arguments: { software_name: "tensorflow" },
+          },
+        });
+
+        const responseData = JSON.parse((result.content[0] as TextContent).text);
+        expect(responseData.metadata.filters_applied.resource).toBeNull();
+        // fuzzy defaults to true even when not passed, so it is disclosed as true, not null.
+        expect(responseData.metadata.filters_applied.fuzzy).toBe(true);
+        expect(responseData.metadata.filters_applied).not.toHaveProperty("software_name");
+        // software_name is the lookup subject, already echoed at the top level.
+        expect(responseData.software_name).toBe("tensorflow");
+      });
+
+      it("omits resource_normalized when the raw input is unchanged", async () => {
+        mockSdsClient.post.mockResolvedValue({
+          status: 200,
+          data: { data: [mockSoftwareWithAI.data[0]] },
+        });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "get_software_details",
+            arguments: { software_name: "tensorflow", resource: "expanse" },
+          },
+        });
+
+        const responseData = JSON.parse((result.content[0] as TextContent).text);
+        expect(responseData.metadata.filters_applied.resource).toBe("expanse");
+        expect(responseData.metadata.filters_applied).not.toHaveProperty("resource_normalized");
+      });
+
+      it("includes resource_normalized when normalization changes the input", async () => {
+        mockSdsClient.post.mockResolvedValue({
+          status: 200,
+          data: { data: [mockSoftwareWithAI.data[0]] },
+        });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "get_software_details",
+            arguments: {
+              software_name: "tensorflow",
+              resource: "stampede2.tacc.xsede.org",
+            },
+          },
+        });
+
+        const responseData = JSON.parse((result.content[0] as TextContent).text);
+        expect(responseData.metadata.filters_applied.resource).toBe("stampede2.tacc.xsede.org");
+        expect(responseData.metadata.filters_applied.resource_normalized).toBe(
+          "stampede2.tacc.access-ci.org"
+        );
+      });
+
+      it("no longer emits the redundant ad-hoc resource_filter key, and adds no list envelope (no total/items/pagination)", async () => {
+        mockSdsClient.post.mockResolvedValue({
+          status: 200,
+          data: { data: [mockSoftwareWithAI.data[0]] },
+        });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "get_software_details",
+            arguments: { software_name: "tensorflow", resource: "expanse" },
+          },
+        });
+
+        const responseData = JSON.parse((result.content[0] as TextContent).text);
+        expect(responseData).not.toHaveProperty("resource_filter");
+        expect(responseData).not.toHaveProperty("total");
+        expect(responseData).not.toHaveProperty("items");
+        expect(responseData.metadata).not.toHaveProperty("pagination");
+        expect(Object.keys(responseData.metadata)).toEqual(["filters_applied"]);
+      });
+    });
+
+    describe("compare_software_availability", () => {
+      it("has no metadata / filters_applied key (deliberate no-disclosure decision)", async () => {
+        mockSdsClient.post.mockResolvedValue({
+          status: 200,
+          data: mockSoftwareWithAI,
+        });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "compare_software_availability",
+            arguments: {
+              software_names: ["tensorflow", "gromacs"],
+              resources: ["anvil", "delta"],
+            },
+          },
+        });
+
+        const responseData = JSON.parse((result.content[0] as TextContent).text);
+        expect(responseData).not.toHaveProperty("metadata");
+        expect(responseData).not.toHaveProperty("filters_applied");
+      });
+    });
+  });
 });
