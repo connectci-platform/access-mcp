@@ -2,6 +2,28 @@
 
 MCP server for ACCESS-CI compute resources including hardware specifications, capabilities, and configurations.
 
+## Data source and its limits
+
+This server reads CiDeR, the ACCESS resource catalog, via the operations API. Resource
+providers are responsible for keeping their CiDeR records current and largely do not, so
+treat what it returns as incomplete rather than authoritative. Verified 2026-09-20:
+
+- `get_resource_hardware` reports Delta at 124 CPU nodes where it has 132, omits the
+  MI210 in Delta's AMD node, and lists Bridges-2 as H100-only when it also has L40S and
+  V100. NCSA's and PSC's own user guides agree with the curated documentation, not with
+  CiDeR.
+- It returns no hardware specifications at all for Stampede3, KyRIC, Voyager or
+  Neocortex — the description is prose with no node counts or memory.
+- `has_gpu` includes resources whose hardware payload has no GPU block and excludes
+  non-GPU accelerators such as Habana Gaudi.
+- A resource's display name may carry a hand-typed `COMING SOON` or `NO NEW ALLOCATIONS`
+  label that contradicts its own `accessAllocated` flag.
+
+**For hardware specifications, prefer the curated per-resource pages under
+https://support.access-ci.org/documentation/resources**, which are maintained against
+the resource providers' own documentation. Use this server to enumerate and filter the
+catalog, and to resolve resource IDs for other ACCESS services.
+
 ## Usage Examples
 
 ### Discovery & Search

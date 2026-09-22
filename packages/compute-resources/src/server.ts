@@ -116,7 +116,20 @@ export class ComputeResourcesServer extends BaseAccessServer {
       {
         name: "search_resources",
         description:
-          "Search ACCESS-CI compute resources (list, filter, get details). Returns resource IDs for other services. Returns {total, items}.",
+          "Search ACCESS-CI compute resources by name, type, or feature (ACCESS OnDemand, " +
+          "Globus, preemption, NAIRR participation). Returns resource IDs for other services. " +
+          "Returns {total, items}. Use it to enumerate or filter the catalog; treat every " +
+          "field as incomplete rather than authoritative. Data comes from CiDeR, which " +
+          "resource providers are responsible for updating and largely do not, so a missing " +
+          "flag does not mean a resource lacks the feature. Verified 2026-09-20: the " +
+          "OnDemand flags and support.access-ci.org/tools/ondemand disagree on five " +
+          "resources, with errors on both sides, so neither settles the question alone. " +
+          "has_gpu is unreliable too — it includes resources whose hardware payload has no " +
+          "GPU block and excludes non-GPU accelerators such as Habana Gaudi. A display name " +
+          "may carry a stale 'COMING SOON' or 'NO NEW ALLOCATIONS' label contradicting its " +
+          "own accessAllocated flag. For hardware specifications prefer the per-resource " +
+          "pages under https://support.access-ci.org/documentation/resources, which are " +
+          "curated and corrected.",
         inputSchema: {
           type: "object",
           properties: {
@@ -162,7 +175,16 @@ export class ComputeResourcesServer extends BaseAccessServer {
       },
       {
         name: "get_resource_hardware",
-        description: "Get hardware specs (CPU, GPU, memory, storage). Returns detailed specs.",
+        description:
+          "Get a resource's hardware description from CiDeR (CPU, GPU, memory, storage). " +
+          "KNOWN STALE — prefer https://support.access-ci.org/documentation/resources, which " +
+          "is curated and corrected. CiDeR is updated by resource providers and often is not: " +
+          "verified 2026-09-20, it reports Delta at 124 CPU nodes (actually 132), omits the " +
+          "MI210 in Delta's AMD node, lists Bridges-2 as H100-only (it also has L40S and " +
+          "V100), and returns no specifications at all for Stampede3, KyRIC, Voyager or " +
+          "Neocortex. Where it does carry detail it can be the richer source, so treat what " +
+          "it returns as one input rather than authoritative, and never fill a missing figure " +
+          "from general knowledge of the hardware model.",
         inputSchema: {
           type: "object",
           properties: {
@@ -367,12 +389,20 @@ export class ComputeResourcesServer extends BaseAccessServer {
     if (uri === "accessci://compute-resources/gpu-guide") {
       const guide = `# GPU Resource Selection Guide
 
-GPU hardware changes frequently as ACCESS-CI systems are upgraded. Use the live tools for current information:
+GPU hardware changes as ACCESS-CI systems are upgraded, and this server's catalog data
+lags behind it — resource providers maintain their own CiDeR records and largely do not.
+For GPU models and memory, read the curated per-resource pages at
+https://support.access-ci.org/documentation/resources, which are maintained against the
+providers' own documentation.
 
 ## Finding GPU Resources
 
-1. **search_resources** with \`has_gpu: true\` — lists all GPU-enabled systems with their feature categories
-2. **get_resource_hardware** with a resource ID — shows detailed GPU specs (model, memory, count per node)
+1. **search_resources** with \`has_gpu: true\` — lists GPU-enabled systems with their
+   feature categories. The filter is imprecise: it includes resources whose hardware
+   payload carries no GPU block, and excludes non-GPU accelerators such as Habana Gaudi.
+2. **get_resource_hardware** with a resource ID — returns the catalog's hardware
+   description. Verified stale on several resources (see the server README), so confirm
+   models and memory against the documentation before relying on them.
 
 ## General GPU Selection Guidance
 
@@ -389,7 +419,9 @@ Most ACCESS GPU systems support:
 - **Model parallelism**: Split model layers across GPUs
 - **Pipeline parallelism**: Different model stages on different GPUs
 
-Use **search_resources** with **has_gpu: true** to find GPU-enabled systems, then **get_resource_hardware** for detailed specs.
+Use **search_resources** with **has_gpu: true** to find candidate systems, then confirm
+GPU models, memory and per-node counts against
+https://support.access-ci.org/documentation/resources.
 `;
       return this.createMarkdownResource(uri, guide);
     }
