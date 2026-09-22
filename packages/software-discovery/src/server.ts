@@ -728,9 +728,18 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
             text: JSON.stringify({
               software_name,
               found: true,
-              ...(resource ? { resource_filter: resource, resource_matched: bestMatch.available_on_resources } : {}),
+              ...(resource ? { resource_matched: bestMatch.available_on_resources } : {}),
               details: bestMatch,
               other_matches: otherMatches.length > 0 ? otherMatches : undefined,
+              metadata: {
+                filters_applied: {
+                  resource: resource ?? null,
+                  fuzzy: fuzzy ?? null,
+                  ...(resource && normalizeGlobalResourceId(resource) !== resource
+                    ? { resource_normalized: normalizeGlobalResourceId(resource) }
+                    : {}),
+                },
+              },
             }),
           },
         ],
