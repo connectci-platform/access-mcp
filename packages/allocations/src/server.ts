@@ -2254,15 +2254,23 @@ sort_by: "date_desc"
       // Step 3: Cross-validate with institution matching. Match against the
       // award's ISOLATED institution field, not the flattened blob — the
       // blob also contains the PI name/title/amount, which widens the
-      // false-positive surface for a substring-style match.
-      const institutionValidatedAwards = relevantAwards.filter((award) =>
+      // false-positive surface for a substring-style match. Split into the
+      // two demote tiers (Task 5's shared contract): confirmedAwards is the
+      // primary (institution-validated) tier; nameOnlyAwards is the
+      // complement — name-matched but institution-unconfirmed namesakes.
+      const confirmedAwards = relevantAwards.filter((award) =>
         this.validateInstitutionMatch(award.institution, accessProject.piInstitution)
+      );
+      const nameOnlyAwards = relevantAwards.filter(
+        (award) => !this.validateInstitutionMatch(award.institution, accessProject.piInstitution)
       );
 
       // Step 4: Analyze temporal alignment (operates on the display blob —
-      // it regex-extracts years from the full award text).
+      // it regex-extracts years from the full award text). Only meaningful
+      // for confirmed awards; computed lazily below, gated the same as its
+      // display.
       const temporalAnalysis = this.analyzeTemporalAlignment(
-        institutionValidatedAwards.map((award) => award.blob),
+        confirmedAwards.map((award) => award.blob),
         accessProject.beginDate,
         accessProject.endDate
       );
@@ -2281,44 +2289,35 @@ sort_by: "date_desc"
       result += `**🔍 NSF Award Search Strategy:**\n`;
       result += `• **Name Variations Searched:** ${piNameVariations.join(", ")}\n`;
       result += `• **Total NSF Responses:** ${nsfSearchResults.size}\n`;
-      result += `• **Raw Awards Found:** ${relevantAwards.length}\n`;
-      result += `• **Institution-Validated Awards:** ${institutionValidatedAwards.length}\n\n`;
+      result += `• **Institution-Validated Awards:** ${confirmedAwards.length}\n\n`;
 
-      if (institutionValidatedAwards.length > 0) {
-        result += `**🏆 Validated NSF Awards:**\n`;
-        institutionValidatedAwards.forEach((award, index) => {
-          result += `${index + 1}. ${award.blob}\n`;
-        });
-        result += `\n`;
+      // The shared demote renderer (Task 5) is the ONLY place award data
+      // (titles/numbers/institutions) is emitted for this path — it always
+      // shows both tiers (confirmed primary + demoted name-only secondary),
+      // replacing the old mutually-exclusive fallback that dropped
+      // name-only namesakes whenever a confirmed award existed, and the old
+      // leaky full-blob render of name-only awards when nothing confirmed.
+      result += `**🏆 NSF Award Analysis:**\n`;
+      result += this.renderNSFFundingTiers({ accessProject, confirmedAwards, nameOnlyAwards });
+      result += `\n`;
 
+      if (confirmedAwards.length > 0) {
         result += `**⏰ Temporal Analysis:**\n${temporalAnalysis}\n\n`;
 
         result += `**🎯 Funding Integration Insights:**\n`;
-        result += `• **Strong Correlation:** ${institutionValidatedAwards.length} validated NSF award(s) for this PI\n`;
+        result += `• **Strong Correlation:** ${confirmedAwards.length} validated NSF award(s) for this PI\n`;
         result += `• **Research Continuity:** NSF funding supports computational research on ACCESS\n`;
         result += `• **Resource Optimization:** Federal investment leverages cyberinfrastructure\n`;
         result += `• **Impact Multiplier:** Combined funding amplifies research potential\n`;
-      } else {
-        result += `**🏆 NSF Award Analysis:**\n`;
-        if (relevantAwards.length > 0) {
-          result += `Found ${relevantAwards.length} potential awards but none passed institution validation:\n`;
-          relevantAwards.slice(0, 3).forEach((award, index) => {
-            result += `${index + 1}. ${award.blob}\n`;
-          });
-          result += `\n**⚠️ Validation Issues:**\n`;
-          result += `• Institution names may differ between ACCESS and NSF systems\n`;
-          result += `• PI may have moved institutions since award\n`;
-          result += `• Awards may be under different name formats\n`;
-        } else {
-          result += `No NSF awards found for PI "${accessProject.pi}" variations.\n\n`;
-          result += `**💡 Possible Explanations:**\n`;
-          result += `• PI may have NSF funding under different name format\n`;
-          result += `• Research may be funded by other federal agencies (DOE, NIH, etc.)\n`;
-          result += `• Early career researcher or industry collaboration\n`;
-          result += `• Exploratory ACCESS allocation for preliminary work\n`;
-        }
+      } else if (relevantAwards.length === 0) {
+        result += `No NSF awards found for PI "${accessProject.pi}" variations.\n\n`;
+        result += `**💡 Possible Explanations:**\n`;
+        result += `• PI may have NSF funding under different name format\n`;
+        result += `• Research may be funded by other federal agencies (DOE, NIH, etc.)\n`;
+        result += `• Early career researcher or industry collaboration\n`;
+        result += `• Exploratory ACCESS allocation for preliminary work\n\n`;
 
-        result += `\n**🔬 Alternative Analysis:**\n`;
+        result += `**🔬 Alternative Analysis:**\n`;
         result += `• **Field-based Assessment:** Compare with other ${accessProject.fos} projects\n`;
         result += `• **Resource Utilization:** Analyze computational requirements vs. allocation\n`;
         result += `• **Institution Profile:** Review overall ${accessProject.piInstitution} funding patterns\n`;
