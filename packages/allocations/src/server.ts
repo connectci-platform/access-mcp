@@ -2729,8 +2729,13 @@ sort_by: "date_desc"
           result += `• **ACCESS PI:** ${correlation.accessProject.pi} (${correlation.accessProject.piInstitution})\n`;
           result += `• **Field:** ${correlation.accessProject.fos}\n`;
           result += `• **Resources:** ${this.summarizeResources(correlation.accessProject.resources)}\n`;
-          result += `• **NSF Awards:** ${correlation.nsfAwards.length} award(s) found\n`;
-          correlation.nsfAwards.forEach((award) => {
+          // TODO(Task 5): render confirmedAwards/nameOnlyAwards as distinct
+          // tiers (e.g. "institution-confirmed" vs "name-only" labels).
+          // This just concatenates both tiers to keep the tool compiling
+          // and displaying awards; Task 5 owns the real tiered rendering.
+          const allAwards = [...correlation.confirmedAwards, ...correlation.nameOnlyAwards];
+          result += `• **NSF Awards:** ${allAwards.length} award(s) found\n`;
+          allAwards.forEach((award) => {
             result += `  - ${award.blob}\n`;
           });
           result += `\n`;
@@ -2789,25 +2794,39 @@ sort_by: "date_desc"
       .slice(0, limit);
   }
 
-  // Core cross-referencing logic
+  // Core cross-referencing logic.
+  //
+  // Confirmed matches (validateInstitutionMatch true) are the primary,
+  // authoritative tier; name-only matches are a lossy secondary tier. We
+  // must not let `limit` cut the batch scan or the correlations array
+  // before confirmed-vs-name-only ranking happens, or a name-only match
+  // earlier in `accessProjects` order can consume a slot and starve a
+  // later institution-confirmed match out of the results entirely. So:
+  // scan ALL projects (no early exit on correlations.length < limit),
+  // partition each project's awards into confirmedAwards/nameOnlyAwards,
+  // rank institution-confirmed correlations before name-only ones, THEN
+  // slice to `limit`.
   private async crossReferenceWithNSF(
     accessProjects: Project[],
     limit: number
   ): Promise<
     Array<{
       accessProject: Project;
-      nsfAwards: NSFAward[];
+      confirmedAwards: NSFAward[];
+      nameOnlyAwards: NSFAward[];
     }>
   > {
-    const correlations: Array<{ accessProject: Project; nsfAwards: NSFAward[] }> = [];
+    const correlations: Array<{
+      accessProject: Project;
+      confirmedAwards: NSFAward[];
+      nameOnlyAwards: NSFAward[];
+    }> = [];
 
-    // Process projects in batches to avoid overwhelming the NSF server
+    // Process projects in batches to avoid overwhelming the NSF server.
+    // No limit-based early exit here: ranking confirmed-before-name-only
+    // must see every candidate before the batch limit is applied below.
     const batchSize = 5;
-    for (
-      let i = 0;
-      i < Math.min(accessProjects.length, limit) && correlations.length < limit;
-      i += batchSize
-    ) {
+    for (let i = 0; i < accessProjects.length; i += batchSize) {
       const batch = accessProjects.slice(i, i + batchSize);
 
       for (const project of batch) {
@@ -2823,9 +2842,18 @@ sort_by: "date_desc"
           const nsfAwards = this.parseNSFResponse(nsfResponse, project.pi);
 
           if (nsfAwards.length > 0) {
+            // Partition before any slicing: confirmed matches must not be
+            // pushed out by name-only ones even within a single PI's awards.
+            const confirmedAwards = nsfAwards.filter((award) =>
+              this.validateInstitutionMatch(award.institution, project.piInstitution)
+            );
+            const nameOnlyAwards = nsfAwards.filter(
+              (award) => !this.validateInstitutionMatch(award.institution, project.piInstitution)
+            );
             correlations.push({
               accessProject: project,
-              nsfAwards: nsfAwards,
+              confirmedAwards,
+              nameOnlyAwards,
             });
           }
 
@@ -2839,7 +2867,19 @@ sort_by: "date_desc"
       }
     }
 
-    return correlations;
+    // Rank institution-confirmed correlations before name-only ones, THEN
+    // cut to `limit` — so a name-only match never starves a confirmed
+    // match out of the returned set. Array.sort is stable (ES2019+), so
+    // relative project order is preserved within each tier.
+    const ranked = correlations
+      .slice()
+      .sort((a, b) => {
+        const aConfirmed = a.confirmedAwards.length > 0 ? 0 : 1;
+        const bConfirmed = b.confirmedAwards.length > 0 ? 0 : 1;
+        return aConfirmed - bConfirmed;
+      });
+
+    return ranked.slice(0, limit);
   }
 
   // Parse NSF server response and extract relevant awards
