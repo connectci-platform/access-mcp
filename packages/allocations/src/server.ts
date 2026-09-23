@@ -56,6 +56,18 @@ interface ProjectsResponse {
   filters: Record<string, unknown>;
 }
 
+// One parsed NSF award. `blob` is the existing flat pipe-joined display
+// string (Award | PI | Institution | Amount); `institution` is the ISOLATED
+// `Institution:` field value (label stripped, trimmed), or "" if the award
+// had no Institution line. The isolated field exists so
+// validateInstitutionMatch can anchor on just the institution text instead
+// of substring-matching the whole blob (which also contains the PI name,
+// award title, and dollar amount — a much wider false-positive surface).
+interface NSFAward {
+  blob: string;
+  institution: string;
+}
+
 interface SearchProjectsArgs {
   project_id?: number;
   similar_to?: number;
@@ -2210,7 +2222,7 @@ sort_by: "date_desc"
 
       // Step 2: Search NSF database with exact name matching
       const nsfSearchResults = new Map<string, string>();
-      const relevantAwards: string[] = [];
+      const relevantAwards: NSFAward[] = [];
 
       for (const nameVariation of piNameVariations) {
         try {
@@ -2239,14 +2251,18 @@ sort_by: "date_desc"
         }
       }
 
-      // Step 3: Cross-validate with institution matching
+      // Step 3: Cross-validate with institution matching. Match against the
+      // award's ISOLATED institution field, not the flattened blob — the
+      // blob also contains the PI name/title/amount, which widens the
+      // false-positive surface for a substring-style match.
       const institutionValidatedAwards = relevantAwards.filter((award) =>
-        this.validateInstitutionMatch(award, accessProject.piInstitution)
+        this.validateInstitutionMatch(award.institution, accessProject.piInstitution)
       );
 
-      // Step 4: Analyze temporal alignment
+      // Step 4: Analyze temporal alignment (operates on the display blob —
+      // it regex-extracts years from the full award text).
       const temporalAnalysis = this.analyzeTemporalAlignment(
-        institutionValidatedAwards,
+        institutionValidatedAwards.map((award) => award.blob),
         accessProject.beginDate,
         accessProject.endDate
       );
@@ -2271,7 +2287,7 @@ sort_by: "date_desc"
       if (institutionValidatedAwards.length > 0) {
         result += `**🏆 Validated NSF Awards:**\n`;
         institutionValidatedAwards.forEach((award, index) => {
-          result += `${index + 1}. ${award}\n`;
+          result += `${index + 1}. ${award.blob}\n`;
         });
         result += `\n`;
 
@@ -2287,7 +2303,7 @@ sort_by: "date_desc"
         if (relevantAwards.length > 0) {
           result += `Found ${relevantAwards.length} potential awards but none passed institution validation:\n`;
           relevantAwards.slice(0, 3).forEach((award, index) => {
-            result += `${index + 1}. ${award}\n`;
+            result += `${index + 1}. ${award.blob}\n`;
           });
           result += `\n**⚠️ Validation Issues:**\n`;
           result += `• Institution names may differ between ACCESS and NSF systems\n`;
@@ -2466,17 +2482,25 @@ sort_by: "date_desc"
     return accessTokens.every((token) => nsfTokens.has(token));
   }
 
+  // Isolate the value of a NSF response "Institution:" line — strip the
+  // label and surrounding whitespace so callers can match against just the
+  // institution text, not the whole pipe-joined award blob.
+  private isolateInstitution(line: string): string {
+    return line.replace(/.*Institution:\s*/i, "").trim();
+  }
+
   // Enhanced NSF response parsing with exact matching
-  private parseNSFResponseExact(nsfResponse: string, expectedPI: string): string[] {
+  private parseNSFResponseExact(nsfResponse: string, expectedPI: string): NSFAward[] {
     if (!nsfResponse || nsfResponse.includes("not available") || nsfResponse.includes("Error")) {
       return [];
     }
 
-    const awards: string[] = [];
+    const awards: NSFAward[] = [];
     const lines = nsfResponse.split("\n");
 
     let currentAward = "";
     let currentPI = "";
+    let currentInstitutionLine = "";
     let currentInstitution = "";
     let isExactPIMatch = false;
 
@@ -2484,12 +2508,16 @@ sort_by: "date_desc"
       if (line.includes("Award Number:") || line.includes("Title:")) {
         // Process previous award
         if (currentAward && isExactPIMatch) {
-          awards.push(`${currentAward} | ${currentPI} | ${currentInstitution}`);
+          awards.push({
+            blob: `${currentAward} | ${currentPI} | ${currentInstitutionLine}`,
+            institution: currentInstitution,
+          });
         }
 
         // Start new award
         currentAward = line.trim();
         currentPI = "";
+        currentInstitutionLine = "";
         currentInstitution = "";
         isExactPIMatch = false;
       } else if (line.includes("Principal Investigator:")) {
@@ -2502,7 +2530,8 @@ sort_by: "date_desc"
         const nsfPiName = line.replace(/.*Principal Investigator:\s*/i, "");
         isExactPIMatch = this.piNameMatches(nsfPiName, expectedPI);
       } else if (line.includes("Institution:")) {
-        currentInstitution = line.trim();
+        currentInstitutionLine = line.trim();
+        currentInstitution = this.isolateInstitution(line);
       } else if (line.includes("Amount:") && currentAward) {
         currentAward += " | " + line.trim();
       }
@@ -2510,20 +2539,68 @@ sort_by: "date_desc"
 
     // Don't forget the last award
     if (currentAward && isExactPIMatch) {
-      awards.push(`${currentAward} | ${currentPI} | ${currentInstitution}`);
+      awards.push({
+        blob: `${currentAward} | ${currentPI} | ${currentInstitutionLine}`,
+        institution: currentInstitution,
+      });
     }
 
     return awards.slice(0, 5); // Limit to 5 most relevant
   }
 
-  // Validate that an NSF award's text refers to a given ACCESS institution.
-  // NSF award text is free-form, so match against the NSF query variants (which
-  // do NOT include the "University of X" <-> "X University" swap).
-  private validateInstitutionMatch(nsfAward: string, accessInstitution: string): boolean {
-    const nsfLower = nsfAward.toLowerCase();
-    return this.nsfQueryVariants(accessInstitution).some((variant) =>
-      nsfLower.includes(variant.toLowerCase())
-    );
+  // Discriminating institution match: neither a hard equality check (which
+  // misses punctuation-only differences between NSF and ACCESS spellings,
+  // e.g. NSF's hyphenated "University of California-Berkeley" vs ACCESS's
+  // comma-form "University of California, Berkeley") nor plain token-set
+  // containment (which over-matches — "Purdue University"'s tokens
+  // {purdue, university} are a subset of "Indiana University-Purdue
+  // University Fort Wayne"'s tokens) is sufficient alone. This normalizes
+  // punctuation (lowercase; hyphen/comma -> space; " at " stripped; collapse
+  // whitespace) and then requires either normalized full-string equality OR
+  // bidirectional equality of the DISTINCTIVE token sets (stopwords like
+  // "university"/"of"/"state"/"the"/"at"/"college" dropped from both sides).
+  // Requiring the distinctive tokens to match as a SET in both directions —
+  // not one-way containment — is what breaks the over-match guards: "Middle"
+  // and "Indiana"/"Fort Wayne" are distinctive tokens present on the NSF side
+  // but absent from the ACCESS side, so the sets differ and the match fails,
+  // while the rescue cases (pure punctuation differences) leave both sides
+  // with identical distinctive-token sets.
+  private validateInstitutionMatch(nsfInstitution: string, accessInstitution: string): boolean {
+    const normalize = (s: string): string =>
+      s
+        .toLowerCase()
+        .replace(/\bat\b/g, " ")
+        .replace(/[-,]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    const nsfNormalized = normalize(nsfInstitution);
+    const accessNormalized = normalize(accessInstitution);
+    if (!nsfNormalized || !accessNormalized) {
+      return false;
+    }
+    if (nsfNormalized === accessNormalized) {
+      return true;
+    }
+
+    const STOPWORDS = new Set(["university", "of", "the", "state", "at", "college"]);
+    const distinctiveTokens = (normalized: string): Set<string> =>
+      new Set(normalized.split(" ").filter((t) => t.length > 0 && !STOPWORDS.has(t)));
+
+    const nsfDistinctive = distinctiveTokens(nsfNormalized);
+    const accessDistinctive = distinctiveTokens(accessNormalized);
+    if (nsfDistinctive.size === 0 || accessDistinctive.size === 0) {
+      return false;
+    }
+    if (nsfDistinctive.size !== accessDistinctive.size) {
+      return false;
+    }
+    for (const token of nsfDistinctive) {
+      if (!accessDistinctive.has(token)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   // Analyze temporal alignment between NSF awards and ACCESS project
@@ -2642,7 +2719,7 @@ sort_by: "date_desc"
           result += `• **Resources:** ${this.summarizeResources(correlation.accessProject.resources)}\n`;
           result += `• **NSF Awards:** ${correlation.nsfAwards.length} award(s) found\n`;
           correlation.nsfAwards.forEach((award) => {
-            result += `  - ${award}\n`;
+            result += `  - ${award.blob}\n`;
           });
           result += `\n`;
         });
@@ -2707,10 +2784,10 @@ sort_by: "date_desc"
   ): Promise<
     Array<{
       accessProject: Project;
-      nsfAwards: string[];
+      nsfAwards: NSFAward[];
     }>
   > {
-    const correlations: Array<{ accessProject: Project; nsfAwards: string[] }> = [];
+    const correlations: Array<{ accessProject: Project; nsfAwards: NSFAward[] }> = [];
 
     // Process projects in batches to avoid overwhelming the NSF server
     const batchSize = 5;
@@ -2754,23 +2831,25 @@ sort_by: "date_desc"
   }
 
   // Parse NSF server response and extract relevant awards
-  private parseNSFResponse(nsfResponse: string, expectedPI: string): string[] {
+  private parseNSFResponse(nsfResponse: string, expectedPI: string): NSFAward[] {
     if (!nsfResponse || nsfResponse.includes("not available") || nsfResponse.includes("Error")) {
       return [];
     }
 
-    const awards: string[] = [];
+    const awards: NSFAward[] = [];
     const lines = nsfResponse.split("\n");
 
     let currentAward = "";
+    let currentInstitution = "";
     let isRelevant = false;
 
     for (const line of lines) {
       if (line.includes("Award Number:") || line.includes("Title:")) {
         if (currentAward && isRelevant) {
-          awards.push(currentAward);
+          awards.push({ blob: currentAward, institution: currentInstitution });
         }
         currentAward = line.trim();
+        currentInstitution = "";
         isRelevant = false;
       } else if (line.includes("Principal Investigator:")) {
         currentAward += " | " + line.trim();
@@ -2783,11 +2862,13 @@ sort_by: "date_desc"
         isRelevant = this.piNameMatches(nsfPiName, expectedPI);
       } else if (line.includes("Institution:") && currentAward) {
         currentAward += " | " + line.trim();
+        currentInstitution = this.isolateInstitution(line);
       } else if (line.includes("Amount:") && currentAward) {
         currentAward += " | " + line.trim();
         if (isRelevant) {
-          awards.push(currentAward);
+          awards.push({ blob: currentAward, institution: currentInstitution });
           currentAward = "";
+          currentInstitution = "";
           isRelevant = false;
         }
       }
@@ -2834,12 +2915,12 @@ sort_by: "date_desc"
   /**
    * Name forms to query the NSF award API with. NSF awardee names are free text
    * with no controlled vocabulary, so we try light punctuation normalizations of
-   * the canonical name: comma-stripped and "at"-stripped. These bridge only
-   * punctuation differences — they do NOT reach NSF's hyphenated or acronym
-   * awardee spellings (e.g. "University of California-Berkeley", "UC Berkeley"),
-   * so NSF recall is best-effort (tracked as a follow-up). Deliberately does NOT
-   * generate the "University of X" <-> "X University" swap, which manufactures
-   * matches to genuinely different institutions.
+   * the canonical name: comma-stripped, hyphen-stripped, and "at"-stripped.
+   * These bridge only punctuation differences — they do NOT reach NSF's
+   * acronym awardee spellings (e.g. "UC Berkeley"), so NSF recall is
+   * best-effort (tracked as a follow-up). Deliberately does NOT generate the
+   * "University of X" <-> "X University" swap, which manufactures matches to
+   * genuinely different institutions.
    */
   private nsfQueryVariants(canonical: string): string[] {
     const variants = new Set<string>([canonical]);
@@ -2847,6 +2928,8 @@ sort_by: "date_desc"
     variants.add(canonical.replace(/,\s*/g, " ").replace(/\s+/g, " ").trim());
     // "University of Texas at Austin" -> "University of Texas Austin"
     variants.add(canonical.replace(/\s+at\s+/gi, " "));
+    // "University of Illinois Urbana-Champaign" -> "University of Illinois Urbana Champaign"
+    variants.add(canonical.replace(/-/g, " ").replace(/\s+/g, " ").trim());
     return [...variants].filter((v) => v.length > 0);
   }
 
