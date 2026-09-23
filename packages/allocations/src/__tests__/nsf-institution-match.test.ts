@@ -66,6 +66,27 @@ describe("validateInstitutionMatch", () => {
       validateInstitutionMatch("Middle Tennessee State University", "Tennessee State University"),
     ).toBe(false);
   });
+
+  // Regression: "state" and "college" are DISTINGUISHING tokens, not filler.
+  // If they were dropped as stopwords, "Ohio State University" and "Ohio
+  // University" would both reduce to the single distinctive token {ohio} and
+  // wrongly compare equal — collapsing two separate real universities. Same
+  // failure mode for "X State University" vs "University of X" generally
+  // (Michigan State/U-Michigan, Arizona State/U-Arizona, etc.), and
+  // independently for "college" (Boston College vs Boston University,
+  // Dartmouth College vs Dartmouth University).
+  it("does NOT match 'Ohio State University' against 'Ohio University' (state is distinguishing)", () => {
+    expect(validateInstitutionMatch("Ohio State University", "Ohio University")).toBe(false);
+  });
+
+  it("does NOT match 'Boston College' against 'Boston University' (college is distinguishing)", () => {
+    expect(validateInstitutionMatch("Boston College", "Boston University")).toBe(false);
+  });
+
+  it("DOES match 'Ohio State University' against itself and against 'The Ohio State University' (legit state match survives)", () => {
+    expect(validateInstitutionMatch("Ohio State University", "Ohio State University")).toBe(true);
+    expect(validateInstitutionMatch("Ohio State University", "The Ohio State University")).toBe(true);
+  });
 });
 
 describe("parseNSFResponse isolates the institution field from the blob", () => {

@@ -2557,14 +2557,26 @@ sort_by: "date_desc"
   // University Fort Wayne"'s tokens) is sufficient alone. This normalizes
   // punctuation (lowercase; hyphen/comma -> space; " at " stripped; collapse
   // whitespace) and then requires either normalized full-string equality OR
-  // bidirectional equality of the DISTINCTIVE token sets (stopwords like
-  // "university"/"of"/"state"/"the"/"at"/"college" dropped from both sides).
-  // Requiring the distinctive tokens to match as a SET in both directions —
-  // not one-way containment — is what breaks the over-match guards: "Middle"
-  // and "Indiana"/"Fort Wayne" are distinctive tokens present on the NSF side
-  // but absent from the ACCESS side, so the sets differ and the match fails,
-  // while the rescue cases (pure punctuation differences) leave both sides
-  // with identical distinctive-token sets.
+  // bidirectional equality of the DISTINCTIVE token sets (a small STOPWORDS
+  // set dropped from both sides). Requiring the distinctive tokens to match
+  // as a SET in both directions — not one-way containment — is what breaks
+  // the over-match guards: "Middle" and "Indiana"/"Fort Wayne" are
+  // distinctive tokens present on the NSF side but absent from the ACCESS
+  // side, so the sets differ and the match fails, while the rescue cases
+  // (pure punctuation differences) leave both sides with identical
+  // distinctive-token sets.
+  //
+  // STOPWORDS discipline: a token belongs in STOPWORDS only if it NEVER
+  // distinguishes two real institutions — "university"/"of"/"the"/"at"
+  // qualify (no real institution pair differs solely by one having "the" or
+  // "of" and the other not, in a way that matters here). "state" and
+  // "college" do NOT qualify and must stay OUT: they are load-bearing in
+  // whole families of distinct real institutions ("Ohio State University" vs
+  // "Ohio University", "Michigan State" vs "University of Michigan",
+  // "Boston College" vs "Boston University"). Dropping a distinguishing
+  // token lets two different schools collapse onto the same distinctive-
+  // token set and wrongly compare equal — the dangerous direction, since it
+  // promotes a wrong award into the confident/primary tier.
   private validateInstitutionMatch(nsfInstitution: string, accessInstitution: string): boolean {
     const normalize = (s: string): string =>
       s
@@ -2583,7 +2595,7 @@ sort_by: "date_desc"
       return true;
     }
 
-    const STOPWORDS = new Set(["university", "of", "the", "state", "at", "college"]);
+    const STOPWORDS = new Set(["university", "of", "the", "at"]);
     const distinctiveTokens = (normalized: string): Set<string> =>
       new Set(normalized.split(" ").filter((t) => t.length > 0 && !STOPWORDS.has(t)));
 
