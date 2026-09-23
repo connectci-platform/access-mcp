@@ -2223,6 +2223,13 @@ sort_by: "date_desc"
       // Step 2: Search NSF database with exact name matching
       const nsfSearchResults = new Map<string, string>();
       const relevantAwards: NSFAward[] = [];
+      // Counts variations that returned a USABLE (non-error-shaped) body —
+      // distinct from relevantAwards.length, which can legitimately be zero
+      // on a usable response that just finds nothing. If EVERY variation
+      // fails (throws OR returns an error-shaped body), usableResponseCount
+      // stays 0 and funding status is UNKNOWN, not "unfunded" (mirrors
+      // Task 6's fix on the bulk path — see isNSFErrorResponse).
+      let usableResponseCount = 0;
 
       for (const nameVariation of piNameVariations) {
         try {
@@ -2232,11 +2239,8 @@ sort_by: "date_desc"
           })) as { content?: Array<{ text?: string }> };
           const nsfResponse = this.formatNsfResponse(nsfData);
 
-          if (
-            nsfResponse &&
-            !nsfResponse.includes("Error") &&
-            !nsfResponse.includes("not available")
-          ) {
+          if (!this.isNSFErrorResponse(nsfResponse)) {
+            usableResponseCount++;
             nsfSearchResults.set(nameVariation, nsfResponse);
 
             // Parse and filter for exact matches
@@ -2291,36 +2295,49 @@ sort_by: "date_desc"
       result += `• **Total NSF Responses:** ${nsfSearchResults.size}\n`;
       result += `• **Institution-Validated Awards:** ${confirmedAwards.length}\n\n`;
 
-      // The shared demote renderer (Task 5) is the ONLY place award data
-      // (titles/numbers/institutions) is emitted for this path — it always
-      // shows both tiers (confirmed primary + demoted name-only secondary),
-      // replacing the old mutually-exclusive fallback that dropped
-      // name-only namesakes whenever a confirmed award existed, and the old
-      // leaky full-blob render of name-only awards when nothing confirmed.
       result += `**🏆 NSF Award Analysis:**\n`;
-      result += this.renderNSFFundingTiers({ accessProject, confirmedAwards, nameOnlyAwards });
-      result += `\n`;
 
-      if (confirmedAwards.length > 0) {
-        result += `**⏰ Temporal Analysis:**\n${temporalAnalysis}\n\n`;
+      if (usableResponseCount === 0) {
+        // Every name variation either threw or returned an error-shaped
+        // body — funding status is UNKNOWN, not "unfunded". Rendering the
+        // demote tiers (both empty) or the unfunded block here would be the
+        // exact false no-match/unavailable conflation design decision #5
+        // forbids, so this branch REPLACES both rather than falling through.
+        result += `**⚠️ NSF lookup unavailable — funding status unknown for this PI.**\n`;
+      } else {
+        // The shared demote renderer (Task 5) is the ONLY place award data
+        // (titles/numbers/institutions) is emitted for this path — it always
+        // shows both tiers (confirmed primary + demoted name-only secondary),
+        // replacing the old mutually-exclusive fallback that dropped
+        // name-only namesakes whenever a confirmed award existed, and the old
+        // leaky full-blob render of name-only awards when nothing confirmed.
+        result += this.renderNSFFundingTiers({ accessProject, confirmedAwards, nameOnlyAwards });
+        result += `\n`;
 
-        result += `**🎯 Funding Integration Insights:**\n`;
-        result += `• **Strong Correlation:** ${confirmedAwards.length} validated NSF award(s) for this PI\n`;
-        result += `• **Research Continuity:** NSF funding supports computational research on ACCESS\n`;
-        result += `• **Resource Optimization:** Federal investment leverages cyberinfrastructure\n`;
-        result += `• **Impact Multiplier:** Combined funding amplifies research potential\n`;
-      } else if (relevantAwards.length === 0) {
-        result += `No NSF awards found for PI "${accessProject.pi}" variations.\n\n`;
-        result += `**💡 Possible Explanations:**\n`;
-        result += `• PI may have NSF funding under different name format\n`;
-        result += `• Research may be funded by other federal agencies (DOE, NIH, etc.)\n`;
-        result += `• Early career researcher or industry collaboration\n`;
-        result += `• Exploratory ACCESS allocation for preliminary work\n\n`;
+        if (confirmedAwards.length > 0) {
+          result += `**⏰ Temporal Analysis:**\n${temporalAnalysis}\n\n`;
 
-        result += `**🔬 Alternative Analysis:**\n`;
-        result += `• **Field-based Assessment:** Compare with other ${accessProject.fos} projects\n`;
-        result += `• **Resource Utilization:** Analyze computational requirements vs. allocation\n`;
-        result += `• **Institution Profile:** Review overall ${accessProject.piInstitution} funding patterns\n`;
+          result += `**🎯 Funding Integration Insights:**\n`;
+          result += `• **Strong Correlation:** ${confirmedAwards.length} validated NSF award(s) for this PI\n`;
+          result += `• **Research Continuity:** NSF funding supports computational research on ACCESS\n`;
+          result += `• **Resource Optimization:** Federal investment leverages cyberinfrastructure\n`;
+          result += `• **Impact Multiplier:** Combined funding amplifies research potential\n`;
+        } else if (relevantAwards.length === 0) {
+          // A usable response that legitimately found nothing IS a real
+          // no-match (usableResponseCount > 0 guarantees at least one
+          // variation returned a non-error body).
+          result += `No NSF awards found for PI "${accessProject.pi}" variations.\n\n`;
+          result += `**💡 Possible Explanations:**\n`;
+          result += `• PI may have NSF funding under different name format\n`;
+          result += `• Research may be funded by other federal agencies (DOE, NIH, etc.)\n`;
+          result += `• Early career researcher or industry collaboration\n`;
+          result += `• Exploratory ACCESS allocation for preliminary work\n\n`;
+
+          result += `**🔬 Alternative Analysis:**\n`;
+          result += `• **Field-based Assessment:** Compare with other ${accessProject.fos} projects\n`;
+          result += `• **Resource Utilization:** Analyze computational requirements vs. allocation\n`;
+          result += `• **Institution Profile:** Review overall ${accessProject.piInstitution} funding patterns\n`;
+        }
       }
 
       return {
@@ -3226,7 +3243,7 @@ sort_by: "date_desc"
       // Cross-reference analysis
       result += `\n**🔗 Cross-Platform Analysis:**\n`;
       if (piCrossReference.matches > 0) {
-        result += `• **${piCrossReference.matches}** ACCESS PIs have identifiable NSF awards\n`;
+        result += `• **${piCrossReference.matches}** ACCESS PIs have confirmed NSF awards\n`;
         result += `• **Strong institutional research profile** with federal funding\n`;
         result += `• ACCESS resources effectively supporting NSF-funded research\n`;
         result += piCrossReference.details;
@@ -3332,10 +3349,20 @@ sort_by: "date_desc"
           !nsfResponse.includes("Error") &&
           !nsfResponse.includes("not available")
         ) {
+          // relevantAwards is the UN-partitioned name-matched set (confirmed
+          // + name-only namesakes mixed). Rendering its raw length as "N NSF
+          // award(s)" is the laundering vector the design forbids (a bare
+          // namesake count reads as "identifiable NSF awards" for this ACCESS
+          // PI). Partition by institution and only count/render the
+          // institution-confirmed subset — this path has no demote-secondary
+          // contract, so name-only awards simply don't appear here at all.
           const relevantAwards = this.parseNSFResponse(nsfResponse, project.pi);
-          if (relevantAwards.length > 0) {
+          const confirmedAwards = relevantAwards.filter((award) =>
+            this.validateInstitutionMatch(award.institution, project.piInstitution)
+          );
+          if (confirmedAwards.length > 0) {
             matches++;
-            details += `• **${project.pi}:** ${relevantAwards.length} NSF award(s) - ${project.fos}\n`;
+            details += `• **${project.pi}:** ${confirmedAwards.length} confirmed NSF award(s) - ${project.fos}\n`;
           }
         }
 
