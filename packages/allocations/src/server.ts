@@ -2439,6 +2439,33 @@ sort_by: "date_desc"
     return [...new Set(variations.filter((v) => v && v.trim().length > 0))];
   }
 
+  // Token/word-boundary PI name match: every token of accessPi must appear as
+  // a WHOLE token in nsfPiName, order-insensitive. Replaces raw substring
+  // matching, which both (a) forward-matches "Matthew Long" against "Matthew
+  // Longstreet" and (b) reverse-matches a short/initial NSF PI string like
+  // "Li" against every "Wanlu Li" variation. Guards the reverse direction by
+  // requiring the ACCESS-side token set to be non-empty and, since it's the
+  // side we tokenize and require full containment of, a bare initial ("Li",
+  // "W Li") on the NSF side naturally fails because it lacks the "wanlu"
+  // token this predicate demands.
+  private piNameMatches(nsfPiName: string, accessPi: string): boolean {
+    const tokenize = (name: string): string[] =>
+      name
+        .toLowerCase()
+        .replace(/[.,]/g, " ")
+        .split(/\s+/)
+        .filter((t) => t.length > 0);
+
+    const nsfTokens = new Set(tokenize(nsfPiName));
+    const accessTokens = tokenize(accessPi);
+
+    if (accessTokens.length === 0 || nsfTokens.size === 0) {
+      return false;
+    }
+
+    return accessTokens.every((token) => nsfTokens.has(token));
+  }
+
   // Enhanced NSF response parsing with exact matching
   private parseNSFResponseExact(nsfResponse: string, expectedPI: string): string[] {
     if (!nsfResponse || nsfResponse.includes("not available") || nsfResponse.includes("Error")) {
@@ -2467,20 +2494,13 @@ sort_by: "date_desc"
         isExactPIMatch = false;
       } else if (line.includes("Principal Investigator:")) {
         currentPI = line.trim();
-        // Exact name matching with multiple variations
-        const piInResponse = line.toLowerCase();
-        const expectedVariations = this.generatePINameVariations(expectedPI);
-
-        isExactPIMatch = expectedVariations.some((variation) => {
-          const normalizedVariation = variation.toLowerCase().replace(/[.,]/g, "");
-          const normalizedResponse = piInResponse.replace(/[.,]/g, "");
-          return (
-            normalizedResponse.includes(normalizedVariation) ||
-            normalizedVariation.includes(
-              normalizedResponse.replace(/principal investigator:\s*/i, "")
-            )
-          );
-        });
+        // Token/word-boundary name match (not raw substring — see
+        // piNameMatches). Match against the raw NSF PI name portion of the
+        // line; name-variation generation is retained upstream for query
+        // construction, not needed here since piNameMatches already handles
+        // token order and comma/period punctuation.
+        const nsfPiName = line.replace(/.*Principal Investigator:\s*/i, "");
+        isExactPIMatch = this.piNameMatches(nsfPiName, expectedPI);
       } else if (line.includes("Institution:")) {
         currentInstitution = line.trim();
       } else if (line.includes("Amount:") && currentAward) {
@@ -2754,10 +2774,13 @@ sort_by: "date_desc"
         isRelevant = false;
       } else if (line.includes("Principal Investigator:")) {
         currentAward += " | " + line.trim();
-        // Check if this award is actually for the expected PI (fuzzy match)
-        const piInResponse = line.toLowerCase();
-        const expectedParts = expectedPI.toLowerCase().split(" ");
-        isRelevant = expectedParts.some((part) => part.length > 2 && piInResponse.includes(part));
+        // Token/word-boundary name match (not raw substring — see
+        // piNameMatches). The prior gate matched on ANY name-part as a
+        // substring, which floods on both forward ("Matthew Long" inside
+        // "Matthew Longstreet") and reverse (any short surname-only NSF PI
+        // string) substrings.
+        const nsfPiName = line.replace(/.*Principal Investigator:\s*/i, "");
+        isRelevant = this.piNameMatches(nsfPiName, expectedPI);
       } else if (line.includes("Institution:") && currentAward) {
         currentAward += " | " + line.trim();
       } else if (line.includes("Amount:") && currentAward) {
