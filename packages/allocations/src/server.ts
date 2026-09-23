@@ -2164,6 +2164,30 @@ sort_by: "date_desc"
   }
 
   // NSF Integration Methods
+
+  /**
+   * Normalize a PI name for NSF `personnel` queries. ACCESS stores `project.pi`
+   * as "Last, First" (comma format). Measured against the live NSF API: comma
+   * format triggers a loose tokenized search that floods results with unrelated
+   * namesakes and can push the real person off the result cap; clean "First Last"
+   * returns the correct person, and NSF's personnel search is order-insensitive
+   * for clean two-token names. Already-clean or single-token names pass through
+   * unchanged.
+   */
+  private normalizePIQuery(pi: string): string {
+    const trimmed = pi.trim();
+    const commaIndex = trimmed.indexOf(",");
+    if (commaIndex === -1) {
+      return trimmed.replace(/\s+/g, " ");
+    }
+    const last = trimmed.slice(0, commaIndex).trim();
+    const first = trimmed.slice(commaIndex + 1).trim();
+    if (!last || !first) {
+      return trimmed.replace(/\s+/g, " ").replace(/,\s*$/, "").replace(/^,\s*/, "");
+    }
+    return `${first} ${last}`.replace(/\s+/g, " ");
+  }
+
   private async analyzeProjectFunding(projectId: number) {
     try {
       // Get the ACCESS project details from the complete corpus (D2 revalidation
@@ -2191,7 +2215,7 @@ sort_by: "date_desc"
       for (const nameVariation of piNameVariations) {
         try {
           const nsfData = (await this.callRemoteServer("nsf-awards", "search_nsf_awards", {
-            personnel: nameVariation,
+            personnel: this.normalizePIQuery(nameVariation),
             limit: 3,
           })) as { content?: Array<{ text?: string }> };
           const nsfResponse = this.formatNsfResponse(nsfData);
@@ -2681,7 +2705,7 @@ sort_by: "date_desc"
         try {
           // Search for NSF awards by PI name
           const nsfData = (await this.callRemoteServer("nsf-awards", "search_nsf_awards", {
-            personnel: project.pi,
+            personnel: this.normalizePIQuery(project.pi),
             limit: 3,
           })) as { content?: Array<{ text?: string }> };
           const nsfResponse = this.formatNsfResponse(nsfData);
@@ -3031,7 +3055,7 @@ sort_by: "date_desc"
       // Limit to first 10 for performance
       try {
         const nsfData = (await this.callRemoteServer("nsf-awards", "search_nsf_awards", {
-          personnel: project.pi,
+          personnel: this.normalizePIQuery(project.pi),
           limit: 2,
         })) as { content?: Array<{ text?: string }> };
         const nsfResponse = this.formatNsfResponse(nsfData);
