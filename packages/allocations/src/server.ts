@@ -2724,25 +2724,21 @@ sort_by: "date_desc"
         result += `• Check if institution appears under different official names\n`;
       } else {
         result += `**🔗 Cross-Referenced Funded Projects:**\n\n`;
+        let confirmedProjectCount = 0;
         fundedProjectCorrelations.forEach((correlation, index) => {
           result += `**${index + 1}. ${correlation.accessProject.requestTitle}**\n`;
           result += `• **ACCESS PI:** ${correlation.accessProject.pi} (${correlation.accessProject.piInstitution})\n`;
           result += `• **Field:** ${correlation.accessProject.fos}\n`;
           result += `• **Resources:** ${this.summarizeResources(correlation.accessProject.resources)}\n`;
-          // TODO(Task 5): render confirmedAwards/nameOnlyAwards as distinct
-          // tiers (e.g. "institution-confirmed" vs "name-only" labels).
-          // This just concatenates both tiers to keep the tool compiling
-          // and displaying awards; Task 5 owns the real tiered rendering.
-          const allAwards = [...correlation.confirmedAwards, ...correlation.nameOnlyAwards];
-          result += `• **NSF Awards:** ${allAwards.length} award(s) found\n`;
-          allAwards.forEach((award) => {
-            result += `  - ${award.blob}\n`;
-          });
+          result += this.renderNSFFundingTiers(correlation);
+          if (correlation.confirmedAwards.length > 0) {
+            confirmedProjectCount++;
+          }
           result += `\n`;
         });
 
         result += `**📊 Correlation Insights:**\n`;
-        result += `• **${fundedProjectCorrelations.length}** of ${accessProjects.length} ACCESS projects have identifiable NSF funding\n`;
+        result += `• **${confirmedProjectCount}** projects with confirmed NSF funding\n`;
         result += `• Cross-platform funding indicates sustained research programs\n`;
         result += `• ACCESS resources support federally-funded computational research\n`;
         result += `• Strong correlation suggests effective resource allocation\n`;
@@ -2761,6 +2757,55 @@ sort_by: "date_desc"
       if (authError) return authError;
       return this.errorResponse(`Error finding funded projects: ${handleApiError(error)}`);
     }
+  }
+
+  // Renders one correlation's confirmedAwards/nameOnlyAwards as two
+  // structurally separate blocks — the laundering-defense surface. The LLM
+  // consumer of this text launders hedges ("possible match" -> "is
+  // funded"), so the defense is structural, not wording:
+  //
+  //  - PRIMARY (confirmed) block is the ONLY place award identifiers,
+  //    institutions, or numbers appear. It only renders when
+  //    confirmedAwards is non-empty, and its header names the ACCESS PI and
+  //    the confirmed award's institution — a confident claim, because it IS
+  //    confirmed (Task 3's validateInstitutionMatch discriminated it).
+  //  - SECONDARY (name-only) block is deliberately LOSSY: a single fixed
+  //    conclusion sentence, never interpolated with the count, titles,
+  //    award numbers, or institutions of the name-only awards. Below the
+  //    suppress cap (SUPPRESS_CAP name-only awards or fewer) it still
+  //    states the same "treat as no confirmed funding" conclusion; above
+  //    the cap it collapses to a single fixed suppression string with zero
+  //    award data. Either way, no per-award content ever reaches this
+  //    block — lossy is the point.
+  //  - CONFIRMED = 0 (the common case) degrades the header to a safe,
+  //    unhedged "no confirmed funding" message and never emits a
+  //    "0 confirmed, N possible" style count — a count is itself a
+  //    re-laundering vector ("2 possible matches" reads as evidence).
+  private renderNSFFundingTiers(correlation: {
+    accessProject: Project;
+    confirmedAwards: NSFAward[];
+    nameOnlyAwards: NSFAward[];
+  }): string {
+    const SUPPRESS_CAP = 3;
+    let out = "";
+
+    if (correlation.confirmedAwards.length > 0) {
+      const confirmedInstitution = correlation.confirmedAwards[0].institution;
+      out += `• **NSF award(s) confirmed for ${correlation.accessProject.pi} at ${confirmedInstitution}:**\n`;
+      correlation.confirmedAwards.forEach((award) => {
+        out += `  - ${award.blob}\n`;
+      });
+    } else {
+      out += `• **No confirmed NSF funding found for this PI.**\n`;
+    }
+
+    if (correlation.nameOnlyAwards.length > SUPPRESS_CAP) {
+      out += `• common name — namesake matches suppressed\n`;
+    } else if (correlation.nameOnlyAwards.length > 0) {
+      out += `• These are unconfirmed namesake matches only (different institution). Treat as no confirmed NSF funding for this PI.\n`;
+    }
+
+    return out;
   }
 
   // Helper method to get projects by field directly
