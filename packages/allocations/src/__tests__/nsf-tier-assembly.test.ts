@@ -60,16 +60,20 @@ type Correlation = {
   nameOnlyAwards: Array<{ blob: string; institution: string }>;
 };
 
-function crossReference(
+async function crossReference(
   server: AllocationsServer,
   projects: Rec[],
   limit: number,
 ): Promise<Correlation[]> {
-  return (
+  const { correlations } = await (
     server as unknown as {
-      crossReferenceWithNSF: (projects: Rec[], limit: number) => Promise<Correlation[]>;
+      crossReferenceWithNSF: (
+        projects: Rec[],
+        limit: number,
+      ) => Promise<{ correlations: Correlation[]; unavailableCount: number }>;
     }
   ).crossReferenceWithNSF(projects, limit);
+  return correlations;
 }
 
 describe("crossReferenceWithNSF tier partition", () => {

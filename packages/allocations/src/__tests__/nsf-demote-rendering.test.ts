@@ -181,44 +181,53 @@ describe("findFundedProjects demote rendering — name-only > suppress cap (3)",
         crossReferenceWithNSF: (
           projects: Rec[],
           limit: number,
-        ) => Promise<
-          Array<{
+        ) => Promise<{
+          correlations: Array<{
             accessProject: Rec;
             confirmedAwards: Array<{ blob: string; institution: string }>;
             nameOnlyAwards: Array<{ blob: string; institution: string }>;
-          }>
-        >;
+          }>;
+          unavailableCount: number;
+        }>;
       },
       "crossReferenceWithNSF",
-    ).mockResolvedValue([
-      {
-        accessProject: project,
-        confirmedAwards: [],
-        nameOnlyAwards: [
-          {
-            blob: nsfBlob("Common, Name", "Unrelated Inst One", "1000001", "Suppressed Title One"),
-            institution: "Unrelated Inst One",
-          },
-          {
-            blob: nsfBlob("Common, Name", "Unrelated Inst Two", "1000002", "Suppressed Title Two"),
-            institution: "Unrelated Inst Two",
-          },
-          {
-            blob: nsfBlob(
-              "Common, Name",
-              "Unrelated Inst Three",
-              "1000003",
-              "Suppressed Title Three",
-            ),
-            institution: "Unrelated Inst Three",
-          },
-          {
-            blob: nsfBlob("Common, Name", "Unrelated Inst Four", "1000004", "Suppressed Title Four"),
-            institution: "Unrelated Inst Four",
-          },
-        ],
-      },
-    ]);
+    ).mockResolvedValue({
+      correlations: [
+        {
+          accessProject: project,
+          confirmedAwards: [],
+          nameOnlyAwards: [
+            {
+              blob: nsfBlob("Common, Name", "Unrelated Inst One", "1000001", "Suppressed Title One"),
+              institution: "Unrelated Inst One",
+            },
+            {
+              blob: nsfBlob("Common, Name", "Unrelated Inst Two", "1000002", "Suppressed Title Two"),
+              institution: "Unrelated Inst Two",
+            },
+            {
+              blob: nsfBlob(
+                "Common, Name",
+                "Unrelated Inst Three",
+                "1000003",
+                "Suppressed Title Three",
+              ),
+              institution: "Unrelated Inst Three",
+            },
+            {
+              blob: nsfBlob(
+                "Common, Name",
+                "Unrelated Inst Four",
+                "1000004",
+                "Suppressed Title Four",
+              ),
+              institution: "Unrelated Inst Four",
+            },
+          ],
+        },
+      ],
+      unavailableCount: 0,
+    });
 
     const response = await findFundedProjects(server, "Common, Name");
     const text = response.content[0].text;

@@ -2691,7 +2691,8 @@ sort_by: "date_desc"
       }
 
       // Step 2: For each ACCESS project PI, find corresponding NSF awards
-      const fundedProjectCorrelations = await this.crossReferenceWithNSF(accessProjects, limit);
+      const { correlations: fundedProjectCorrelations, unavailableCount } =
+        await this.crossReferenceWithNSF(accessProjects, limit);
 
       // Step 3: Build comprehensive result
       let result = `🎯 **Funded Projects Analysis**\n\n`;
@@ -2704,7 +2705,7 @@ sort_by: "date_desc"
       }
       result += `\n`;
 
-      if (fundedProjectCorrelations.length === 0) {
+      if (fundedProjectCorrelations.length === 0 && unavailableCount === 0) {
         result += `**🏛️ ACCESS Projects (${fieldOfScience || "All Fields"}):**\n`;
         result += this.formatProjectSummaries(accessProjects.slice(0, limit));
         result += `\n\n**🏆 NSF Funding Status:**\n`;
@@ -2723,22 +2724,31 @@ sort_by: "date_desc"
         result += `• Use analyze_project_funding() with specific project ID for detailed analysis\n`;
         result += `• Check if institution appears under different official names\n`;
       } else {
-        result += `**🔗 Cross-Referenced Funded Projects:**\n\n`;
-        let confirmedProjectCount = 0;
-        fundedProjectCorrelations.forEach((correlation, index) => {
-          result += `**${index + 1}. ${correlation.accessProject.requestTitle}**\n`;
-          result += `• **ACCESS PI:** ${correlation.accessProject.pi} (${correlation.accessProject.piInstitution})\n`;
-          result += `• **Field:** ${correlation.accessProject.fos}\n`;
-          result += `• **Resources:** ${this.summarizeResources(correlation.accessProject.resources)}\n`;
-          result += this.renderNSFFundingTiers(correlation);
-          if (correlation.confirmedAwards.length > 0) {
-            confirmedProjectCount++;
-          }
-          result += `\n`;
-        });
+        if (fundedProjectCorrelations.length > 0) {
+          result += `**🔗 Cross-Referenced Funded Projects:**\n\n`;
+          fundedProjectCorrelations.forEach((correlation, index) => {
+            result += `**${index + 1}. ${correlation.accessProject.requestTitle}**\n`;
+            result += `• **ACCESS PI:** ${correlation.accessProject.pi} (${correlation.accessProject.piInstitution})\n`;
+            result += `• **Field:** ${correlation.accessProject.fos}\n`;
+            result += `• **Resources:** ${this.summarizeResources(correlation.accessProject.resources)}\n`;
+            result += this.renderNSFFundingTiers(correlation);
+            result += `\n`;
+          });
+        }
 
         result += `**📊 Correlation Insights:**\n`;
-        result += `• **${confirmedProjectCount}** projects with confirmed NSF funding\n`;
+        if (unavailableCount > 0) {
+          // A mid-batch outage corrupts the denominator, so the confirmed
+          // aggregate is suppressed entirely rather than reported alongside
+          // a partial/unknown count (design decision #5/#8 — no "N of Y
+          // funded" style line when an outage is in play).
+          result += `• NSF lookup unavailable for ${unavailableCount} projects — funding status unknown\n`;
+        } else {
+          const confirmedProjectCount = fundedProjectCorrelations.filter(
+            (correlation) => correlation.confirmedAwards.length > 0
+          ).length;
+          result += `• **${confirmedProjectCount}** projects with confirmed NSF funding\n`;
+        }
         result += `• Cross-platform funding indicates sustained research programs\n`;
         result += `• ACCESS resources support federally-funded computational research\n`;
         result += `• Strong correlation suggests effective resource allocation\n`;
@@ -2854,18 +2864,25 @@ sort_by: "date_desc"
   private async crossReferenceWithNSF(
     accessProjects: Project[],
     limit: number
-  ): Promise<
-    Array<{
+  ): Promise<{
+    correlations: Array<{
       accessProject: Project;
       confirmedAwards: NSFAward[];
       nameOnlyAwards: NSFAward[];
-    }>
-  > {
+    }>;
+    unavailableCount: number;
+  }> {
     const correlations: Array<{
       accessProject: Project;
       confirmedAwards: NSFAward[];
       nameOnlyAwards: NSFAward[];
     }> = [];
+    // Counts projects whose NSF lookup failed via EITHER cause below — the
+    // peer threw (Cause A), or it returned an error-shaped body (Cause B).
+    // Neither is a correlation NOR a clean "no match": the project's
+    // funding status is simply unknown, and must render as such rather
+    // than silently collapsing to "unfunded" (see design decision #5/#8).
+    let unavailableCount = 0;
 
     // Process projects in batches to avoid overwhelming the NSF server.
     // No limit-based early exit here: ranking confirmed-before-name-only
@@ -2882,6 +2899,14 @@ sort_by: "date_desc"
             limit: 3,
           })) as { content?: Array<{ text?: string }> };
           const nsfResponse = this.formatNsfResponse(nsfData);
+
+          // Cause B: an error-shaped body. Detect BEFORE parsing so it's
+          // counted as unavailable rather than silently parsed to zero
+          // awards (which parseNSFResponse's own guard would otherwise do).
+          if (this.isNSFErrorResponse(nsfResponse)) {
+            unavailableCount++;
+            continue;
+          }
 
           // Parse NSF response to extract award summaries
           const nsfAwards = this.parseNSFResponse(nsfResponse, project.pi);
@@ -2907,7 +2932,10 @@ sort_by: "date_desc"
             await new Promise((resolve) => setTimeout(resolve, 100));
           }
         } catch (error) {
+          // Cause A: the NSF peer is unreachable or threw. Same "unknown,
+          // not unfunded" treatment as Cause B.
           console.warn(`Error checking NSF funding for ${project.pi}:`, error);
+          unavailableCount++;
         }
       }
     }
@@ -2924,12 +2952,35 @@ sort_by: "date_desc"
         return aConfirmed - bConfirmed;
       });
 
-    return ranked.slice(0, limit);
+    return { correlations: ranked.slice(0, limit), unavailableCount };
+  }
+
+  // Detects an error-shaped NSF response body (Cause B of the
+  // service-unavailable problem) BEFORE parseNSFResponse runs, so the
+  // caller can count it as "unavailable" instead of letting it silently
+  // collapse to zero awards (indistinguishable from a genuine no-match).
+  //
+  // This is a string-sniff over the nsf-awards MCP peer's free-text
+  // response — it has no typed error envelope to check instead. That
+  // makes this detection fragile by construction: a legitimate "no
+  // awards found" body that happens to contain "Error" or "not
+  // available" would be mis-counted as unavailable, and a genuine error
+  // body that avoids those exact tokens would be mis-counted as a clean
+  // no-match. A durable fix requires the nsf-awards package to return a
+  // typed error envelope — cross-package, out of scope here. See
+  // docs/superpowers/specs/2026-09-19-nsf-match-accuracy-design.md
+  // decision #5.
+  private isNSFErrorResponse(nsfResponse: string): boolean {
+    return !nsfResponse || nsfResponse.includes("not available") || nsfResponse.includes("Error");
   }
 
   // Parse NSF server response and extract relevant awards
   private parseNSFResponse(nsfResponse: string, expectedPI: string): NSFAward[] {
-    if (!nsfResponse || nsfResponse.includes("not available") || nsfResponse.includes("Error")) {
+    // Defense-in-depth: callers on the service-unavailable path already
+    // check isNSFErrorResponse before reaching here, but other call sites
+    // don't, so this guard stays as the fallback that keeps this method's
+    // own contract (never returns "awards" parsed from an error body).
+    if (this.isNSFErrorResponse(nsfResponse)) {
       return [];
     }
 
