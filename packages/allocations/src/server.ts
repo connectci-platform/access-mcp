@@ -2504,7 +2504,7 @@ sort_by: "date_desc"
     let isExactPIMatch = false;
 
     for (const line of lines) {
-      if (line.includes("Award Number:") || line.includes("Title:")) {
+      if (line.includes("Award Number:")) {
         // Process previous award
         if (currentAward && isExactPIMatch) {
           awards.push({
@@ -2519,6 +2519,12 @@ sort_by: "date_desc"
         currentInstitutionLine = "";
         currentInstitution = "";
         isExactPIMatch = false;
+      } else if (line.includes("Title:") && currentAward) {
+        // Title is a within-award field, not a boundary — a real NSF
+        // record has both an Award Number: line and a Title: line per
+        // award. Append rather than reset (see parseNSFResponse for the
+        // same fix and the full rationale).
+        currentAward += " | " + line.trim();
       } else if (line.includes("Principal Investigator:")) {
         currentPI = line.trim();
         // Token/word-boundary name match (not raw substring — see
@@ -2991,13 +2997,21 @@ sort_by: "date_desc"
     let isRelevant = false;
 
     for (const line of lines) {
-      if (line.includes("Award Number:") || line.includes("Title:")) {
+      if (line.includes("Award Number:")) {
         if (currentAward && isRelevant) {
           awards.push({ blob: currentAward, institution: currentInstitution });
         }
         currentAward = line.trim();
         currentInstitution = "";
         isRelevant = false;
+      } else if (line.includes("Title:") && currentAward) {
+        // Title is a within-award field, not a boundary — a real NSF
+        // record has both an Award Number: line and a Title: line per
+        // award. Treating Title as a boundary (like Award Number) reset
+        // currentAward and silently discarded the award number that had
+        // already accumulated. Append instead, mirroring the
+        // Principal Investigator: / Institution: / Amount: branches below.
+        currentAward += " | " + line.trim();
       } else if (line.includes("Principal Investigator:")) {
         currentAward += " | " + line.trim();
         // Token/word-boundary name match (not raw substring — see
