@@ -33,7 +33,9 @@ let baseUrl: string;
 beforeEach(async () => {
   process.env.MCP_API_KEY = KEY;
   server = new MixedServer();
-  port = 3200 + Math.floor(Math.random() * 300);
+  // 3600-3899: non-overlapping with base-server.test.ts (3100-3399) to avoid
+  // EADDRINUSE flakiness when the suites run in parallel.
+  port = 3600 + Math.floor(Math.random() * 300);
   baseUrl = `http://localhost:${port}`;
   await server.start({ httpPort: port });
 });
@@ -75,5 +77,30 @@ describe("/mcp per-tool auth", () => {
   it("batch mixing public + write, no key → 401 (no smuggling)", async () => {
     const res = await postMcp([callBody("search_things"), callBody("create_thing")]);
     expect(res.status).toBe(401);
+  });
+});
+
+describe("/messages per-tool auth (SSE door)", () => {
+  const postMsg = (bodyObj: unknown, headers: Record<string, string> = {}) =>
+    fetch(`${baseUrl}/messages?sessionId=nonexistent`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(bodyObj),
+    });
+
+  it("write tool, no key → 401 (auth runs before session lookup)", async () => {
+    const res = await postMsg(callBody("create_thing"));
+    expect(res.status).toBe(401);
+  });
+
+  it("public tool, no key → NOT 401 (passes auth; 404s later on missing session)", async () => {
+    const res = await postMsg(callBody("search_things"));
+    expect(res.status).not.toBe(401);
+    expect(res.status).toBe(404); // missing session, but auth was passed
+  });
+
+  it("write tool, valid key → NOT 401", async () => {
+    const res = await postMsg(callBody("create_thing"), { "x-api-key": KEY });
+    expect(res.status).not.toBe(401);
   });
 });

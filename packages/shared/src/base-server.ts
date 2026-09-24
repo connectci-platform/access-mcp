@@ -636,10 +636,31 @@ export abstract class BaseAccessServer {
     });
 
     // Legacy messages endpoint for SSE transport
-    // Note: No API key check here — SSE is for public MCP client connections.
-    // Write operations are protected by requiring ACTING_USER and Drupal auth server-side.
-    // The API key check on /tools/:toolName protects inter-server REST calls.
+    // Note: the same tool-aware auth gate used on /mcp runs here too — this
+    // is the second (SSE) transport door, and it closes on the gate below,
+    // not on fail-closed acting-user checks deeper in the write path.
     app.post("/messages", async (c) => {
+      const body = await c.req.json().catch(() => null);
+
+      if (this._requireApiKey) {
+        const expectedApiKey = process.env.MCP_API_KEY;
+        if (!expectedApiKey) {
+          this.logger.error("MCP_API_KEY environment variable not set but requireApiKey is enabled");
+          return c.json({ error: "Server misconfiguration: API key not configured" }, 500);
+        }
+        const providedApiKey = c.req.header("X-Api-Key");
+        const authorized = isCallAuthorized({
+          body,
+          publicToolNames: this.publicToolNames(),
+          hasValidKey: !!providedApiKey && providedApiKey === expectedApiKey,
+          hasVerifiedActingUser: this.hasVerifiedActingUser(),
+        });
+        if (!authorized) {
+          this.logger.warn("Unauthorized /messages request attempt", { hasKey: !!providedApiKey });
+          return c.json({ error: "Invalid or missing API key. This server requires authentication for the requested tool." }, 401);
+        }
+      }
+
       const sessionId = c.req.query("sessionId");
       if (!sessionId) {
         return c.json({ error: "Session ID required" }, 400);
@@ -652,7 +673,6 @@ export abstract class BaseAccessServer {
 
       // incoming/outgoing are provided by @hono/node-server's serve() adapter
       const { incoming, outgoing } = c.env as { incoming: IncomingMessage; outgoing: ServerResponse };
-      const body = await c.req.json().catch(() => undefined);
       await transport.handlePostMessage(incoming, outgoing, body);
 
       // Signal to @hono/node-server that the response is already handled
