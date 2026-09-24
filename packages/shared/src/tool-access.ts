@@ -12,13 +12,21 @@ export function classifyTool(tool: ToolWithAccess): AccessTier {
   return tool.access === "public" ? "public" : "authenticated";
 }
 
-// Narrow a parsed JSON-RPC message to a tools/call with a tool name.
-function toolCallName(msg: unknown): string | undefined {
-  if (!msg || typeof msg !== "object") return undefined;
+// Classification of a single parsed JSON-RPC message: either non-tools/call
+// metadata (always allowed), or a tools/call attempt with its resolved name
+// — `name: null` means the call could not be resolved to a string tool name
+// (missing/non-string params.name, or a non-object/garbage message), which
+// must NOT be treated as metadata.
+type MsgKind = { kind: "metadata" } | { kind: "call"; name: string | null };
+
+function classifyMessage(msg: unknown): MsgKind {
+  // A non-object message (garbage inside a batch, e.g. `42`) is not a valid
+  // metadata message; route it to the unresolvable-call deny path.
+  if (!msg || typeof msg !== "object") return { kind: "call", name: null };
   const m = msg as { method?: unknown; params?: unknown };
-  if (m.method !== "tools/call") return undefined;
+  if (m.method !== "tools/call") return { kind: "metadata" };
   const params = m.params as { name?: unknown } | undefined;
-  return typeof params?.name === "string" ? params.name : undefined;
+  return { kind: "call", name: typeof params?.name === "string" ? params.name : null };
 }
 
 // Is a single JSON-RPC message authorized on its own?
@@ -27,14 +35,19 @@ function messageAuthorized(
   publicToolNames: Set<string>,
   transportAuthorized: boolean
 ): boolean {
-  const name = toolCallName(msg);
+  const msgKind = classifyMessage(msg);
   // Non-tools/call methods (initialize, tools/list, notifications, lifecycle)
   // are always allowed: they expose only metadata, never tool execution.
-  if (name === undefined) return true;
+  if (msgKind.kind === "metadata") return true;
+  // A tools/call with no resolvable name is a malformed invocation attempt,
+  // not metadata — it must not fall through to always-allow. It's permitted
+  // only if the transport itself is authorized (a real authenticated
+  // principal); downstream will reject the missing name on its own.
+  if (msgKind.name === null) return transportAuthorized;
   // A tools/call is allowed if the tool is public, OR the transport is
   // authorized (valid key or verified acting-user). Default-deny: a name not
   // in publicToolNames is authenticated.
-  if (publicToolNames.has(name)) return true;
+  if (publicToolNames.has(msgKind.name)) return true;
   return transportAuthorized;
 }
 

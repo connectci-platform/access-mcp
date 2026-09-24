@@ -52,6 +52,49 @@ describe("isCallAuthorized", () => {
 
   it("malformed body (null) → denied", () =>
     expect(isCallAuthorized({ ...base, body: null })).toBe(false));
+
+  it("tools/call with missing params.name, no key → denied (not treated as metadata)", () =>
+    expect(
+      isCallAuthorized({ ...base, body: { jsonrpc: "2.0", id: 1, method: "tools/call", params: {} } })
+    ).toBe(false));
+
+  it("tools/call with non-string params.name, no key → denied", () =>
+    expect(
+      isCallAuthorized({
+        ...base,
+        body: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: 123 } },
+      })
+    ).toBe(false));
+
+  it("batch with a public call + an unresolvable tools/call, no key → denied", () =>
+    expect(
+      isCallAuthorized({
+        ...base,
+        body: [call("search_events"), { jsonrpc: "2.0", id: 2, method: "tools/call", params: {} }],
+      })
+    ).toBe(false));
+
+  it("unresolvable tools/call WITH a valid key → allowed (transport is authorized)", () =>
+    expect(
+      isCallAuthorized({
+        ...base,
+        body: { jsonrpc: "2.0", id: 1, method: "tools/call", params: {} },
+        hasValidKey: true,
+      })
+    ).toBe(true));
+
+  it("batch with a public call + a bare non-object message, no key → denied", () =>
+    expect(isCallAuthorized({ ...base, body: [call("search_events"), 42] })).toBe(false));
+
+  it("regression: initialize and tools/list still allowed without key; empty batch still denied", () => {
+    expect(
+      isCallAuthorized({ ...base, body: { jsonrpc: "2.0", id: 1, method: "initialize", params: {} } })
+    ).toBe(true);
+    expect(
+      isCallAuthorized({ ...base, body: { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} } })
+    ).toBe(true);
+    expect(isCallAuthorized({ ...base, body: [] })).toBe(false);
+  });
 });
 
 describe("stripAccessMarkers", () => {
