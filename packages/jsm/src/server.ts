@@ -3,6 +3,8 @@ import {
   Tool,
   Resource,
   CallToolResult,
+  assertNoPublicWrites,
+  type ToolWithAccess,
 } from "@access-mcp/shared";
 import { CallToolRequest } from "@modelcontextprotocol/sdk/types.js";
 import axios, { AxiosInstance } from "axios";
@@ -167,6 +169,8 @@ export class JsmServer extends BaseAccessServer {
     if (dryRun) {
       this.logger.info("JSM dry-run mode ENABLED — no tickets will be created");
     }
+
+    assertNoPublicWrites(this.getTools() as ToolWithAccess[]);
   }
 
   private get proxyClient(): AxiosInstance {
@@ -185,7 +189,7 @@ export class JsmServer extends BaseAccessServer {
   }
 
   protected getTools(): Tool[] {
-    return [
+    const tools: ToolWithAccess[] = [
       {
         name: "create_support_ticket",
         description:
@@ -237,6 +241,8 @@ export class JsmServer extends BaseAccessServer {
           },
           required: ["summary", "description", "user_email", "user_name"],
         },
+        access: "authenticated",
+        mutates: true,
       },
       {
         name: "create_login_ticket",
@@ -291,6 +297,8 @@ export class JsmServer extends BaseAccessServer {
           },
           required: ["summary", "description", "user_email", "user_name", "login_type"],
         },
+        access: "authenticated",
+        mutates: true,
       },
       {
         name: "report_security_incident",
@@ -328,6 +336,8 @@ export class JsmServer extends BaseAccessServer {
           },
           required: ["summary", "description", "user_email", "user_name"],
         },
+        access: "authenticated",
+        mutates: true,
       },
       {
         name: "get_ticket_types",
@@ -337,8 +347,10 @@ export class JsmServer extends BaseAccessServer {
           type: "object",
           properties: {},
         },
+        access: "public",
       },
     ];
+    return tools;
   }
 
   protected getResources(): Resource[] {

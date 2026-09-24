@@ -10,6 +10,7 @@ import {
   getRequestContext,
   coerceOffset,
   coerceLimit,
+  assertNoPublicWrites,
   type ToolWithAccess,
 } from "@access-mcp/shared";
 import {
@@ -202,6 +203,7 @@ export class EventsServer extends BaseAccessServer {
     super("access-mcp-events", version, "https://support.access-ci.org", {
       requireApiKey: true,
     });
+    assertNoPublicWrites(this.getTools() as ToolWithAccess[]);
   }
 
   protected listingLinks(

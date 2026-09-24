@@ -10,6 +10,7 @@ import {
   MAX_LIMIT,
   coerceOffset,
   coerceLimit,
+  assertNoPublicWrites,
   type ToolWithAccess,
 } from "@access-mcp/shared";
 import {
@@ -129,6 +130,7 @@ export class AnnouncementsServer extends BaseAccessServer {
     super("access-announcements", version, "https://support.access-ci.org", {
       requireApiKey: true,
     });
+    assertNoPublicWrites(this.getTools() as ToolWithAccess[]);
   }
 
   /**
