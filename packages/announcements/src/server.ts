@@ -10,6 +10,7 @@ import {
   MAX_LIMIT,
   coerceOffset,
   coerceLimit,
+  type ToolWithAccess,
 } from "@access-mcp/shared";
 import {
   CallToolRequest,
@@ -157,7 +158,7 @@ export class AnnouncementsServer extends BaseAccessServer {
   }
 
   protected getTools(): Tool[] {
-    return [
+    const tools: ToolWithAccess[] = [
       // Read operations (existing)
       {
         name: "search_announcements",
@@ -203,6 +204,7 @@ export class AnnouncementsServer extends BaseAccessServer {
         _meta: {
           supportsFieldProjection: true,
         },
+        access: "public",
       },
       // CRUD operations (new)
       {
@@ -315,6 +317,8 @@ ALWAYS display data.edit_url to the user so they can review their draft in Drupa
           },
           required: ["title", "body", "summary"],
         },
+        access: "authenticated",
+        mutates: true,
       },
       {
         name: "update_announcement",
@@ -379,6 +383,8 @@ ALWAYS display data.edit_url to the user so they can review changes in Drupal.`,
           },
           required: ["uuid"],
         },
+        access: "authenticated",
+        mutates: true,
       },
       {
         name: "delete_announcement",
@@ -412,6 +418,8 @@ Returns the write envelope {action:"delete", status, executed, data}. "confirmed
           },
           required: ["uuid", "confirmed"],
         },
+        access: "authenticated",
+        mutates: true,
       },
       {
         name: "get_my_announcements",
@@ -443,6 +451,7 @@ Use this to:
         _meta: {
           supportsFieldProjection: true,
         },
+        access: "authenticated",
       },
       {
         name: "get_announcement_context",
@@ -459,6 +468,7 @@ Does NOT return tags — use suggest_tags after the user provides content.`,
           type: "object",
           properties: {},
         },
+        access: "public",
       },
       {
         name: "suggest_tags",
@@ -477,6 +487,7 @@ Does NOT return tags — use suggest_tags after the user provides content.`,
           },
           required: ["text"],
         },
+        access: "authenticated",
       },
       {
         name: "suggest_summary",
@@ -491,8 +502,10 @@ Does NOT return tags — use suggest_tags after the user provides content.`,
           },
           required: ["text"],
         },
+        access: "authenticated",
       },
     ];
+    return tools;
   }
 
   protected getResources(): Resource[] {
