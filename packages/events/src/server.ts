@@ -10,6 +10,7 @@ import {
   getRequestContext,
   coerceOffset,
   coerceLimit,
+  type ToolWithAccess,
 } from "@access-mcp/shared";
 import {
   CallToolRequest,
@@ -278,7 +279,7 @@ export class EventsServer extends BaseAccessServer {
   }
 
   protected getTools(): Tool[] {
-    return [
+    const tools: ToolWithAccess[] = [
       {
         name: "search_events",
         description:
@@ -353,6 +354,7 @@ export class EventsServer extends BaseAccessServer {
         _meta: {
           supportsFieldProjection: true,
         },
+        access: "public",
       },
       {
         name: "get_my_events",
@@ -381,6 +383,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
         _meta: {
           supportsFieldProjection: true,
         },
+        access: "authenticated",
       },
       {
         name: "get_my_registrations",
@@ -397,6 +400,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           },
           required: [],
         },
+        access: "authenticated",
       },
       {
         name: "get_event",
@@ -412,6 +416,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           },
           required: ["eventinstance_id"],
         },
+        access: "public",
       },
       {
         name: "register_for_event",
@@ -432,6 +437,8 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           },
           required: ["eventinstance_id"],
         },
+        access: "authenticated",
+        mutates: true,
       },
       {
         name: "cancel_registration",
@@ -452,6 +459,8 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           },
           required: ["registrant_id", "confirmed"],
         },
+        access: "authenticated",
+        mutates: true,
       },
       {
         name: "create_event",
@@ -601,6 +610,8 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           },
           required: ["title", "field_event_type", "field_location"],
         },
+        access: "authenticated",
+        mutates: true,
       },
       {
         name: "update_event",
@@ -643,6 +654,8 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           },
           required: ["eventseries_id"],
         },
+        access: "authenticated",
+        mutates: true,
       },
       {
         name: "delete_event",
@@ -662,6 +675,8 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           },
           required: ["eventseries_id"],
         },
+        access: "authenticated",
+        mutates: true,
       },
       {
         name: "restore_event",
@@ -677,6 +692,8 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           },
           required: ["eventseries_id"],
         },
+        access: "authenticated",
+        mutates: true,
       },
       {
         name: "send_for_review",
@@ -692,6 +709,8 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           },
           required: ["eventseries_id"],
         },
+        access: "authenticated",
+        mutates: true,
       },
       {
         name: "cancel_occurrence",
@@ -711,6 +730,8 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           },
           required: ["eventinstance_id"],
         },
+        access: "authenticated",
+        mutates: true,
       },
       {
         name: "restore_occurrence",
@@ -726,6 +747,8 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           },
           required: ["eventinstance_id"],
         },
+        access: "authenticated",
+        mutates: true,
       },
       {
         name: "edit_occurrence",
@@ -757,6 +780,8 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           },
           required: ["eventinstance_id"],
         },
+        access: "authenticated",
+        mutates: true,
       },
       {
         name: "add_occurrence",
@@ -780,8 +805,11 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           },
           required: ["eventseries_id", "date"],
         },
+        access: "authenticated",
+        mutates: true,
       },
     ];
+    return tools;
   }
 
   protected getResources(): Resource[] {
