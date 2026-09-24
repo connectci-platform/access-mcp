@@ -44,4 +44,12 @@ describe("jsm tool classification", () => {
     ];
     expect(() => assertNoPublicWrites(mismarked)).toThrow();
   });
+
+  it("the public set is EXACTLY the intended read (a stray public marker fails)", () => {
+    const publicNames = tools()
+      .filter((t) => classifyTool(t) === "public")
+      .map((t) => t.name)
+      .sort();
+    expect(publicNames).toEqual(["get_ticket_types"]);
+  });
 });

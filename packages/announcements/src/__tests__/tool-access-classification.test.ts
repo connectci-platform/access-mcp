@@ -24,4 +24,11 @@ describe("announcements tool classification", () => {
   it("no write tool is public", () => {
     expect(() => assertNoPublicWrites(tools())).not.toThrow();
   });
+  it("the public set is EXACTLY the intended reads (a stray public marker fails)", () => {
+    const publicNames = tools()
+      .filter((t) => classifyTool(t) === "public")
+      .map((t) => t.name)
+      .sort();
+    expect(publicNames).toEqual(["get_announcement_context", "search_announcements"]);
+  });
 });
