@@ -104,3 +104,51 @@ describe("/messages per-tool auth (SSE door)", () => {
     expect(res.status).not.toBe(401);
   });
 });
+
+describe("auth markers never leak to clients (wire surfaces)", () => {
+  it("GET /tools (REST) output has no access/mutates fields", async () => {
+    const res = await fetch(`${baseUrl}/tools`, { headers: { "x-api-key": KEY } });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const tools = body.tools ?? body; // match the route's actual shape
+    for (const t of tools) {
+      expect(t).not.toHaveProperty("access");
+      expect(t).not.toHaveProperty("mutates");
+    }
+    expect(tools.map((t: { name: string }) => t.name)).toContain("search_things");
+  });
+
+  it("tools/list over /mcp has no access/mutates fields", async () => {
+    // The streamable transport requires a session: the first POST must be an
+    // initialize request, which hands back a session id (mcp-session-id
+    // header) that subsequent requests must include.
+    const initRes = await postMcp(initBody, { "x-api-key": KEY });
+    const sessionId = initRes.headers.get("mcp-session-id");
+    expect(sessionId).toBeTruthy();
+
+    // A tools/list is non-tools/call → passes the gate without a key; but send
+    // the key anyway so this is robust to the gate. Parse the JSON-RPC (or SSE)
+    // result and inspect result.tools. If the /mcp response is an SSE stream,
+    // read the text and extract the JSON payload; if JSON, parse directly.
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "x-api-key": KEY,
+        "mcp-session-id": sessionId!,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+    });
+    const text = await res.text();
+    // tolerate either raw JSON or an SSE "data: {...}" frame
+    const jsonStr = text.includes("data:") ? text.split("data:").pop()!.trim() : text;
+    const payload = JSON.parse(jsonStr);
+    const tools = payload.result?.tools ?? [];
+    expect(tools.length).toBeGreaterThan(0);
+    for (const t of tools) {
+      expect(t).not.toHaveProperty("access");
+      expect(t).not.toHaveProperty("mutates");
+    }
+  });
+});

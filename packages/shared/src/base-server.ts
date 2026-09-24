@@ -32,7 +32,7 @@ import { DrupalApiError } from "./drupal-auth.js";
 import { traceMcpToolCall } from "./telemetry.js";
 import { UsageLogger } from "./usage-logger.js";
 import { StandardWriteResponse, StandardErrorResponse } from "./types.js";
-import { isCallAuthorized, classifyTool, type ToolWithAccess } from "./tool-access.js";
+import { isCallAuthorized, classifyTool, stripAccessMarkers, type ToolWithAccess } from "./tool-access.js";
 
 // Re-export SDK types for convenience
 export type { Tool, Resource, Prompt, CallToolResult, ReadResourceResult, GetPromptResult };
@@ -683,7 +683,7 @@ export abstract class BaseAccessServer {
     // List available tools endpoint (for inter-server communication)
     app.get("/tools", (c) => {
       try {
-        const tools = this.getTools();
+        const tools = this.listToolsForClient();
         return c.json({ tools });
       } catch (error) {
         return c.json({ error: "Failed to list tools" }, 500);
@@ -791,7 +791,7 @@ export abstract class BaseAccessServer {
   private setupServerHandlers(server: Server) {
     server.setRequestHandler(ListToolsRequestSchema, async () => {
       try {
-        return { tools: this.getTools() };
+        return { tools: this.listToolsForClient() };
       } catch (error: unknown) {
         return { tools: [] };
       }
@@ -916,6 +916,11 @@ export abstract class BaseAccessServer {
     }
 
     return response.data;
+  }
+
+  /** Tools as clients should see them — internal auth markers removed. */
+  protected listToolsForClient(): Tool[] {
+    return stripAccessMarkers(this.getTools() as ToolWithAccess[]);
   }
 
   /** Public tool names for this server (default-deny classification). */
