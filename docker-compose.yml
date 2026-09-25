@@ -113,6 +113,9 @@ services:
       NODE_ENV: production
       PORT: 3000
       ACCESS_MCP_SERVICES: ${ACCESS_MCP_SERVICES}
+      # allocations is keyed (requireApiKey) for its user-scoped rp-account
+      # reads; it needs the inter-server key to validate incoming calls.
+      MCP_API_KEY: ${MCP_API_KEY}
     deploy:
       resources:
         limits:

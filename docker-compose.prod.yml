@@ -145,6 +145,9 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - ACCESS_MCP_SERVICES=${ACCESS_MCP_SERVICES}
+      # allocations is keyed (requireApiKey) for its user-scoped rp-account
+      # reads; it needs the inter-server key to validate incoming calls.
+      - MCP_API_KEY=${MCP_API_KEY}
       - MCP_PATH_PREFIX=/allocations
       - MCP_USAGE_DB_URL=${MCP_USAGE_DB_URL:-postgresql://mcp_usage_app:mcpusage@mcp-usage-db:5432/mcp_usage}
       # Verifies the OAuth Bearer token and populates the acting user. Without
