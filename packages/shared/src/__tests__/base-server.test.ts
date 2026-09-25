@@ -734,35 +734,35 @@ describe("API Key Authentication", () => {
   });
 
   describe("Streamable HTTP /mcp endpoint with requireApiKey", () => {
-    it("should reject POST without API key", async () => {
+    // `initialize` is metadata, not a tool call — the per-tool auth gate
+    // (base-server-auth.test.ts) always allows it through regardless of key,
+    // so discovery stays open. These two cases no longer 401 on `initialize`
+    // specifically; unauthorized tool CALLS are covered in the auth test file.
+    it("should allow POST without API key for initialize (discovery stays open)", async () => {
       const response = await fetch(`${baseUrl}/mcp`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
         },
         body: JSON.stringify({ jsonrpc: "2.0", method: "initialize", id: 1, params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "test", version: "1.0" } } }),
       });
 
-      expect(response.status).toBe(401);
-
-      const data = await response.json();
-      expect(data.error).toContain("Invalid or missing API key");
+      expect(response.status).not.toBe(401);
     });
 
-    it("should reject POST with incorrect API key", async () => {
+    it("should allow POST with incorrect API key for initialize (discovery stays open)", async () => {
       const response = await fetch(`${baseUrl}/mcp`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
           "X-Api-Key": "wrong-key",
         },
         body: JSON.stringify({ jsonrpc: "2.0", method: "initialize", id: 1, params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "test", version: "1.0" } } }),
       });
 
-      expect(response.status).toBe(401);
-
-      const data = await response.json();
-      expect(data.error).toContain("Invalid or missing API key");
+      expect(response.status).not.toBe(401);
     });
 
     it("should accept POST with correct API key for initialize", async () => {

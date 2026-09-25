@@ -32,6 +32,7 @@ import { DrupalApiError } from "./drupal-auth.js";
 import { traceMcpToolCall } from "./telemetry.js";
 import { UsageLogger } from "./usage-logger.js";
 import { StandardWriteResponse, StandardErrorResponse } from "./types.js";
+import { isCallAuthorized, classifyTool, stripAccessMarkers, type ToolWithAccess } from "./tool-access.js";
 
 // Re-export SDK types for convenience
 export type { Tool, Resource, Prompt, CallToolResult, ReadResourceResult, GetPromptResult };
@@ -495,30 +496,37 @@ export abstract class BaseAccessServer {
     // Request/Response directly, avoiding the Node↔WebStandard double conversion
     // that caused content-length to be added to SSE responses.
     app.all("/mcp", async (c) => {
-      // Validate API key for POST requests when requireApiKey is enabled
+      // Parse body for POST requests (needed for isInitializeRequest check,
+      // the tool-aware auth decision below, and passed through as parsedBody
+      // so the transport doesn't re-read the already-consumed stream).
+      const body = c.req.method === "POST"
+        ? await c.req.json().catch(() => null)
+        : undefined;
+
+      // Validate API key / per-tool access for POST requests when requireApiKey is enabled
       if (c.req.method === "POST" && this._requireApiKey) {
         const expectedApiKey = process.env.MCP_API_KEY;
-        const providedApiKey = c.req.header("X-Api-Key");
 
         if (!expectedApiKey) {
           this.logger.error("MCP_API_KEY environment variable not set but requireApiKey is enabled");
           return c.json({ error: "Server misconfiguration: API key not configured" }, 500);
         }
 
-        if (!providedApiKey || providedApiKey !== expectedApiKey) {
+        const providedApiKey = c.req.header("X-Api-Key");
+        const authorized = isCallAuthorized({
+          body,
+          publicToolNames: this.publicToolNames(),
+          hasValidKey: !!providedApiKey && providedApiKey === expectedApiKey,
+          hasVerifiedActingUser: this.hasVerifiedActingUser(),
+        });
+
+        if (!authorized) {
           this.logger.warn("Unauthorized MCP request attempt", {
             hasKey: !!providedApiKey,
           });
-          return c.json({ error: "Invalid or missing API key. This server requires authentication for tool execution." }, 401);
+          return c.json({ error: "Invalid or missing API key. This server requires authentication for the requested tool." }, 401);
         }
       }
-
-      // Parse body for POST requests (needed for isInitializeRequest check
-      // and passed through as parsedBody so the transport doesn't re-read
-      // the already-consumed stream).
-      const body = c.req.method === "POST"
-        ? await c.req.json().catch(() => null)
-        : undefined;
 
       // Check for existing session
       const sessionId = c.req.header("mcp-session-id");
@@ -628,10 +636,31 @@ export abstract class BaseAccessServer {
     });
 
     // Legacy messages endpoint for SSE transport
-    // Note: No API key check here — SSE is for public MCP client connections.
-    // Write operations are protected by requiring ACTING_USER and Drupal auth server-side.
-    // The API key check on /tools/:toolName protects inter-server REST calls.
+    // Note: the same tool-aware auth gate used on /mcp runs here too — this
+    // is the second (SSE) transport door, and it closes on the gate below,
+    // not on fail-closed acting-user checks deeper in the write path.
     app.post("/messages", async (c) => {
+      const body = await c.req.json().catch(() => null);
+
+      if (this._requireApiKey) {
+        const expectedApiKey = process.env.MCP_API_KEY;
+        if (!expectedApiKey) {
+          this.logger.error("MCP_API_KEY environment variable not set but requireApiKey is enabled");
+          return c.json({ error: "Server misconfiguration: API key not configured" }, 500);
+        }
+        const providedApiKey = c.req.header("X-Api-Key");
+        const authorized = isCallAuthorized({
+          body,
+          publicToolNames: this.publicToolNames(),
+          hasValidKey: !!providedApiKey && providedApiKey === expectedApiKey,
+          hasVerifiedActingUser: this.hasVerifiedActingUser(),
+        });
+        if (!authorized) {
+          this.logger.warn("Unauthorized /messages request attempt", { hasKey: !!providedApiKey });
+          return c.json({ error: "Invalid or missing API key. This server requires authentication for the requested tool." }, 401);
+        }
+      }
+
       const sessionId = c.req.query("sessionId");
       if (!sessionId) {
         return c.json({ error: "Session ID required" }, 400);
@@ -644,7 +673,6 @@ export abstract class BaseAccessServer {
 
       // incoming/outgoing are provided by @hono/node-server's serve() adapter
       const { incoming, outgoing } = c.env as { incoming: IncomingMessage; outgoing: ServerResponse };
-      const body = await c.req.json().catch(() => undefined);
       await transport.handlePostMessage(incoming, outgoing, body);
 
       // Signal to @hono/node-server that the response is already handled
@@ -655,7 +683,7 @@ export abstract class BaseAccessServer {
     // List available tools endpoint (for inter-server communication)
     app.get("/tools", (c) => {
       try {
-        const tools = this.getTools();
+        const tools = this.listToolsForClient();
         return c.json({ tools });
       } catch (error) {
         return c.json({ error: "Failed to list tools" }, 500);
@@ -763,7 +791,7 @@ export abstract class BaseAccessServer {
   private setupServerHandlers(server: Server) {
     server.setRequestHandler(ListToolsRequestSchema, async () => {
       try {
-        return { tools: this.getTools() };
+        return { tools: this.listToolsForClient() };
       } catch (error: unknown) {
         return { tools: [] };
       }
@@ -888,6 +916,25 @@ export abstract class BaseAccessServer {
     }
 
     return response.data;
+  }
+
+  /** Tools as clients should see them — internal auth markers removed. */
+  protected listToolsForClient(): Tool[] {
+    return stripAccessMarkers(this.getTools() as ToolWithAccess[]);
+  }
+
+  /** Public tool names for this server (default-deny classification). */
+  private publicToolNames(): Set<string> {
+    const names = new Set<string>();
+    for (const tool of this.getTools() as ToolWithAccess[]) {
+      if (classifyTool(tool) === "public") names.add(tool.name);
+    }
+    return names;
+  }
+
+  /** True when the OAuth middleware verified a CILogon token for this request. */
+  private hasVerifiedActingUser(): boolean {
+    return !!getRequestContext()?.actingUser;
   }
 
   /**
