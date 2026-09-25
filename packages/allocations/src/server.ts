@@ -56,6 +56,43 @@ interface ProjectsResponse {
   filters: Record<string, unknown>;
 }
 
+// One parsed NSF award. `blob` is the existing flat pipe-joined display
+// string (Award | PI | Institution | Amount); `institution` is the ISOLATED
+// `Institution:` field value (label stripped, trimmed), or "" if the award
+// had no Institution line. The isolated field exists so
+// validateInstitutionMatch can anchor on just the institution text instead
+// of substring-matching the whole blob (which also contains the PI name,
+// award title, and dollar amount — a much wider false-positive surface).
+interface NSFAward {
+  blob: string;
+  institution: string;
+}
+
+// Shape of one item in the nsf-awards peer's real JSON envelope
+// ({total, items, metadata}, stringified as content[0].text — see
+// packages/nsf-awards/src/server.ts's NSFAward interface / envelope
+// construction). Only the fields this module actually reads are declared;
+// the peer may emit more (coPIs, abstract, dates, etc.) that we ignore.
+interface NSFAwardItem {
+  awardNumber?: string;
+  title?: string;
+  institution?: string;
+  principalInvestigator?: string;
+  totalIntendedAward?: string;
+  totalAwardedToDate?: string;
+}
+
+// The peer's typed error envelope shape (see errorResponse in
+// packages/shared/src/base-server.ts): {status:"error", executed:false,
+// error:{code,message,hint?}}. Only `status` is read here.
+interface NSFErrorEnvelope {
+  status?: string;
+}
+
+interface NSFItemsEnvelope {
+  items?: NSFAwardItem[];
+}
+
 interface SearchProjectsArgs {
   project_id?: number;
   similar_to?: number;
@@ -2164,6 +2201,30 @@ sort_by: "date_desc"
   }
 
   // NSF Integration Methods
+
+  /**
+   * Normalize a PI name for NSF `personnel` queries. ACCESS stores `project.pi`
+   * as "Last, First" (comma format). Measured against the live NSF API: comma
+   * format triggers a loose tokenized search that floods results with unrelated
+   * namesakes and can push the real person off the result cap; clean "First Last"
+   * returns the correct person, and NSF's personnel search is order-insensitive
+   * for clean two-token names. Already-clean or single-token names pass through
+   * unchanged.
+   */
+  private normalizePIQuery(pi: string): string {
+    const trimmed = pi.trim();
+    const commaIndex = trimmed.indexOf(",");
+    if (commaIndex === -1) {
+      return trimmed.replace(/\s+/g, " ");
+    }
+    const last = trimmed.slice(0, commaIndex).trim();
+    const first = trimmed.slice(commaIndex + 1).trim();
+    if (!last || !first) {
+      return trimmed.replace(/\s+/g, " ").replace(/,\s*$/, "").replace(/^,\s*/, "");
+    }
+    return `${first} ${last}`.replace(/\s+/g, " ");
+  }
+
   private async analyzeProjectFunding(projectId: number) {
     try {
       // Get the ACCESS project details from the complete corpus (D2 revalidation
@@ -2186,21 +2247,25 @@ sort_by: "date_desc"
 
       // Step 2: Search NSF database with exact name matching
       const nsfSearchResults = new Map<string, string>();
-      const relevantAwards: string[] = [];
+      const relevantAwards: NSFAward[] = [];
+      // Counts variations that returned a USABLE (non-error-shaped) body —
+      // distinct from relevantAwards.length, which can legitimately be zero
+      // on a usable response that just finds nothing. If EVERY variation
+      // fails (throws OR returns an error-shaped body), usableResponseCount
+      // stays 0 and funding status is UNKNOWN, not "unfunded" (mirrors
+      // Task 6's fix on the bulk path — see isNSFUnavailable).
+      let usableResponseCount = 0;
 
       for (const nameVariation of piNameVariations) {
         try {
           const nsfData = (await this.callRemoteServer("nsf-awards", "search_nsf_awards", {
-            personnel: nameVariation,
+            pi: this.normalizePIQuery(nameVariation),
             limit: 3,
           })) as { content?: Array<{ text?: string }> };
           const nsfResponse = this.formatNsfResponse(nsfData);
 
-          if (
-            nsfResponse &&
-            !nsfResponse.includes("Error") &&
-            !nsfResponse.includes("not available")
-          ) {
+          if (!this.isNSFUnavailable(nsfResponse)) {
+            usableResponseCount++;
             nsfSearchResults.set(nameVariation, nsfResponse);
 
             // Parse and filter for exact matches
@@ -2215,14 +2280,26 @@ sort_by: "date_desc"
         }
       }
 
-      // Step 3: Cross-validate with institution matching
-      const institutionValidatedAwards = relevantAwards.filter((award) =>
-        this.validateInstitutionMatch(award, accessProject.piInstitution)
+      // Step 3: Cross-validate with institution matching. Match against the
+      // award's ISOLATED institution field, not the flattened blob — the
+      // blob also contains the PI name/title/amount, which widens the
+      // false-positive surface for a substring-style match. Split into the
+      // two demote tiers (Task 5's shared contract): confirmedAwards is the
+      // primary (institution-validated) tier; nameOnlyAwards is the
+      // complement — name-matched but institution-unconfirmed namesakes.
+      const confirmedAwards = relevantAwards.filter((award) =>
+        this.validateInstitutionMatch(award.institution, accessProject.piInstitution)
+      );
+      const nameOnlyAwards = relevantAwards.filter(
+        (award) => !this.validateInstitutionMatch(award.institution, accessProject.piInstitution)
       );
 
-      // Step 4: Analyze temporal alignment
+      // Step 4: Analyze temporal alignment (operates on the display blob —
+      // it regex-extracts years from the full award text). Only meaningful
+      // for confirmed awards; computed lazily below, gated the same as its
+      // display.
       const temporalAnalysis = this.analyzeTemporalAlignment(
-        institutionValidatedAwards,
+        confirmedAwards.map((award) => award.blob),
         accessProject.beginDate,
         accessProject.endDate
       );
@@ -2241,47 +2318,51 @@ sort_by: "date_desc"
       result += `**🔍 NSF Award Search Strategy:**\n`;
       result += `• **Name Variations Searched:** ${piNameVariations.join(", ")}\n`;
       result += `• **Total NSF Responses:** ${nsfSearchResults.size}\n`;
-      result += `• **Raw Awards Found:** ${relevantAwards.length}\n`;
-      result += `• **Institution-Validated Awards:** ${institutionValidatedAwards.length}\n\n`;
+      result += `• **Institution-Validated Awards:** ${confirmedAwards.length}\n\n`;
 
-      if (institutionValidatedAwards.length > 0) {
-        result += `**🏆 Validated NSF Awards:**\n`;
-        institutionValidatedAwards.forEach((award, index) => {
-          result += `${index + 1}. ${award}\n`;
-        });
+      result += `**🏆 NSF Award Analysis:**\n`;
+
+      if (usableResponseCount === 0) {
+        // Every name variation either threw or returned an error-shaped
+        // body — funding status is UNKNOWN, not "unfunded". Rendering the
+        // demote tiers (both empty) or the unfunded block here would be the
+        // exact false no-match/unavailable conflation design decision #5
+        // forbids, so this branch REPLACES both rather than falling through.
+        result += `**⚠️ NSF lookup unavailable — funding status unknown for this PI.**\n`;
+      } else {
+        // The shared demote renderer (Task 5) is the ONLY place award data
+        // (titles/numbers/institutions) is emitted for this path — it always
+        // shows both tiers (confirmed primary + demoted name-only secondary),
+        // replacing the old mutually-exclusive fallback that dropped
+        // name-only namesakes whenever a confirmed award existed, and the old
+        // leaky full-blob render of name-only awards when nothing confirmed.
+        result += this.renderNSFFundingTiers({ accessProject, confirmedAwards, nameOnlyAwards });
         result += `\n`;
 
-        result += `**⏰ Temporal Analysis:**\n${temporalAnalysis}\n\n`;
+        if (confirmedAwards.length > 0) {
+          result += `**⏰ Temporal Analysis:**\n${temporalAnalysis}\n\n`;
 
-        result += `**🎯 Funding Integration Insights:**\n`;
-        result += `• **Strong Correlation:** ${institutionValidatedAwards.length} validated NSF award(s) for this PI\n`;
-        result += `• **Research Continuity:** NSF funding supports computational research on ACCESS\n`;
-        result += `• **Resource Optimization:** Federal investment leverages cyberinfrastructure\n`;
-        result += `• **Impact Multiplier:** Combined funding amplifies research potential\n`;
-      } else {
-        result += `**🏆 NSF Award Analysis:**\n`;
-        if (relevantAwards.length > 0) {
-          result += `Found ${relevantAwards.length} potential awards but none passed institution validation:\n`;
-          relevantAwards.slice(0, 3).forEach((award, index) => {
-            result += `${index + 1}. ${award}\n`;
-          });
-          result += `\n**⚠️ Validation Issues:**\n`;
-          result += `• Institution names may differ between ACCESS and NSF systems\n`;
-          result += `• PI may have moved institutions since award\n`;
-          result += `• Awards may be under different name formats\n`;
-        } else {
+          result += `**🎯 Funding Integration Insights:**\n`;
+          result += `• **Strong Correlation:** ${confirmedAwards.length} validated NSF award(s) for this PI\n`;
+          result += `• **Research Continuity:** NSF funding supports computational research on ACCESS\n`;
+          result += `• **Resource Optimization:** Federal investment leverages cyberinfrastructure\n`;
+          result += `• **Impact Multiplier:** Combined funding amplifies research potential\n`;
+        } else if (relevantAwards.length === 0) {
+          // A usable response that legitimately found nothing IS a real
+          // no-match (usableResponseCount > 0 guarantees at least one
+          // variation returned a non-error body).
           result += `No NSF awards found for PI "${accessProject.pi}" variations.\n\n`;
           result += `**💡 Possible Explanations:**\n`;
           result += `• PI may have NSF funding under different name format\n`;
           result += `• Research may be funded by other federal agencies (DOE, NIH, etc.)\n`;
           result += `• Early career researcher or industry collaboration\n`;
-          result += `• Exploratory ACCESS allocation for preliminary work\n`;
-        }
+          result += `• Exploratory ACCESS allocation for preliminary work\n\n`;
 
-        result += `\n**🔬 Alternative Analysis:**\n`;
-        result += `• **Field-based Assessment:** Compare with other ${accessProject.fos} projects\n`;
-        result += `• **Resource Utilization:** Analyze computational requirements vs. allocation\n`;
-        result += `• **Institution Profile:** Review overall ${accessProject.piInstitution} funding patterns\n`;
+          result += `**🔬 Alternative Analysis:**\n`;
+          result += `• **Field-based Assessment:** Compare with other ${accessProject.fos} projects\n`;
+          result += `• **Resource Utilization:** Analyze computational requirements vs. allocation\n`;
+          result += `• **Institution Profile:** Review overall ${accessProject.piInstitution} funding patterns\n`;
+        }
       }
 
       return {
@@ -2415,71 +2496,179 @@ sort_by: "date_desc"
     return [...new Set(variations.filter((v) => v && v.trim().length > 0))];
   }
 
-  // Enhanced NSF response parsing with exact matching
-  private parseNSFResponseExact(nsfResponse: string, expectedPI: string): string[] {
-    if (!nsfResponse || nsfResponse.includes("not available") || nsfResponse.includes("Error")) {
+  // Token/word-boundary PI name match: every token of accessPi must appear as
+  // a WHOLE token in nsfPiName, order-insensitive. Replaces raw substring
+  // matching, which both (a) forward-matches "Matthew Long" against "Matthew
+  // Longstreet" and (b) reverse-matches a short/initial NSF PI string like
+  // "Li" against every "Wanlu Li" variation. Guards the reverse direction by
+  // requiring the ACCESS-side token set to be non-empty and, since it's the
+  // side we tokenize and require full containment of, a bare initial ("Li",
+  // "W Li") on the NSF side naturally fails because it lacks the "wanlu"
+  // token this predicate demands.
+  private piNameMatches(nsfPiName: string, accessPi: string): boolean {
+    const tokenize = (name: string): string[] =>
+      name
+        .toLowerCase()
+        .replace(/[.,]/g, " ")
+        .split(/\s+/)
+        .filter((t) => t.length > 0);
+
+    const nsfTokens = new Set(tokenize(nsfPiName));
+    const accessTokens = tokenize(accessPi);
+
+    if (accessTokens.length === 0 || nsfTokens.size === 0) {
+      return false;
+    }
+
+    return accessTokens.every((token) => nsfTokens.has(token));
+  }
+
+  // Detects an unusable nsf-awards response BEFORE any parsing runs —
+  // either the peer's typed error envelope ({status:"error",...}, from
+  // errorResponse in packages/shared/src/base-server.ts) or a body that
+  // isn't the expected {total,items,metadata} JSON shape at all (parse
+  // failure, or a parsed object with no `items` array). Structural, not
+  // substring: a real award can legitimately contain the text "not
+  // available" (e.g. totalIntendedAward: "Amount not available") without
+  // being an error, so this must never fall back to a text scan over the
+  // whole blob. Fails toward "unavailable" (caller treats as unknown), not
+  // toward "unfunded" — an empty response and a broken response must not
+  // both collapse to zero awards.
+  private isNSFUnavailable(nsfResponse: string): boolean {
+    if (!nsfResponse) {
+      return true;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(nsfResponse);
+    } catch {
+      return true;
+    }
+    if (typeof parsed !== "object" || parsed === null) {
+      return true;
+    }
+    if ((parsed as NSFErrorEnvelope).status === "error") {
+      return true;
+    }
+    if (!Array.isArray((parsed as NSFItemsEnvelope).items)) {
+      return true;
+    }
+    return false;
+  }
+
+  // Parse the nsf-awards peer's real JSON envelope and return its `items`
+  // array, or [] if the response is unavailable (see isNSFUnavailable) or
+  // malformed. Centralizes the JSON.parse so callers never scan response
+  // text directly.
+  private parseNSFItems(nsfResponse: string): NSFAwardItem[] {
+    if (this.isNSFUnavailable(nsfResponse)) {
       return [];
     }
+    const parsed = JSON.parse(nsfResponse) as NSFItemsEnvelope;
+    return parsed.items ?? [];
+  }
 
-    const awards: string[] = [];
-    const lines = nsfResponse.split("\n");
+  // Build the flat display blob + isolated institution field from one real
+  // NSF award item — the same {blob, institution} shape the old line-label
+  // parsers produced, so downstream matching/rendering (validateInstitutionMatch,
+  // renderNSFFundingTiers, the tier partition) is unchanged.
+  private buildNSFAward(item: NSFAwardItem): NSFAward {
+    const institution = item.institution ?? "";
+    const amount =
+      item.totalIntendedAward && item.totalIntendedAward !== "Amount not available"
+        ? item.totalIntendedAward
+        : (item.totalAwardedToDate ?? item.totalIntendedAward ?? "Amount not available");
+    const blob = [
+      `Award Number: ${item.awardNumber ?? "Unknown"}`,
+      `Principal Investigator: ${item.principalInvestigator ?? "Unknown"}`,
+      `Institution: ${institution}`,
+      `Title: ${item.title ?? "Untitled"}`,
+      `Amount: ${amount}`,
+    ].join(" | ");
+    return { blob, institution };
+  }
 
-    let currentAward = "";
-    let currentPI = "";
-    let currentInstitution = "";
-    let isExactPIMatch = false;
+  // Enhanced NSF response parsing with exact matching
+  private parseNSFResponseExact(nsfResponse: string, expectedPI: string): NSFAward[] {
+    const items = this.parseNSFItems(nsfResponse);
 
-    for (const line of lines) {
-      if (line.includes("Award Number:") || line.includes("Title:")) {
-        // Process previous award
-        if (currentAward && isExactPIMatch) {
-          awards.push(`${currentAward} | ${currentPI} | ${currentInstitution}`);
-        }
-
-        // Start new award
-        currentAward = line.trim();
-        currentPI = "";
-        currentInstitution = "";
-        isExactPIMatch = false;
-      } else if (line.includes("Principal Investigator:")) {
-        currentPI = line.trim();
-        // Exact name matching with multiple variations
-        const piInResponse = line.toLowerCase();
-        const expectedVariations = this.generatePINameVariations(expectedPI);
-
-        isExactPIMatch = expectedVariations.some((variation) => {
-          const normalizedVariation = variation.toLowerCase().replace(/[.,]/g, "");
-          const normalizedResponse = piInResponse.replace(/[.,]/g, "");
-          return (
-            normalizedResponse.includes(normalizedVariation) ||
-            normalizedVariation.includes(
-              normalizedResponse.replace(/principal investigator:\s*/i, "")
-            )
-          );
-        });
-      } else if (line.includes("Institution:")) {
-        currentInstitution = line.trim();
-      } else if (line.includes("Amount:") && currentAward) {
-        currentAward += " | " + line.trim();
+    const awards: NSFAward[] = [];
+    for (const item of items) {
+      // Token/word-boundary name match (not raw substring — see
+      // piNameMatches).
+      if (this.piNameMatches(item.principalInvestigator ?? "", expectedPI)) {
+        awards.push(this.buildNSFAward(item));
       }
-    }
-
-    // Don't forget the last award
-    if (currentAward && isExactPIMatch) {
-      awards.push(`${currentAward} | ${currentPI} | ${currentInstitution}`);
     }
 
     return awards.slice(0, 5); // Limit to 5 most relevant
   }
 
-  // Validate that an NSF award's text refers to a given ACCESS institution.
-  // NSF award text is free-form, so match against the NSF query variants (which
-  // do NOT include the "University of X" <-> "X University" swap).
-  private validateInstitutionMatch(nsfAward: string, accessInstitution: string): boolean {
-    const nsfLower = nsfAward.toLowerCase();
-    return this.nsfQueryVariants(accessInstitution).some((variant) =>
-      nsfLower.includes(variant.toLowerCase())
-    );
+  // Discriminating institution match: neither a hard equality check (which
+  // misses punctuation-only differences between NSF and ACCESS spellings,
+  // e.g. NSF's hyphenated "University of California-Berkeley" vs ACCESS's
+  // comma-form "University of California, Berkeley") nor plain token-set
+  // containment (which over-matches — "Purdue University"'s tokens
+  // {purdue, university} are a subset of "Indiana University-Purdue
+  // University Fort Wayne"'s tokens) is sufficient alone. This normalizes
+  // punctuation (lowercase; hyphen/comma -> space; " at " stripped; collapse
+  // whitespace) and then requires either normalized full-string equality OR
+  // bidirectional equality of the DISTINCTIVE token sets (a small STOPWORDS
+  // set dropped from both sides). Requiring the distinctive tokens to match
+  // as a SET in both directions — not one-way containment — is what breaks
+  // the over-match guards: "Middle" and "Indiana"/"Fort Wayne" are
+  // distinctive tokens present on the NSF side but absent from the ACCESS
+  // side, so the sets differ and the match fails, while the rescue cases
+  // (pure punctuation differences) leave both sides with identical
+  // distinctive-token sets.
+  //
+  // STOPWORDS discipline: a token belongs in STOPWORDS only if it NEVER
+  // distinguishes two real institutions — "university"/"of"/"the"/"at"
+  // qualify (no real institution pair differs solely by one having "the" or
+  // "of" and the other not, in a way that matters here). "state" and
+  // "college" do NOT qualify and must stay OUT: they are load-bearing in
+  // whole families of distinct real institutions ("Ohio State University" vs
+  // "Ohio University", "Michigan State" vs "University of Michigan",
+  // "Boston College" vs "Boston University"). Dropping a distinguishing
+  // token lets two different schools collapse onto the same distinctive-
+  // token set and wrongly compare equal — the dangerous direction, since it
+  // promotes a wrong award into the confident/primary tier.
+  private validateInstitutionMatch(nsfInstitution: string, accessInstitution: string): boolean {
+    const normalize = (s: string): string =>
+      s
+        .toLowerCase()
+        .replace(/\bat\b/g, " ")
+        .replace(/[-,]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    const nsfNormalized = normalize(nsfInstitution);
+    const accessNormalized = normalize(accessInstitution);
+    if (!nsfNormalized || !accessNormalized) {
+      return false;
+    }
+    if (nsfNormalized === accessNormalized) {
+      return true;
+    }
+
+    const STOPWORDS = new Set(["university", "of", "the", "at"]);
+    const distinctiveTokens = (normalized: string): Set<string> =>
+      new Set(normalized.split(" ").filter((t) => t.length > 0 && !STOPWORDS.has(t)));
+
+    const nsfDistinctive = distinctiveTokens(nsfNormalized);
+    const accessDistinctive = distinctiveTokens(accessNormalized);
+    if (nsfDistinctive.size === 0 || accessDistinctive.size === 0) {
+      return false;
+    }
+    if (nsfDistinctive.size !== accessDistinctive.size) {
+      return false;
+    }
+    for (const token of nsfDistinctive) {
+      if (!accessDistinctive.has(token)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   // Analyze temporal alignment between NSF awards and ACCESS project
@@ -2558,7 +2747,8 @@ sort_by: "date_desc"
       }
 
       // Step 2: For each ACCESS project PI, find corresponding NSF awards
-      const fundedProjectCorrelations = await this.crossReferenceWithNSF(accessProjects, limit);
+      const { correlations: fundedProjectCorrelations, unavailableCount } =
+        await this.crossReferenceWithNSF(accessProjects, limit);
 
       // Step 3: Build comprehensive result
       let result = `🎯 **Funded Projects Analysis**\n\n`;
@@ -2571,7 +2761,7 @@ sort_by: "date_desc"
       }
       result += `\n`;
 
-      if (fundedProjectCorrelations.length === 0) {
+      if (fundedProjectCorrelations.length === 0 && unavailableCount === 0) {
         result += `**🏛️ ACCESS Projects (${fieldOfScience || "All Fields"}):**\n`;
         result += this.formatProjectSummaries(accessProjects.slice(0, limit));
         result += `\n\n**🏆 NSF Funding Status:**\n`;
@@ -2590,21 +2780,31 @@ sort_by: "date_desc"
         result += `• Use analyze_project_funding() with specific project ID for detailed analysis\n`;
         result += `• Check if institution appears under different official names\n`;
       } else {
-        result += `**🔗 Cross-Referenced Funded Projects:**\n\n`;
-        fundedProjectCorrelations.forEach((correlation, index) => {
-          result += `**${index + 1}. ${correlation.accessProject.requestTitle}**\n`;
-          result += `• **ACCESS PI:** ${correlation.accessProject.pi} (${correlation.accessProject.piInstitution})\n`;
-          result += `• **Field:** ${correlation.accessProject.fos}\n`;
-          result += `• **Resources:** ${this.summarizeResources(correlation.accessProject.resources)}\n`;
-          result += `• **NSF Awards:** ${correlation.nsfAwards.length} award(s) found\n`;
-          correlation.nsfAwards.forEach((award) => {
-            result += `  - ${award}\n`;
+        if (fundedProjectCorrelations.length > 0) {
+          result += `**🔗 Cross-Referenced Funded Projects:**\n\n`;
+          fundedProjectCorrelations.forEach((correlation, index) => {
+            result += `**${index + 1}. ${correlation.accessProject.requestTitle}**\n`;
+            result += `• **ACCESS PI:** ${correlation.accessProject.pi} (${correlation.accessProject.piInstitution})\n`;
+            result += `• **Field:** ${correlation.accessProject.fos}\n`;
+            result += `• **Resources:** ${this.summarizeResources(correlation.accessProject.resources)}\n`;
+            result += this.renderNSFFundingTiers(correlation);
+            result += `\n`;
           });
-          result += `\n`;
-        });
+        }
 
         result += `**📊 Correlation Insights:**\n`;
-        result += `• **${fundedProjectCorrelations.length}** of ${accessProjects.length} ACCESS projects have identifiable NSF funding\n`;
+        if (unavailableCount > 0) {
+          // A mid-batch outage corrupts the denominator, so the confirmed
+          // aggregate is suppressed entirely rather than reported alongside
+          // a partial/unknown count (design decision #5/#8 — no "N of Y
+          // funded" style line when an outage is in play).
+          result += `• NSF lookup unavailable for ${unavailableCount} projects — funding status unknown\n`;
+        } else {
+          const confirmedProjectCount = fundedProjectCorrelations.filter(
+            (correlation) => correlation.confirmedAwards.length > 0
+          ).length;
+          result += `• **${confirmedProjectCount}** projects with confirmed NSF funding\n`;
+        }
         result += `• Cross-platform funding indicates sustained research programs\n`;
         result += `• ACCESS resources support federally-funded computational research\n`;
         result += `• Strong correlation suggests effective resource allocation\n`;
@@ -2623,6 +2823,55 @@ sort_by: "date_desc"
       if (authError) return authError;
       return this.errorResponse(`Error finding funded projects: ${handleApiError(error)}`);
     }
+  }
+
+  // Renders one correlation's confirmedAwards/nameOnlyAwards as two
+  // structurally separate blocks — the laundering-defense surface. The LLM
+  // consumer of this text launders hedges ("possible match" -> "is
+  // funded"), so the defense is structural, not wording:
+  //
+  //  - PRIMARY (confirmed) block is the ONLY place award identifiers,
+  //    institutions, or numbers appear. It only renders when
+  //    confirmedAwards is non-empty, and its header names the ACCESS PI and
+  //    the confirmed award's institution — a confident claim, because it IS
+  //    confirmed (Task 3's validateInstitutionMatch discriminated it).
+  //  - SECONDARY (name-only) block is deliberately LOSSY: a single fixed
+  //    conclusion sentence, never interpolated with the count, titles,
+  //    award numbers, or institutions of the name-only awards. Below the
+  //    suppress cap (SUPPRESS_CAP name-only awards or fewer) it still
+  //    states the same "treat as no confirmed funding" conclusion; above
+  //    the cap it collapses to a single fixed suppression string with zero
+  //    award data. Either way, no per-award content ever reaches this
+  //    block — lossy is the point.
+  //  - CONFIRMED = 0 (the common case) degrades the header to a safe,
+  //    unhedged "no confirmed funding" message and never emits a
+  //    "0 confirmed, N possible" style count — a count is itself a
+  //    re-laundering vector ("2 possible matches" reads as evidence).
+  private renderNSFFundingTiers(correlation: {
+    accessProject: Project;
+    confirmedAwards: NSFAward[];
+    nameOnlyAwards: NSFAward[];
+  }): string {
+    const SUPPRESS_CAP = 3;
+    let out = "";
+
+    if (correlation.confirmedAwards.length > 0) {
+      const confirmedInstitution = correlation.confirmedAwards[0].institution;
+      out += `• **NSF award(s) confirmed for ${correlation.accessProject.pi} at ${confirmedInstitution}:**\n`;
+      correlation.confirmedAwards.forEach((award) => {
+        out += `  - ${award.blob}\n`;
+      });
+    } else {
+      out += `• **No confirmed NSF funding found for this PI.**\n`;
+    }
+
+    if (correlation.nameOnlyAwards.length > SUPPRESS_CAP) {
+      out += `• common name — namesake matches suppressed\n`;
+    } else if (correlation.nameOnlyAwards.length > 0) {
+      out += `• These are unconfirmed namesake matches only (different institution). Treat as no confirmed NSF funding for this PI.\n`;
+    }
+
+    return out;
   }
 
   // Helper method to get projects by field directly
@@ -2656,43 +2905,81 @@ sort_by: "date_desc"
       .slice(0, limit);
   }
 
-  // Core cross-referencing logic
+  // Core cross-referencing logic.
+  //
+  // Confirmed matches (validateInstitutionMatch true) are the primary,
+  // authoritative tier; name-only matches are a lossy secondary tier. We
+  // must not let `limit` cut the batch scan or the correlations array
+  // before confirmed-vs-name-only ranking happens, or a name-only match
+  // earlier in `accessProjects` order can consume a slot and starve a
+  // later institution-confirmed match out of the results entirely. So:
+  // scan ALL projects (no early exit on correlations.length < limit),
+  // partition each project's awards into confirmedAwards/nameOnlyAwards,
+  // rank institution-confirmed correlations before name-only ones, THEN
+  // slice to `limit`.
   private async crossReferenceWithNSF(
     accessProjects: Project[],
     limit: number
-  ): Promise<
-    Array<{
+  ): Promise<{
+    correlations: Array<{
       accessProject: Project;
-      nsfAwards: string[];
-    }>
-  > {
-    const correlations: Array<{ accessProject: Project; nsfAwards: string[] }> = [];
+      confirmedAwards: NSFAward[];
+      nameOnlyAwards: NSFAward[];
+    }>;
+    unavailableCount: number;
+  }> {
+    const correlations: Array<{
+      accessProject: Project;
+      confirmedAwards: NSFAward[];
+      nameOnlyAwards: NSFAward[];
+    }> = [];
+    // Counts projects whose NSF lookup failed via EITHER cause below — the
+    // peer threw (Cause A), or it returned an error-shaped body (Cause B).
+    // Neither is a correlation NOR a clean "no match": the project's
+    // funding status is simply unknown, and must render as such rather
+    // than silently collapsing to "unfunded" (see design decision #5/#8).
+    let unavailableCount = 0;
 
-    // Process projects in batches to avoid overwhelming the NSF server
+    // Process projects in batches to avoid overwhelming the NSF server.
+    // No limit-based early exit here: ranking confirmed-before-name-only
+    // must see every candidate before the batch limit is applied below.
     const batchSize = 5;
-    for (
-      let i = 0;
-      i < Math.min(accessProjects.length, limit) && correlations.length < limit;
-      i += batchSize
-    ) {
+    for (let i = 0; i < accessProjects.length; i += batchSize) {
       const batch = accessProjects.slice(i, i + batchSize);
 
       for (const project of batch) {
         try {
           // Search for NSF awards by PI name
           const nsfData = (await this.callRemoteServer("nsf-awards", "search_nsf_awards", {
-            personnel: project.pi,
+            pi: this.normalizePIQuery(project.pi),
             limit: 3,
           })) as { content?: Array<{ text?: string }> };
           const nsfResponse = this.formatNsfResponse(nsfData);
+
+          // Cause B: an error-shaped body. Detect BEFORE parsing so it's
+          // counted as unavailable rather than silently parsed to zero
+          // awards (which parseNSFResponse's own guard would otherwise do).
+          if (this.isNSFUnavailable(nsfResponse)) {
+            unavailableCount++;
+            continue;
+          }
 
           // Parse NSF response to extract award summaries
           const nsfAwards = this.parseNSFResponse(nsfResponse, project.pi);
 
           if (nsfAwards.length > 0) {
+            // Partition before any slicing: confirmed matches must not be
+            // pushed out by name-only ones even within a single PI's awards.
+            const confirmedAwards = nsfAwards.filter((award) =>
+              this.validateInstitutionMatch(award.institution, project.piInstitution)
+            );
+            const nameOnlyAwards = nsfAwards.filter(
+              (award) => !this.validateInstitutionMatch(award.institution, project.piInstitution)
+            );
             correlations.push({
               accessProject: project,
-              nsfAwards: nsfAwards,
+              confirmedAwards,
+              nameOnlyAwards,
             });
           }
 
@@ -2701,48 +2988,46 @@ sort_by: "date_desc"
             await new Promise((resolve) => setTimeout(resolve, 100));
           }
         } catch (error) {
+          // Cause A: the NSF peer is unreachable or threw. Same "unknown,
+          // not unfunded" treatment as Cause B.
           console.warn(`Error checking NSF funding for ${project.pi}:`, error);
+          unavailableCount++;
         }
       }
     }
 
-    return correlations;
+    // Rank institution-confirmed correlations before name-only ones, THEN
+    // cut to `limit` — so a name-only match never starves a confirmed
+    // match out of the returned set. Array.sort is stable (ES2019+), so
+    // relative project order is preserved within each tier.
+    const ranked = correlations
+      .slice()
+      .sort((a, b) => {
+        const aConfirmed = a.confirmedAwards.length > 0 ? 0 : 1;
+        const bConfirmed = b.confirmedAwards.length > 0 ? 0 : 1;
+        return aConfirmed - bConfirmed;
+      });
+
+    return { correlations: ranked.slice(0, limit), unavailableCount };
   }
 
   // Parse NSF server response and extract relevant awards
-  private parseNSFResponse(nsfResponse: string, expectedPI: string): string[] {
-    if (!nsfResponse || nsfResponse.includes("not available") || nsfResponse.includes("Error")) {
-      return [];
-    }
+  private parseNSFResponse(nsfResponse: string, expectedPI: string): NSFAward[] {
+    // Defense-in-depth: callers on the service-unavailable path already
+    // check isNSFUnavailable before reaching here, but other call sites
+    // don't, so this guard stays as the fallback that keeps this method's
+    // own contract (never returns "awards" parsed from an unavailable body).
+    const items = this.parseNSFItems(nsfResponse);
 
-    const awards: string[] = [];
-    const lines = nsfResponse.split("\n");
-
-    let currentAward = "";
-    let isRelevant = false;
-
-    for (const line of lines) {
-      if (line.includes("Award Number:") || line.includes("Title:")) {
-        if (currentAward && isRelevant) {
-          awards.push(currentAward);
-        }
-        currentAward = line.trim();
-        isRelevant = false;
-      } else if (line.includes("Principal Investigator:")) {
-        currentAward += " | " + line.trim();
-        // Check if this award is actually for the expected PI (fuzzy match)
-        const piInResponse = line.toLowerCase();
-        const expectedParts = expectedPI.toLowerCase().split(" ");
-        isRelevant = expectedParts.some((part) => part.length > 2 && piInResponse.includes(part));
-      } else if (line.includes("Institution:") && currentAward) {
-        currentAward += " | " + line.trim();
-      } else if (line.includes("Amount:") && currentAward) {
-        currentAward += " | " + line.trim();
-        if (isRelevant) {
-          awards.push(currentAward);
-          currentAward = "";
-          isRelevant = false;
-        }
+    const awards: NSFAward[] = [];
+    for (const item of items) {
+      // Token/word-boundary name match (not raw substring — see
+      // piNameMatches). The prior gate matched on ANY name-part as a
+      // substring, which floods on both forward ("Matthew Long" inside
+      // "Matthew Longstreet") and reverse (any short surname-only NSF PI
+      // string) substrings.
+      if (this.piNameMatches(item.principalInvestigator ?? "", expectedPI)) {
+        awards.push(this.buildNSFAward(item));
       }
     }
 
@@ -2787,12 +3072,12 @@ sort_by: "date_desc"
   /**
    * Name forms to query the NSF award API with. NSF awardee names are free text
    * with no controlled vocabulary, so we try light punctuation normalizations of
-   * the canonical name: comma-stripped and "at"-stripped. These bridge only
-   * punctuation differences — they do NOT reach NSF's hyphenated or acronym
-   * awardee spellings (e.g. "University of California-Berkeley", "UC Berkeley"),
-   * so NSF recall is best-effort (tracked as a follow-up). Deliberately does NOT
-   * generate the "University of X" <-> "X University" swap, which manufactures
-   * matches to genuinely different institutions.
+   * the canonical name: comma-stripped, hyphen-stripped, and "at"-stripped.
+   * These bridge only punctuation differences — they do NOT reach NSF's
+   * acronym awardee spellings (e.g. "UC Berkeley"), so NSF recall is
+   * best-effort (tracked as a follow-up). Deliberately does NOT generate the
+   * "University of X" <-> "X University" swap, which manufactures matches to
+   * genuinely different institutions.
    */
   private nsfQueryVariants(canonical: string): string[] {
     const variants = new Set<string>([canonical]);
@@ -2800,6 +3085,8 @@ sort_by: "date_desc"
     variants.add(canonical.replace(/,\s*/g, " ").replace(/\s+/g, " ").trim());
     // "University of Texas at Austin" -> "University of Texas Austin"
     variants.add(canonical.replace(/\s+at\s+/gi, " "));
+    // "University of Illinois Urbana-Champaign" -> "University of Illinois Urbana Champaign"
+    variants.add(canonical.replace(/-/g, " ").replace(/\s+/g, " ").trim());
     return [...variants].filter((v) => v.length > 0);
   }
 
@@ -2873,14 +3160,21 @@ sort_by: "date_desc"
           })) as { content?: Array<{ text?: string }> };
           const nsfResponse = this.formatNsfResponse(nsfData);
 
-          if (
-            nsfResponse &&
-            !nsfResponse.includes("Error") &&
-            !nsfResponse.includes("not available")
-          ) {
-            nsfAwardsByVariant.set(variant, nsfResponse);
-            const awardCount = (nsfResponse.match(/Award Number:/g) || []).length;
-            totalNSFAwards += awardCount;
+          if (!this.isNSFUnavailable(nsfResponse)) {
+            // Don't trust the peer's primary_only filter alone — add a
+            // local validateInstitutionMatch guard on the returned items
+            // before counting/rendering them, consistent with the PI
+            // paths, so a regression upstream can't leak a co-PI/
+            // collaborator award into this institution's confident
+            // NSF Research Portfolio block.
+            const items = this.parseNSFItems(nsfResponse).filter((item) =>
+              this.validateInstitutionMatch(item.institution ?? "", canonical)
+            );
+            if (items.length > 0) {
+              const awards = items.map((item) => this.buildNSFAward(item));
+              nsfAwardsByVariant.set(variant, awards.map((a) => a.blob).join("\n"));
+              totalNSFAwards += items.length;
+            }
           }
         } catch (error) {
           console.warn(`Error fetching NSF data for variant "${variant}":`, error);
@@ -2935,7 +3229,7 @@ sort_by: "date_desc"
       // Cross-reference analysis
       result += `\n**🔗 Cross-Platform Analysis:**\n`;
       if (piCrossReference.matches > 0) {
-        result += `• **${piCrossReference.matches}** ACCESS PIs have identifiable NSF awards\n`;
+        result += `• **${piCrossReference.matches}** ACCESS PIs have confirmed NSF awards\n`;
         result += `• **Strong institutional research profile** with federal funding\n`;
         result += `• ACCESS resources effectively supporting NSF-funded research\n`;
         result += piCrossReference.details;
@@ -3031,20 +3325,26 @@ sort_by: "date_desc"
       // Limit to first 10 for performance
       try {
         const nsfData = (await this.callRemoteServer("nsf-awards", "search_nsf_awards", {
-          personnel: project.pi,
+          pi: this.normalizePIQuery(project.pi),
           limit: 2,
         })) as { content?: Array<{ text?: string }> };
         const nsfResponse = this.formatNsfResponse(nsfData);
 
-        if (
-          nsfResponse &&
-          !nsfResponse.includes("Error") &&
-          !nsfResponse.includes("not available")
-        ) {
+        if (!this.isNSFUnavailable(nsfResponse)) {
+          // relevantAwards is the UN-partitioned name-matched set (confirmed
+          // + name-only namesakes mixed). Rendering its raw length as "N NSF
+          // award(s)" is the laundering vector the design forbids (a bare
+          // namesake count reads as "identifiable NSF awards" for this ACCESS
+          // PI). Partition by institution and only count/render the
+          // institution-confirmed subset — this path has no demote-secondary
+          // contract, so name-only awards simply don't appear here at all.
           const relevantAwards = this.parseNSFResponse(nsfResponse, project.pi);
-          if (relevantAwards.length > 0) {
+          const confirmedAwards = relevantAwards.filter((award) =>
+            this.validateInstitutionMatch(award.institution, project.piInstitution)
+          );
+          if (confirmedAwards.length > 0) {
             matches++;
-            details += `• **${project.pi}:** ${relevantAwards.length} NSF award(s) - ${project.fos}\n`;
+            details += `• **${project.pi}:** ${confirmedAwards.length} confirmed NSF award(s) - ${project.fos}\n`;
           }
         }
 
