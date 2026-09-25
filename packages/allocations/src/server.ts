@@ -11,6 +11,8 @@ import {
   getRequestContext,
   fetchAllPages,
   buildPagination,
+  assertNoPublicWrites,
+  type ToolWithAccess,
 } from "@access-mcp/shared";
 import { CorpusCache, type CorpusSnapshot } from "./corpus-cache.js";
 import { resolveInstitution, type AliasTable } from "./institution-resolver.js";
@@ -209,7 +211,10 @@ export class AllocationsServer extends BaseAccessServer {
   private refreshTimer?: ReturnType<typeof setTimeout>;
 
   constructor() {
-    super("access-allocations", version, "https://allocations.access-ci.org");
+    super("access-allocations", version, "https://allocations.access-ci.org", {
+      requireApiKey: true,
+    });
+    assertNoPublicWrites(this.getTools() as ToolWithAccess[]);
   }
 
   /**
@@ -401,7 +406,7 @@ export class AllocationsServer extends BaseAccessServer {
   }
 
   protected getTools(): Tool[] {
-    return [
+    const tools: ToolWithAccess[] = [
       {
         name: "search_projects",
         description: "Search ACCESS-CI research projects. Returns {total, items}.",
@@ -549,6 +554,7 @@ export class AllocationsServer extends BaseAccessServer {
         _meta: {
           supportsFieldProjection: true,
         },
+        access: "public",
       },
       {
         name: "analyze_funding",
@@ -613,6 +619,7 @@ export class AllocationsServer extends BaseAccessServer {
             },
           ],
         },
+        access: "public",
       },
       {
         name: "get_allocation_statistics",
@@ -629,6 +636,7 @@ export class AllocationsServer extends BaseAccessServer {
             },
           ],
         },
+        access: "public",
       },
       {
         name: "get_rp_account",
@@ -661,14 +669,17 @@ export class AllocationsServer extends BaseAccessServer {
             },
           ],
         },
+        access: "authenticated",
       },
       {
         name: "get_my_rp_accounts",
         description:
           "List all resource-provider (RP) accounts for the authenticated user — every resource they have an allocation on, with cached balances. Returns one entry per RP: the resource_id (ACCESS Global Resource ID, e.g. delta-gpu.ncsa.access-ci.org), rp_display_name, rp_username, account state, and grants with balances and units. Start here to discover which resources the user has; then call get_rp_account with a resource_id for a live, up-to-the-minute balance on one of them. Balances here reflect the last sync (synced_at); a first-time query may return state \"syncing\" — ask again in a few seconds. Scoped to the authenticated acting user. Read-only.",
         inputSchema: { type: "object" as const, properties: {}, required: [] },
+        access: "authenticated",
       },
     ];
+    return tools;
   }
 
   protected getResources() {
