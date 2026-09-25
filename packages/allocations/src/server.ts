@@ -2736,15 +2736,12 @@ sort_by: "date_desc"
       // Step 1: Get ACCESS projects
       let accessProjects: Project[] = [];
       let searchQuery = "";
-      const searchMetadata = {
-        piNameVariations: [] as string[],
-      };
 
       if (piName) {
-        // Generate name variations for better matching
-        searchMetadata.piNameVariations = this.generatePINameVariations(piName);
-
-        // Search for projects by PI name, filtering by field if specified
+        // Search for projects by PI name (token/word-boundary match via
+        // piNameMatches — order-insensitive, so "First Last" and "Last,
+        // First" queries both find the ACCESS-stored "Last, First" form),
+        // filtering by field if specified
         accessProjects = await this.searchProjectsByPIName(piName, fieldOfScience, limit * 2);
         searchQuery += `PI: ${piName}`;
         if (fieldOfScience) searchQuery += `, Field: ${fieldOfScience}`;
@@ -2765,11 +2762,6 @@ sort_by: "date_desc"
       let result = `🎯 **Funded Projects Analysis**\n\n`;
       result += `**Search Criteria:** ${searchQuery}\n`;
       result += `**Projects Found:** ${accessProjects.length} ACCESS projects\n`;
-
-      // Add search metadata if available
-      if (searchMetadata.piNameVariations.length > 0) {
-        result += `**Name Variations Tried:** ${Math.min(searchMetadata.piNameVariations.length, 5)} format(s)\n`;
-      }
       result += `\n`;
 
       if (fundedProjectCorrelations.length === 0 && unavailableCount === 0) {
@@ -2908,7 +2900,7 @@ sort_by: "date_desc"
     const { records } = await this.ensureCorpus();
     return records
       .filter((project) => {
-        const piMatch = project.pi.toLowerCase().includes(piName.toLowerCase());
+        const piMatch = this.piNameMatches(project.pi, piName);
         const fieldMatch =
           !fieldOfScience || project.fos.toLowerCase().includes(fieldOfScience.toLowerCase());
         return piMatch && fieldMatch;
