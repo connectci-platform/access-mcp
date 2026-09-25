@@ -6,7 +6,6 @@ import {
   CallToolResult,
   getRequestContext,
   getActingUser,
-  getActingUserUid,
   requestContextStorage,
   RequestContext,
 } from "../base-server.js";
@@ -67,7 +66,6 @@ class TestServer extends BaseAccessServer {
             type: "text",
             text: JSON.stringify({
               actingUser: context?.actingUser,
-              actingUserUid: context?.actingUserUid,
               requestId: context?.requestId,
             }),
           },
@@ -409,7 +407,6 @@ describe("Request Context", () => {
     it("should return context when inside requestContextStorage.run", () => {
       const testContext: RequestContext = {
         actingUser: "testuser@access-ci.org",
-        actingUserUid: 12345,
         requestId: "req-123",
       };
 
@@ -417,7 +414,6 @@ describe("Request Context", () => {
         const context = getRequestContext();
         expect(context).toBeDefined();
         expect(context?.actingUser).toBe("testuser@access-ci.org");
-        expect(context?.actingUserUid).toBe(12345);
         expect(context?.requestId).toBe("req-123");
       });
     });
@@ -449,31 +445,6 @@ describe("Request Context", () => {
     });
   });
 
-  describe("getActingUserUid", () => {
-    it("should throw when no acting user UID is set", () => {
-      expect(() => getActingUserUid()).toThrow("No acting user UID specified");
-    });
-
-    it("should throw when context exists but actingUserUid is undefined", () => {
-      const testContext: RequestContext = {
-        actingUser: "testuser@access-ci.org",
-      };
-
-      requestContextStorage.run(testContext, () => {
-        expect(() => getActingUserUid()).toThrow("No acting user UID specified");
-      });
-    });
-
-    it("should return acting user UID when set", () => {
-      const testContext: RequestContext = {
-        actingUserUid: 98765,
-      };
-
-      requestContextStorage.run(testContext, () => {
-        expect(getActingUserUid()).toBe(98765);
-      });
-    });
-  });
 });
 
 describe("HTTP Mode - Acting User Headers", () => {
@@ -509,22 +480,6 @@ describe("HTTP Mode - Acting User Headers", () => {
       expect(result.actingUser).toBe("researcher@access-ci.org");
     });
 
-    it("should extract X-Acting-User-Uid header and parse as number", async () => {
-      const response = await fetch(`${baseUrl}/tools/get_context`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Acting-User-Uid": "12345",
-        },
-        body: JSON.stringify({ arguments: {} }),
-      });
-
-      expect(response.status).toBe(200);
-      const data = await response.json();
-      const result = JSON.parse(data.content[0].text);
-      expect(result.actingUserUid).toBe(12345);
-    });
-
     it("should extract X-Request-ID header", async () => {
       const response = await fetch(`${baseUrl}/tools/get_context`, {
         method: "POST",
@@ -547,7 +502,6 @@ describe("HTTP Mode - Acting User Headers", () => {
         headers: {
           "Content-Type": "application/json",
           "X-Acting-User": "admin@access-ci.org",
-          "X-Acting-User-Uid": "999",
           "X-Request-ID": "full-context-test",
         },
         body: JSON.stringify({ arguments: {} }),
@@ -557,7 +511,6 @@ describe("HTTP Mode - Acting User Headers", () => {
       const data = await response.json();
       const result = JSON.parse(data.content[0].text);
       expect(result.actingUser).toBe("admin@access-ci.org");
-      expect(result.actingUserUid).toBe(999);
       expect(result.requestId).toBe("full-context-test");
     });
 
@@ -574,25 +527,7 @@ describe("HTTP Mode - Acting User Headers", () => {
       const data = await response.json();
       const result = JSON.parse(data.content[0].text);
       expect(result.actingUser).toBeUndefined();
-      expect(result.actingUserUid).toBeUndefined();
       expect(result.requestId).toBeUndefined();
-    });
-
-    it("should handle invalid UID header gracefully", async () => {
-      const response = await fetch(`${baseUrl}/tools/get_context`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Acting-User-Uid": "not-a-number",
-        },
-        body: JSON.stringify({ arguments: {} }),
-      });
-
-      expect(response.status).toBe(200);
-      const data = await response.json();
-      const result = JSON.parse(data.content[0].text);
-      // NaN becomes null when JSON serialized
-      expect(result.actingUserUid).toBeNull();
     });
   });
 });

@@ -49,12 +49,6 @@ export interface RequestContext {
    * Format: "username@access-ci.org"
    */
   actingUser?: string;
-  /**
-   * The Drupal user ID of the acting user.
-   * Passed via X-Acting-User-Uid header from the agent.
-   * Used for content attribution in Drupal.
-   */
-  actingUserUid?: number;
   /** Unique request ID for tracing (from X-Request-ID header) */
   requestId?: string;
 }
@@ -82,21 +76,6 @@ export function getActingUser(): string {
     );
   }
   return context.actingUser;
-}
-
-/**
- * Get the acting user's Drupal UID from the current request context.
- * Throws an error if no acting user UID is set - use this for Drupal content attribution.
- */
-export function getActingUserUid(): number {
-  const context = getRequestContext();
-  if (!context?.actingUserUid) {
-    throw new Error(
-      "No acting user UID specified. The X-Acting-User-Uid header must be set to the Drupal user ID " +
-        "of the person performing this action."
-    );
-  }
-  return context.actingUserUid;
 }
 
 /**
@@ -712,10 +691,8 @@ export abstract class BaseAccessServer {
       }
 
       // Extract request context from headers
-      const uidHeader = c.req.header("X-Acting-User-Uid");
       const context: RequestContext = {
         actingUser: c.req.header("X-Acting-User"),
-        actingUserUid: uidHeader ? parseInt(uidHeader, 10) : undefined,
         requestId: c.req.header("X-Request-ID"),
       };
 
@@ -883,9 +860,6 @@ export abstract class BaseAccessServer {
     const headers: Record<string, string> = {};
     if (context?.actingUser) {
       headers["X-Acting-User"] = context.actingUser;
-    }
-    if (context?.actingUserUid) {
-      headers["X-Acting-User-Uid"] = String(context.actingUserUid);
     }
     if (context?.requestId) {
       headers["X-Request-ID"] = context.requestId;
