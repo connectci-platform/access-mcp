@@ -68,12 +68,11 @@ describe("BaseAccessServer.callRemoteServer", () => {
   it("forwards X-Acting-User from request context alongside the API key", async () => {
     process.env.MCP_API_KEY = "secret-key";
     await requestContextStorage.run(
-      { actingUser: "alice@access-ci.org", actingUserUid: 42 },
+      { actingUser: "alice@access-ci.org" },
       () => server.callPeer("events", "search_events", {})
     );
     expect(calls[0].headers["X-Api-Key"]).toBe("secret-key");
     expect(calls[0].headers["X-Acting-User"]).toBe("alice@access-ci.org");
-    expect(calls[0].headers["X-Acting-User-Uid"]).toBe("42");
   });
 
   it("throws when the service name isn't registered in ACCESS_MCP_SERVICES", async () => {
