@@ -144,11 +144,11 @@ Pre-built Docker images are available from GitHub Container Registry:
 
 ```bash
 # Pull and run with Docker Compose
-curl -o docker-compose.yml https://raw.githubusercontent.com/necyberteam/access-mcp/main/docker-compose.prod.yml
+curl -o docker-compose.yml https://raw.githubusercontent.com/connectci-platform/access-mcp/main/docker-compose.prod.yml
 
 # Create .env file with your configuration
 cat > .env << 'EOF'
-GITHUB_REPOSITORY=necyberteam/access-mcp
+GITHUB_REPOSITORY=connectci-platform/access-mcp
 SDS_API_KEY=your-key
 XDMOD_API_TOKEN=your-token
 ACCESS_MCP_SERVICES=nsf-awards=http://mcp-nsf-awards:3000
@@ -182,13 +182,24 @@ npm run release
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
+## Citation
+
+These servers are described in:
+
+> Pasquale, A., Gazula, V., and Bacal, J. E. *From Answering to Acting: An AI Agent
+> for Research Computing User Support.* HUST 2026.
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
+Work supported in part by the U.S. National Science Foundation under Award No. 2138286,
+as part of the Advanced Cyberinfrastructure Coordination Ecosystem: Services and Support
+(ACCESS) program.
+
 ## Links
 
 - **Documentation**: [https://access-mcp.netlify.app](https://access-mcp.netlify.app)
-- **Issues**: [GitHub Issues](https://github.com/necyberteam/access-mcp/issues)
+- **Issues**: [GitHub Issues](https://github.com/connectci-platform/access-mcp/issues)
 - **ACCESS-CI**: [https://access-ci.org](https://access-ci.org)
 - **MCP Protocol**: [https://modelcontextprotocol.io](https://modelcontextprotocol.io)
