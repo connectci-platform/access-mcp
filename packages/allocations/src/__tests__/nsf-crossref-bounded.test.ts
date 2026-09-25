@@ -159,7 +159,9 @@ describe("crossReferenceWithNSF bounded concurrency", () => {
     expect(elapsed).toBeLessThan(400);
 
     expect(text).toContain("Cross-Referenced Funded Projects");
-    expect(text).toContain("3");
+    // Tightened per review: bare "3" is near-vacuous (matches dates/resource
+    // counts too) — assert the actual confirmed-count phrasing instead.
+    expect(text).toMatch(/\*\*3\*\*\s+projects with confirmed NSF funding/);
   });
 });
 
