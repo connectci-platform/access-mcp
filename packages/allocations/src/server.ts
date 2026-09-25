@@ -68,6 +68,31 @@ interface NSFAward {
   institution: string;
 }
 
+// Shape of one item in the nsf-awards peer's real JSON envelope
+// ({total, items, metadata}, stringified as content[0].text — see
+// packages/nsf-awards/src/server.ts's NSFAward interface / envelope
+// construction). Only the fields this module actually reads are declared;
+// the peer may emit more (coPIs, abstract, dates, etc.) that we ignore.
+interface NSFAwardItem {
+  awardNumber?: string;
+  title?: string;
+  institution?: string;
+  principalInvestigator?: string;
+  totalIntendedAward?: string;
+  totalAwardedToDate?: string;
+}
+
+// The peer's typed error envelope shape (see errorResponse in
+// packages/shared/src/base-server.ts): {status:"error", executed:false,
+// error:{code,message,hint?}}. Only `status` is read here.
+interface NSFErrorEnvelope {
+  status?: string;
+}
+
+interface NSFItemsEnvelope {
+  items?: NSFAwardItem[];
+}
+
 interface SearchProjectsArgs {
   project_id?: number;
   similar_to?: number;
@@ -2228,18 +2253,18 @@ sort_by: "date_desc"
       // on a usable response that just finds nothing. If EVERY variation
       // fails (throws OR returns an error-shaped body), usableResponseCount
       // stays 0 and funding status is UNKNOWN, not "unfunded" (mirrors
-      // Task 6's fix on the bulk path — see isNSFErrorResponse).
+      // Task 6's fix on the bulk path — see isNSFUnavailable).
       let usableResponseCount = 0;
 
       for (const nameVariation of piNameVariations) {
         try {
           const nsfData = (await this.callRemoteServer("nsf-awards", "search_nsf_awards", {
-            personnel: this.normalizePIQuery(nameVariation),
+            pi: this.normalizePIQuery(nameVariation),
             limit: 3,
           })) as { content?: Array<{ text?: string }> };
           const nsfResponse = this.formatNsfResponse(nsfData);
 
-          if (!this.isNSFErrorResponse(nsfResponse)) {
+          if (!this.isNSFUnavailable(nsfResponse)) {
             usableResponseCount++;
             nsfSearchResults.set(nameVariation, nsfResponse);
 
@@ -2498,73 +2523,82 @@ sort_by: "date_desc"
     return accessTokens.every((token) => nsfTokens.has(token));
   }
 
-  // Isolate the value of a NSF response "Institution:" line — strip the
-  // label and surrounding whitespace so callers can match against just the
-  // institution text, not the whole pipe-joined award blob.
-  private isolateInstitution(line: string): string {
-    return line.replace(/.*Institution:\s*/i, "").trim();
+  // Detects an unusable nsf-awards response BEFORE any parsing runs —
+  // either the peer's typed error envelope ({status:"error",...}, from
+  // errorResponse in packages/shared/src/base-server.ts) or a body that
+  // isn't the expected {total,items,metadata} JSON shape at all (parse
+  // failure, or a parsed object with no `items` array). Structural, not
+  // substring: a real award can legitimately contain the text "not
+  // available" (e.g. totalIntendedAward: "Amount not available") without
+  // being an error, so this must never fall back to a text scan over the
+  // whole blob. Fails toward "unavailable" (caller treats as unknown), not
+  // toward "unfunded" — an empty response and a broken response must not
+  // both collapse to zero awards.
+  private isNSFUnavailable(nsfResponse: string): boolean {
+    if (!nsfResponse) {
+      return true;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(nsfResponse);
+    } catch {
+      return true;
+    }
+    if (typeof parsed !== "object" || parsed === null) {
+      return true;
+    }
+    if ((parsed as NSFErrorEnvelope).status === "error") {
+      return true;
+    }
+    if (!Array.isArray((parsed as NSFItemsEnvelope).items)) {
+      return true;
+    }
+    return false;
+  }
+
+  // Parse the nsf-awards peer's real JSON envelope and return its `items`
+  // array, or [] if the response is unavailable (see isNSFUnavailable) or
+  // malformed. Centralizes the JSON.parse so callers never scan response
+  // text directly.
+  private parseNSFItems(nsfResponse: string): NSFAwardItem[] {
+    if (this.isNSFUnavailable(nsfResponse)) {
+      return [];
+    }
+    const parsed = JSON.parse(nsfResponse) as NSFItemsEnvelope;
+    return parsed.items ?? [];
+  }
+
+  // Build the flat display blob + isolated institution field from one real
+  // NSF award item — the same {blob, institution} shape the old line-label
+  // parsers produced, so downstream matching/rendering (validateInstitutionMatch,
+  // renderNSFFundingTiers, the tier partition) is unchanged.
+  private buildNSFAward(item: NSFAwardItem): NSFAward {
+    const institution = item.institution ?? "";
+    const amount =
+      item.totalIntendedAward && item.totalIntendedAward !== "Amount not available"
+        ? item.totalIntendedAward
+        : (item.totalAwardedToDate ?? item.totalIntendedAward ?? "Amount not available");
+    const blob = [
+      `Award Number: ${item.awardNumber ?? "Unknown"}`,
+      `Principal Investigator: ${item.principalInvestigator ?? "Unknown"}`,
+      `Institution: ${institution}`,
+      `Title: ${item.title ?? "Untitled"}`,
+      `Amount: ${amount}`,
+    ].join(" | ");
+    return { blob, institution };
   }
 
   // Enhanced NSF response parsing with exact matching
   private parseNSFResponseExact(nsfResponse: string, expectedPI: string): NSFAward[] {
-    if (!nsfResponse || nsfResponse.includes("not available") || nsfResponse.includes("Error")) {
-      return [];
-    }
+    const items = this.parseNSFItems(nsfResponse);
 
     const awards: NSFAward[] = [];
-    const lines = nsfResponse.split("\n");
-
-    let currentAward = "";
-    let currentPI = "";
-    let currentInstitutionLine = "";
-    let currentInstitution = "";
-    let isExactPIMatch = false;
-
-    for (const line of lines) {
-      if (line.includes("Award Number:")) {
-        // Process previous award
-        if (currentAward && isExactPIMatch) {
-          awards.push({
-            blob: `${currentAward} | ${currentPI} | ${currentInstitutionLine}`,
-            institution: currentInstitution,
-          });
-        }
-
-        // Start new award
-        currentAward = line.trim();
-        currentPI = "";
-        currentInstitutionLine = "";
-        currentInstitution = "";
-        isExactPIMatch = false;
-      } else if (line.includes("Title:") && currentAward) {
-        // Title is a within-award field, not a boundary — a real NSF
-        // record has both an Award Number: line and a Title: line per
-        // award. Append rather than reset (see parseNSFResponse for the
-        // same fix and the full rationale).
-        currentAward += " | " + line.trim();
-      } else if (line.includes("Principal Investigator:")) {
-        currentPI = line.trim();
-        // Token/word-boundary name match (not raw substring — see
-        // piNameMatches). Match against the raw NSF PI name portion of the
-        // line; name-variation generation is retained upstream for query
-        // construction, not needed here since piNameMatches already handles
-        // token order and comma/period punctuation.
-        const nsfPiName = line.replace(/.*Principal Investigator:\s*/i, "");
-        isExactPIMatch = this.piNameMatches(nsfPiName, expectedPI);
-      } else if (line.includes("Institution:")) {
-        currentInstitutionLine = line.trim();
-        currentInstitution = this.isolateInstitution(line);
-      } else if (line.includes("Amount:") && currentAward) {
-        currentAward += " | " + line.trim();
+    for (const item of items) {
+      // Token/word-boundary name match (not raw substring — see
+      // piNameMatches).
+      if (this.piNameMatches(item.principalInvestigator ?? "", expectedPI)) {
+        awards.push(this.buildNSFAward(item));
       }
-    }
-
-    // Don't forget the last award
-    if (currentAward && isExactPIMatch) {
-      awards.push({
-        blob: `${currentAward} | ${currentPI} | ${currentInstitutionLine}`,
-        institution: currentInstitution,
-      });
     }
 
     return awards.slice(0, 5); // Limit to 5 most relevant
@@ -2917,7 +2951,7 @@ sort_by: "date_desc"
         try {
           // Search for NSF awards by PI name
           const nsfData = (await this.callRemoteServer("nsf-awards", "search_nsf_awards", {
-            personnel: this.normalizePIQuery(project.pi),
+            pi: this.normalizePIQuery(project.pi),
             limit: 3,
           })) as { content?: Array<{ text?: string }> };
           const nsfResponse = this.formatNsfResponse(nsfData);
@@ -2925,7 +2959,7 @@ sort_by: "date_desc"
           // Cause B: an error-shaped body. Detect BEFORE parsing so it's
           // counted as unavailable rather than silently parsed to zero
           // awards (which parseNSFResponse's own guard would otherwise do).
-          if (this.isNSFErrorResponse(nsfResponse)) {
+          if (this.isNSFUnavailable(nsfResponse)) {
             unavailableCount++;
             continue;
           }
@@ -2977,78 +3011,23 @@ sort_by: "date_desc"
     return { correlations: ranked.slice(0, limit), unavailableCount };
   }
 
-  // Detects an error-shaped NSF response body (Cause B of the
-  // service-unavailable problem) BEFORE parseNSFResponse runs, so the
-  // caller can count it as "unavailable" instead of letting it silently
-  // collapse to zero awards (indistinguishable from a genuine no-match).
-  //
-  // This is a string-sniff over the nsf-awards MCP peer's free-text
-  // response — it has no typed error envelope to check instead. That
-  // makes this detection fragile by construction: a legitimate "no
-  // awards found" body that happens to contain "Error" or "not
-  // available" would be mis-counted as unavailable, and a genuine error
-  // body that avoids those exact tokens would be mis-counted as a clean
-  // no-match. A durable fix requires the nsf-awards package to return a
-  // typed error envelope — cross-package, out of scope here. See
-  // docs/superpowers/specs/2026-09-19-nsf-match-accuracy-design.md
-  // decision #5.
-  private isNSFErrorResponse(nsfResponse: string): boolean {
-    return !nsfResponse || nsfResponse.includes("not available") || nsfResponse.includes("Error");
-  }
-
   // Parse NSF server response and extract relevant awards
   private parseNSFResponse(nsfResponse: string, expectedPI: string): NSFAward[] {
     // Defense-in-depth: callers on the service-unavailable path already
-    // check isNSFErrorResponse before reaching here, but other call sites
+    // check isNSFUnavailable before reaching here, but other call sites
     // don't, so this guard stays as the fallback that keeps this method's
-    // own contract (never returns "awards" parsed from an error body).
-    if (this.isNSFErrorResponse(nsfResponse)) {
-      return [];
-    }
+    // own contract (never returns "awards" parsed from an unavailable body).
+    const items = this.parseNSFItems(nsfResponse);
 
     const awards: NSFAward[] = [];
-    const lines = nsfResponse.split("\n");
-
-    let currentAward = "";
-    let currentInstitution = "";
-    let isRelevant = false;
-
-    for (const line of lines) {
-      if (line.includes("Award Number:")) {
-        if (currentAward && isRelevant) {
-          awards.push({ blob: currentAward, institution: currentInstitution });
-        }
-        currentAward = line.trim();
-        currentInstitution = "";
-        isRelevant = false;
-      } else if (line.includes("Title:") && currentAward) {
-        // Title is a within-award field, not a boundary — a real NSF
-        // record has both an Award Number: line and a Title: line per
-        // award. Treating Title as a boundary (like Award Number) reset
-        // currentAward and silently discarded the award number that had
-        // already accumulated. Append instead, mirroring the
-        // Principal Investigator: / Institution: / Amount: branches below.
-        currentAward += " | " + line.trim();
-      } else if (line.includes("Principal Investigator:")) {
-        currentAward += " | " + line.trim();
-        // Token/word-boundary name match (not raw substring — see
-        // piNameMatches). The prior gate matched on ANY name-part as a
-        // substring, which floods on both forward ("Matthew Long" inside
-        // "Matthew Longstreet") and reverse (any short surname-only NSF PI
-        // string) substrings.
-        const nsfPiName = line.replace(/.*Principal Investigator:\s*/i, "");
-        isRelevant = this.piNameMatches(nsfPiName, expectedPI);
-      } else if (line.includes("Institution:") && currentAward) {
-        currentAward += " | " + line.trim();
-        currentInstitution = this.isolateInstitution(line);
-      } else if (line.includes("Amount:") && currentAward) {
-        currentAward += " | " + line.trim();
-        if (isRelevant) {
-          awards.push({ blob: currentAward, institution: currentInstitution });
-          currentAward = "";
-          currentInstitution = "";
-          isRelevant = false;
-        }
+    for (const item of items) {
+      // Token/word-boundary name match (not raw substring — see
+      // piNameMatches). The prior gate matched on ANY name-part as a
+      // substring, which floods on both forward ("Matthew Long" inside
+      // "Matthew Longstreet") and reverse (any short surname-only NSF PI
+      // string) substrings.
+      if (this.piNameMatches(item.principalInvestigator ?? "", expectedPI)) {
+        awards.push(this.buildNSFAward(item));
       }
     }
 
@@ -3181,14 +3160,21 @@ sort_by: "date_desc"
           })) as { content?: Array<{ text?: string }> };
           const nsfResponse = this.formatNsfResponse(nsfData);
 
-          if (
-            nsfResponse &&
-            !nsfResponse.includes("Error") &&
-            !nsfResponse.includes("not available")
-          ) {
-            nsfAwardsByVariant.set(variant, nsfResponse);
-            const awardCount = (nsfResponse.match(/Award Number:/g) || []).length;
-            totalNSFAwards += awardCount;
+          if (!this.isNSFUnavailable(nsfResponse)) {
+            // Don't trust the peer's primary_only filter alone — add a
+            // local validateInstitutionMatch guard on the returned items
+            // before counting/rendering them, consistent with the PI
+            // paths, so a regression upstream can't leak a co-PI/
+            // collaborator award into this institution's confident
+            // NSF Research Portfolio block.
+            const items = this.parseNSFItems(nsfResponse).filter((item) =>
+              this.validateInstitutionMatch(item.institution ?? "", canonical)
+            );
+            if (items.length > 0) {
+              const awards = items.map((item) => this.buildNSFAward(item));
+              nsfAwardsByVariant.set(variant, awards.map((a) => a.blob).join("\n"));
+              totalNSFAwards += items.length;
+            }
           }
         } catch (error) {
           console.warn(`Error fetching NSF data for variant "${variant}":`, error);
@@ -3339,16 +3325,12 @@ sort_by: "date_desc"
       // Limit to first 10 for performance
       try {
         const nsfData = (await this.callRemoteServer("nsf-awards", "search_nsf_awards", {
-          personnel: this.normalizePIQuery(project.pi),
+          pi: this.normalizePIQuery(project.pi),
           limit: 2,
         })) as { content?: Array<{ text?: string }> };
         const nsfResponse = this.formatNsfResponse(nsfData);
 
-        if (
-          nsfResponse &&
-          !nsfResponse.includes("Error") &&
-          !nsfResponse.includes("not available")
-        ) {
+        if (!this.isNSFUnavailable(nsfResponse)) {
           // relevantAwards is the UN-partitioned name-matched set (confirmed
           // + name-only namesakes mixed). Rendering its raw length as "N NSF
           // award(s)" is the laundering vector the design forbids (a bare

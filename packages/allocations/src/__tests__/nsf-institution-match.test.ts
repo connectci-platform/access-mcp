@@ -89,15 +89,24 @@ describe("validateInstitutionMatch", () => {
   });
 });
 
-describe("parseNSFResponse isolates the institution field from the blob", () => {
+describe("parseNSFResponse isolates the institution field from the parsed item", () => {
   it("returns an object per award with an isolated `.institution` and a full `.blob`", () => {
     const server = new AllocationsServer();
-    const nsfResponse = [
-      "Award Number: 1234567",
-      "Principal Investigator: Matthew Long",
-      "Institution: University of California-Berkeley",
-      "Amount: $100,000",
-    ].join("\n");
+    // Real peer shape: content[0].text is a JSON STRING of {total, items,
+    // metadata} — see packages/nsf-awards/src/server.ts.
+    const nsfResponse = JSON.stringify({
+      total: 1,
+      items: [
+        {
+          awardNumber: "1234567",
+          title: "Some Grant",
+          institution: "University of California-Berkeley",
+          principalInvestigator: "Matthew Long",
+          totalIntendedAward: "$100,000",
+        },
+      ],
+      metadata: {},
+    });
 
     const parse = (
       server as unknown as {
@@ -111,9 +120,9 @@ describe("parseNSFResponse isolates the institution field from the blob", () => 
     const result = parse(nsfResponse, "Long, Matthew");
     expect(result).toHaveLength(1);
     expect(result[0].institution).toBe("University of California-Berkeley");
-    expect(result[0].blob).toContain("Award Number: 1234567");
-    expect(result[0].blob).toContain("Principal Investigator: Matthew Long");
-    expect(result[0].blob).toContain("Institution: University of California-Berkeley");
-    expect(result[0].blob).toContain("Amount: $100,000");
+    expect(result[0].blob).toContain("1234567");
+    expect(result[0].blob).toContain("Matthew Long");
+    expect(result[0].blob).toContain("University of California-Berkeley");
+    expect(result[0].blob).toContain("$100,000");
   });
 });

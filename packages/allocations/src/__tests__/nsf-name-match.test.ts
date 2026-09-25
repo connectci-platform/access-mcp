@@ -44,15 +44,29 @@ describe("piNameMatches", () => {
   });
 });
 
+// Real peer shape: content[0].text is a JSON STRING of {total, items,
+// metadata} — see packages/nsf-awards/src/server.ts's NSFAward interface /
+// envelope construction. Builds a single-item envelope for a given PI name.
+function nsfEnvelope(principalInvestigator: string): string {
+  return JSON.stringify({
+    total: 1,
+    items: [
+      {
+        awardNumber: "1234567",
+        title: "Some Grant",
+        institution: "Some University",
+        principalInvestigator,
+        totalIntendedAward: "$100,000",
+      },
+    ],
+    metadata: {},
+  });
+}
+
 describe("parseNSFResponse uses token/word-boundary matching, not substring", () => {
   it("rejects a namesake ('Long, Matthew' must not match 'Christy Long')", () => {
     const server = new AllocationsServer();
-    const nsfResponse = [
-      "Award Number: 1234567",
-      "Principal Investigator: Christy Long",
-      "Institution: Some University",
-      "Amount: $100,000",
-    ].join("\n");
+    const nsfResponse = nsfEnvelope("Christy Long");
 
     const parse = (
       server as unknown as {
@@ -65,12 +79,7 @@ describe("parseNSFResponse uses token/word-boundary matching, not substring", ()
 
   it("rejects a forward-substring namesake ('Matthew Long' must not match 'Matthew Longstreet')", () => {
     const server = new AllocationsServer();
-    const nsfResponse = [
-      "Award Number: 1234567",
-      "Principal Investigator: Matthew Longstreet",
-      "Institution: Some University",
-      "Amount: $100,000",
-    ].join("\n");
+    const nsfResponse = nsfEnvelope("Matthew Longstreet");
 
     const parse = (
       server as unknown as {
@@ -83,12 +92,7 @@ describe("parseNSFResponse uses token/word-boundary matching, not substring", ()
 
   it("accepts a true match", () => {
     const server = new AllocationsServer();
-    const nsfResponse = [
-      "Award Number: 1234567",
-      "Principal Investigator: Matthew Long",
-      "Institution: Some University",
-      "Amount: $100,000",
-    ].join("\n");
+    const nsfResponse = nsfEnvelope("Matthew Long");
 
     const parse = (
       server as unknown as {
@@ -103,12 +107,7 @@ describe("parseNSFResponse uses token/word-boundary matching, not substring", ()
 describe("parseNSFResponseExact uses token/word-boundary matching, not bidirectional substring", () => {
   it("rejects reverse-substring ('Li' must not match 'Wanlu Li')", () => {
     const server = new AllocationsServer();
-    const nsfResponse = [
-      "Award Number: 1234567",
-      "Principal Investigator: Li",
-      "Institution: Some University",
-      "Amount: $100,000",
-    ].join("\n");
+    const nsfResponse = nsfEnvelope("Li");
 
     const parse = (
       server as unknown as {
@@ -121,12 +120,7 @@ describe("parseNSFResponseExact uses token/word-boundary matching, not bidirecti
 
   it("rejects forward-substring ('Matthew Long' must not match 'Matthew Longstreet')", () => {
     const server = new AllocationsServer();
-    const nsfResponse = [
-      "Award Number: 1234567",
-      "Principal Investigator: Matthew Longstreet",
-      "Institution: Some University",
-      "Amount: $100,000",
-    ].join("\n");
+    const nsfResponse = nsfEnvelope("Matthew Longstreet");
 
     const parse = (
       server as unknown as {
@@ -139,12 +133,7 @@ describe("parseNSFResponseExact uses token/word-boundary matching, not bidirecti
 
   it("accepts a true match", () => {
     const server = new AllocationsServer();
-    const nsfResponse = [
-      "Award Number: 1234567",
-      "Principal Investigator: Matthew Long",
-      "Institution: Some University",
-      "Amount: $100,000",
-    ].join("\n");
+    const nsfResponse = nsfEnvelope("Matthew Long");
 
     const parse = (
       server as unknown as {

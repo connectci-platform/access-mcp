@@ -120,7 +120,17 @@ describe("analyzeProjectFunding service-unavailable (I1) — every variation ret
         callRemoteServer: (s: string, t: string, a: unknown) => Promise<unknown>;
       },
       "callRemoteServer",
-    ).mockResolvedValue({ content: [{ text: "Error: NSF service returned a 503" }] });
+    ).mockResolvedValue({
+      content: [
+        {
+          text: JSON.stringify({
+            status: "error",
+            executed: false,
+            error: { code: "error", message: "NSF service returned a 503" },
+          }),
+        },
+      ],
+    });
 
     const project = rec("Smith, John", "Error Body Project", "Example University");
     mockFindProjectById(server, project);
@@ -143,7 +153,9 @@ describe("analyzeProjectFunding service-unavailable (I1) — positive control (g
         callRemoteServer: (s: string, t: string, a: unknown) => Promise<unknown>;
       },
       "callRemoteServer",
-    ).mockResolvedValue({ content: [{ text: "No matching NSF awards found for this query." }] });
+    ).mockResolvedValue({
+      content: [{ text: JSON.stringify({ total: 0, items: [], metadata: {} }) }],
+    });
 
     const project = rec("Nobody, Really", "Genuinely Unfunded Project", "Example University");
     mockFindProjectById(server, project);

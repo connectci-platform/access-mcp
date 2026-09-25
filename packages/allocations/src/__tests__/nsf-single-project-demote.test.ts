@@ -52,14 +52,32 @@ function rec(pi: string, requestTitle: string, piInstitution: string): Rec {
   };
 }
 
-function nsfBlob(pi: string, institution: string, awardNumber: string, title: string): string {
-  return [
-    `Award Number: ${awardNumber}`,
-    `Principal Investigator: ${pi}`,
-    `Institution: ${institution}`,
-    `Title: ${title}`,
-    "Amount: $100,000",
-  ].join("\n");
+// Real peer shape: content[0].text is a JSON STRING of {total, items,
+// metadata} — see packages/nsf-awards/src/server.ts. One award's worth of
+// envelope; combine via combineEnvelopes when a mock needs multiple items
+// visible in a single search_nsf_awards response.
+function nsfEnvelope(pi: string, institution: string, awardNumber: string, title: string): string {
+  return JSON.stringify({
+    total: 1,
+    items: [
+      {
+        awardNumber,
+        title,
+        institution,
+        principalInvestigator: pi,
+        totalIntendedAward: "$100,000",
+      },
+    ],
+    metadata: {},
+  });
+}
+
+// Merge multiple single-award envelope strings (as produced by nsfEnvelope)
+// into one envelope carrying all their items — mirrors a single
+// search_nsf_awards call returning several awards for one PI query.
+function combineEnvelopes(...envelopes: string[]): string {
+  const items = envelopes.flatMap((e) => (JSON.parse(e) as { items: unknown[] }).items);
+  return JSON.stringify({ total: items.length, items, metadata: {} });
 }
 
 function analyzeProjectFunding(
@@ -84,19 +102,20 @@ function mockFindProjectById(server: AllocationsServer, project: Rec): void {
   ).mockResolvedValue(project);
 }
 
-// personnel is the queried name variation; handler decides what NSF returns
-// for that variation. Returning "" causes formatNsfResponse to be skipped
-// upstream (empty response), so tests that want "no match at all" for a
-// variation should return an empty string.
-function mockRemote(server: AllocationsServer, handler: (personnel: string) => string): void {
+// pi is the queried name variation; handler decides what NSF returns for
+// that variation. Returning "" is treated as unavailable (isNSFUnavailable
+// fails toward unavailable on an empty/unparseable body), so tests that
+// want "no match at all" for a variation should return an empty envelope
+// (JSON.stringify({total:0, items:[], metadata:{}})) instead.
+function mockRemote(server: AllocationsServer, handler: (pi: string) => string): void {
   vi.spyOn(
     server as unknown as {
       callRemoteServer: (s: string, t: string, a: unknown) => Promise<unknown>;
     },
     "callRemoteServer",
   ).mockImplementation(async (_serverName, _tool, args) => {
-    const personnel = (args as { personnel?: string }).personnel ?? "";
-    const text = handler(personnel);
+    const pi = (args as { pi?: string }).pi ?? "";
+    const text = handler(pi);
     return { content: [{ text }] };
   });
 }
@@ -112,11 +131,11 @@ describe("analyzeProjectFunding demote rendering — 1 confirmed + name-only pre
     // into the same response text, so parseNSFResponseExact's per-response
     // parse naturally yields both an institution-validated and a
     // name-only-only award across the variation loop.
-    mockRemote(server, (personnel) =>
-      [
-        nsfBlob(personnel, "Example University", "9998887", "Confirmed Grant Title"),
-        nsfBlob(personnel, "Totally Unrelated Institute", "5551234", "Namesake Award Title"),
-      ].join("\n"),
+    mockRemote(server, (pi) =>
+      combineEnvelopes(
+        nsfEnvelope(pi, "Example University", "9998887", "Confirmed Grant Title"),
+        nsfEnvelope(pi, "Totally Unrelated Institute", "5551234", "Namesake Award Title"),
+      ),
     );
 
     const response = await analyzeProjectFunding(server, 1);
@@ -147,8 +166,8 @@ describe("analyzeProjectFunding demote rendering — confirmed=0, name-only <= 3
     const project = rec("Smith, John", "Name Only Project", "Example University");
     mockFindProjectById(server, project);
 
-    mockRemote(server, (personnel) =>
-      nsfBlob(personnel, "Totally Unrelated Institute", "5551234", "Namesake Award Title"),
+    mockRemote(server, (pi) =>
+      nsfEnvelope(pi, "Totally Unrelated Institute", "5551234", "Namesake Award Title"),
     );
 
     const response = await analyzeProjectFunding(server, 1);
@@ -186,7 +205,7 @@ describe("analyzeProjectFunding demote rendering — name-only > suppress cap (3
     let counter = 0;
     mockRemote(server, () => {
       counter += 1;
-      return nsfBlob(
+      return nsfEnvelope(
         "Common Name",
         `Unrelated Institute ${counter}`,
         `100000${counter}`,

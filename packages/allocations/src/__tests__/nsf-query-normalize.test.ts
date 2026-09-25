@@ -56,18 +56,18 @@ describe("normalizePIQuery", () => {
 });
 
 describe("bulk NSF query passes normalized PI name to callRemoteServer", () => {
-  it("sends 'Matthew Long' (not 'Long, Matthew') as the personnel arg", async () => {
+  it("sends 'Matthew Long' (not 'Long, Matthew') as the pi arg", async () => {
     const server = new AllocationsServer();
 
-    const nsfCalls: Array<{ personnel?: string }> = [];
+    const nsfCalls: Array<{ pi?: string }> = [];
     vi.spyOn(
       server as unknown as {
         callRemoteServer: (s: string, t: string, a: unknown) => Promise<unknown>;
       },
       "callRemoteServer",
     ).mockImplementation(async (_serverName, _tool, args) => {
-      nsfCalls.push(args as { personnel?: string });
-      return { content: [{ text: "No awards found" }] };
+      nsfCalls.push(args as { pi?: string });
+      return { content: [{ text: JSON.stringify({ total: 0, items: [], metadata: {} }) }] };
     });
 
     const project = rec("Long, Matthew");
@@ -81,7 +81,7 @@ describe("bulk NSF query passes normalized PI name to callRemoteServer", () => {
     ).crossReferenceWithNSF([project], 10);
 
     expect(nsfCalls.length).toBeGreaterThan(0);
-    expect(nsfCalls[0].personnel).toBe("Matthew Long");
-    expect(nsfCalls[0].personnel).not.toBe("Long, Matthew");
+    expect(nsfCalls[0].pi).toBe("Matthew Long");
+    expect(nsfCalls[0].pi).not.toBe("Long, Matthew");
   });
 });

@@ -52,19 +52,33 @@ function rec(pi: string, requestTitle: string, piInstitution: string): Rec {
   };
 }
 
-function nsfBlob(
+// Real peer shape: search_nsf_awards returns content[0].text as a JSON
+// STRING of {total, items, metadata} — see packages/nsf-awards/src/server.ts.
+// nsfEnvelope builds that shape so mocks exercise the same JSON parse path
+// as the live peer, not the old (broken) line-labeled text format.
+function nsfEnvelope(
   pi: string,
   institution: string,
   awardNumber: string,
   title: string,
 ): string {
-  return [
-    `Award Number: ${awardNumber}`,
-    `Principal Investigator: ${pi}`,
-    `Institution: ${institution}`,
-    `Title: ${title}`,
-    "Amount: $100,000",
-  ].join("\n");
+  return JSON.stringify({
+    total: 1,
+    items: [
+      {
+        awardNumber,
+        title,
+        institution,
+        principalInvestigator: pi,
+        coPIs: [],
+        totalIntendedAward: "$100,000",
+        totalAwardedToDate: "$100,000",
+        startDate: "2026-01-01",
+        endDate: "2027-01-01",
+      },
+    ],
+    metadata: {},
+  });
 }
 
 function findFundedProjects(
@@ -86,7 +100,7 @@ function findFundedProjects(
 
 function mockRemote(
   server: AllocationsServer,
-  handler: (personnel: string) => string,
+  handler: (pi: string) => string,
 ): void {
   vi.spyOn(
     server as unknown as {
@@ -94,16 +108,16 @@ function mockRemote(
     },
     "callRemoteServer",
   ).mockImplementation(async (_serverName, _tool, args) => {
-    const personnel = (args as { personnel?: string }).personnel ?? "";
-    return { content: [{ text: handler(personnel) }] };
+    const pi = (args as { pi?: string }).pi ?? "";
+    return { content: [{ text: handler(pi) }] };
   });
 }
 
 describe("findFundedProjects demote rendering — confirmed present", () => {
   it("renders the primary block with the confident header and a confirmed award identifier", async () => {
     const server = new AllocationsServer();
-    mockRemote(server, (personnel) =>
-      nsfBlob(personnel, "Example University", "9998887", "Confirmed Grant Title"),
+    mockRemote(server, (pi) =>
+      nsfEnvelope(pi, "Example University", "9998887", "Confirmed Grant Title"),
     );
 
     const project = rec("Long, Matthew", "Confirmed Project", "Example University");
@@ -127,8 +141,8 @@ describe("findFundedProjects demote rendering — confirmed present", () => {
 describe("findFundedProjects demote rendering — confirmed=0, name-only <= 3", () => {
   it("degrades to the safe header and the lossy conclusion sentence, with no leaked identifiers", async () => {
     const server = new AllocationsServer();
-    mockRemote(server, (personnel) =>
-      nsfBlob(personnel, "Totally Unrelated Institute", "5551234", "Namesake Award Title"),
+    mockRemote(server, (pi) =>
+      nsfEnvelope(pi, "Totally Unrelated Institute", "5551234", "Namesake Award Title"),
     );
 
     const project = rec("Smith, John", "Name Only Project", "Example University");
@@ -198,15 +212,15 @@ describe("findFundedProjects demote rendering — name-only > suppress cap (3)",
           confirmedAwards: [],
           nameOnlyAwards: [
             {
-              blob: nsfBlob("Common, Name", "Unrelated Inst One", "1000001", "Suppressed Title One"),
+              blob: nsfEnvelope("Common, Name", "Unrelated Inst One", "1000001", "Suppressed Title One"),
               institution: "Unrelated Inst One",
             },
             {
-              blob: nsfBlob("Common, Name", "Unrelated Inst Two", "1000002", "Suppressed Title Two"),
+              blob: nsfEnvelope("Common, Name", "Unrelated Inst Two", "1000002", "Suppressed Title Two"),
               institution: "Unrelated Inst Two",
             },
             {
-              blob: nsfBlob(
+              blob: nsfEnvelope(
                 "Common, Name",
                 "Unrelated Inst Three",
                 "1000003",
@@ -215,7 +229,7 @@ describe("findFundedProjects demote rendering — name-only > suppress cap (3)",
               institution: "Unrelated Inst Three",
             },
             {
-              blob: nsfBlob(
+              blob: nsfEnvelope(
                 "Common, Name",
                 "Unrelated Inst Four",
                 "1000004",
@@ -247,11 +261,11 @@ describe("findFundedProjects demote rendering — name-only > suppress cap (3)",
 describe("findFundedProjects demote rendering — aggregate", () => {
   it("reports the confirmed-only count, never a possible/unconfirmed count or an X-of-Y mixed line", async () => {
     const server = new AllocationsServer();
-    mockRemote(server, (personnel) => {
-      if (personnel === "Pi Confirmed") {
-        return nsfBlob(personnel, "Example University", "7778889", "Confirmed Grant");
+    mockRemote(server, (pi) => {
+      if (pi === "Pi Confirmed") {
+        return nsfEnvelope(pi, "Example University", "7778889", "Confirmed Grant");
       }
-      return nsfBlob(personnel, "Totally Unrelated Institute", "5551234", "Namesake Award Title");
+      return nsfEnvelope(pi, "Totally Unrelated Institute", "5551234", "Namesake Award Title");
     });
 
     const confirmedProject = rec("Confirmed, Pi", "Confirmed Project", "Example University");

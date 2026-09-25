@@ -2,18 +2,20 @@ import { describe, it, expect } from "vitest";
 import { AllocationsServer } from "../server.js";
 
 /**
- * Task 9 (NSF match accuracy): both `parseNSFResponse` and
- * `parseNSFResponseExact` treat `Title:` as an award-boundary RESET,
- * identical to `Award Number:`. Real NSF records emit BOTH an
- * `Award Number:` line and a `Title:` line per award. When both are
- * present, the `Title:` line resets `currentAward`, discarding whatever
- * was accumulated before it (the award number) — so the rendered blob
- * silently drops either the award number or the title.
+ * Task 9 (NSF match accuracy), re-scoped for the JSON envelope parser.
  *
- * `Award Number:` is the true award delimiter (the caller counts awards
- * via `nsfResponse.match(/Award Number:/g)`). `Title:` is a within-award
- * field like `Principal Investigator:` / `Institution:` / `Amount:` and
- * should be appended, not treated as a boundary.
+ * The original Task 9 bug was specific to the OLD line-labeled text parser:
+ * `Title:` was treated as an award-boundary reset identical to `Award
+ * Number:`, so a real NSF record with both lines silently dropped the award
+ * number. That bug is structurally impossible now — parseNSFResponse /
+ * parseNSFResponseExact parse the real nsf-awards peer's JSON envelope
+ * ({total, items, metadata}) and build one award per `items[]` entry, so
+ * there is no line-scanning boundary logic left to regress.
+ *
+ * This file now guards the equivalent real-shape behavior: a parsed award's
+ * blob carries BOTH its award number and its title (no field silently
+ * dropped when both are present), and multiple items in one envelope
+ * produce multiple distinct awards.
  */
 
 type ParseFn = (nsfResponse: string, expectedPI: string) => { blob: string; institution: string }[];
@@ -22,17 +24,27 @@ function getParse(server: AllocationsServer, name: "parseNSFResponse" | "parseNS
   return (server as unknown as Record<string, ParseFn>)[name].bind(server);
 }
 
-describe("parseNSFResponse: Award Number: is the sole boundary, Title: is appended", () => {
-  it("RED: a record with both Award Number and Title keeps BOTH in the blob", () => {
+function envelope(
+  items: Array<{ awardNumber: string; title: string; principalInvestigator: string }>,
+): string {
+  return JSON.stringify({
+    total: items.length,
+    items: items.map((item) => ({
+      ...item,
+      institution: "Some University",
+      totalIntendedAward: "$100,000",
+    })),
+    metadata: {},
+  });
+}
+
+describe("parseNSFResponse: a parsed award carries both its award number and its title", () => {
+  it("keeps BOTH the award number and the title in the blob", () => {
     const server = new AllocationsServer();
     const parse = getParse(server, "parseNSFResponse");
-    const nsfResponse = [
-      "Award Number: 1234567",
-      "Title: Distinctive Grant Title",
-      "Principal Investigator: Matthew Long",
-      "Institution: Some University",
-      "Amount: $100,000",
-    ].join("\n");
+    const nsfResponse = envelope([
+      { awardNumber: "1234567", title: "Distinctive Grant Title", principalInvestigator: "Matthew Long" },
+    ]);
 
     const awards = parse(nsfResponse, "Matthew Long");
 
@@ -41,15 +53,21 @@ describe("parseNSFResponse: Award Number: is the sole boundary, Title: is append
     expect(awards[0].blob).toContain("Distinctive Grant Title");
   });
 
-  it("a record with Award Number but no Title still parses (no regression)", () => {
+  it("a record with an award number but no title still parses (no regression)", () => {
     const server = new AllocationsServer();
     const parse = getParse(server, "parseNSFResponse");
-    const nsfResponse = [
-      "Award Number: 7654321",
-      "Principal Investigator: Matthew Long",
-      "Institution: Some University",
-      "Amount: $100,000",
-    ].join("\n");
+    const nsfResponse = JSON.stringify({
+      total: 1,
+      items: [
+        {
+          awardNumber: "7654321",
+          institution: "Some University",
+          principalInvestigator: "Matthew Long",
+          totalIntendedAward: "$100,000",
+        },
+      ],
+      metadata: {},
+    });
 
     const awards = parse(nsfResponse, "Matthew Long");
 
@@ -57,21 +75,13 @@ describe("parseNSFResponse: Award Number: is the sole boundary, Title: is append
     expect(awards[0].blob).toContain("7654321");
   });
 
-  it("two Award Number blocks still split into two awards", () => {
+  it("two items in the envelope still split into two awards", () => {
     const server = new AllocationsServer();
     const parse = getParse(server, "parseNSFResponse");
-    const nsfResponse = [
-      "Award Number: 1111111",
-      "Title: First Grant Title",
-      "Principal Investigator: Matthew Long",
-      "Institution: Some University",
-      "Amount: $100,000",
-      "Award Number: 2222222",
-      "Title: Second Grant Title",
-      "Principal Investigator: Matthew Long",
-      "Institution: Some University",
-      "Amount: $200,000",
-    ].join("\n");
+    const nsfResponse = envelope([
+      { awardNumber: "1111111", title: "First Grant Title", principalInvestigator: "Matthew Long" },
+      { awardNumber: "2222222", title: "Second Grant Title", principalInvestigator: "Matthew Long" },
+    ]);
 
     const awards = parse(nsfResponse, "Matthew Long");
 
@@ -81,17 +91,13 @@ describe("parseNSFResponse: Award Number: is the sole boundary, Title: is append
   });
 });
 
-describe("parseNSFResponseExact: Award Number: is the sole boundary, Title: is appended", () => {
-  it("RED: a record with both Award Number and Title keeps BOTH in the blob", () => {
+describe("parseNSFResponseExact: a parsed award carries both its award number and its title", () => {
+  it("keeps BOTH the award number and the title in the blob", () => {
     const server = new AllocationsServer();
     const parse = getParse(server, "parseNSFResponseExact");
-    const nsfResponse = [
-      "Award Number: 1234567",
-      "Title: Distinctive Grant Title",
-      "Principal Investigator: Matthew Long",
-      "Institution: Some University",
-      "Amount: $100,000",
-    ].join("\n");
+    const nsfResponse = envelope([
+      { awardNumber: "1234567", title: "Distinctive Grant Title", principalInvestigator: "Matthew Long" },
+    ]);
 
     const awards = parse(nsfResponse, "Matthew Long");
 

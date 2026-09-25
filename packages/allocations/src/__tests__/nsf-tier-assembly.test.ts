@@ -45,13 +45,30 @@ function rec(pi: string, requestTitle: string, piInstitution: string): Rec {
   };
 }
 
-function nsfBlob(pi: string, institution: string): string {
-  return [
-    "Award Number: 1234567",
-    `Principal Investigator: ${pi}`,
-    `Institution: ${institution}`,
-    "Amount: $100,000",
-  ].join("\n");
+// Real peer shape: content[0].text is a JSON STRING of {total, items,
+// metadata} — see packages/nsf-awards/src/server.ts.
+function nsfEnvelope(pi: string, institution: string): string {
+  return JSON.stringify({
+    total: 1,
+    items: [
+      {
+        awardNumber: "1234567",
+        title: "Some Grant",
+        institution,
+        principalInvestigator: pi,
+        totalIntendedAward: "$100,000",
+      },
+    ],
+    metadata: {},
+  });
+}
+
+// Merge multiple single-award envelope strings into one envelope carrying
+// all their items — mirrors a single search_nsf_awards call returning
+// several awards for one PI query.
+function combineEnvelopes(...envelopes: string[]): string {
+  const items = envelopes.flatMap((e) => (JSON.parse(e) as { items: unknown[] }).items);
+  return JSON.stringify({ total: items.length, items, metadata: {} });
 }
 
 type Correlation = {
@@ -86,13 +103,13 @@ describe("crossReferenceWithNSF tier partition", () => {
       },
       "callRemoteServer",
     ).mockImplementation(async (_serverName, _tool, args) => {
-      const personnel = (args as { personnel?: string }).personnel ?? "";
+      const pi = (args as { pi?: string }).pi ?? "";
       // Two awards for the same PI: one at the ACCESS institution (confirmed),
       // one at an unrelated institution (name-only).
-      const text = [
-        nsfBlob(personnel, "Example University"),
-        nsfBlob(personnel, "Unrelated Institute of Technology"),
-      ].join("\n");
+      const text = combineEnvelopes(
+        nsfEnvelope(pi, "Example University"),
+        nsfEnvelope(pi, "Unrelated Institute of Technology"),
+      );
       return { content: [{ text }] };
     });
 
@@ -117,18 +134,18 @@ describe("crossReferenceWithNSF outer-limit ordering", () => {
       },
       "callRemoteServer",
     ).mockImplementation(async (_serverName, _tool, args) => {
-      const personnel = (args as { personnel?: string }).personnel ?? "";
-      if (personnel === "Alice NameOnly") {
+      const pi = (args as { pi?: string }).pi ?? "";
+      if (pi === "Alice NameOnly") {
         // Award institution does NOT match the ACCESS project's institution.
         return {
-          content: [{ text: nsfBlob("Alice NameOnly", "Unrelated Institute of Technology") }],
+          content: [{ text: nsfEnvelope("Alice NameOnly", "Unrelated Institute of Technology") }],
         };
       }
-      if (personnel === "Bob Confirmed") {
+      if (pi === "Bob Confirmed") {
         // Award institution DOES match the ACCESS project's institution.
-        return { content: [{ text: nsfBlob("Bob Confirmed", "Example University") }] };
+        return { content: [{ text: nsfEnvelope("Bob Confirmed", "Example University") }] };
       }
-      return { content: [{ text: "No awards found" }] };
+      return { content: [{ text: JSON.stringify({ total: 0, items: [], metadata: {} }) }] };
     });
 
     // Project order: name-only match FIRST, institution-confirmed match SECOND.

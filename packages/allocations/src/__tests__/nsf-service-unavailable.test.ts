@@ -50,15 +50,31 @@ function rec(pi: string, requestTitle: string, piInstitution: string): Rec {
   };
 }
 
-function nsfBlob(pi: string, institution: string, awardNumber: string, title: string): string {
-  return [
-    `Award Number: ${awardNumber}`,
-    `Principal Investigator: ${pi}`,
-    `Institution: ${institution}`,
-    `Title: ${title}`,
-    "Amount: $100,000",
-  ].join("\n");
+// Real peer shape: content[0].text is a JSON STRING of {total, items,
+// metadata} — see packages/nsf-awards/src/server.ts.
+function nsfEnvelope(pi: string, institution: string, awardNumber: string, title: string): string {
+  return JSON.stringify({
+    total: 1,
+    items: [
+      {
+        awardNumber,
+        title,
+        institution,
+        principalInvestigator: pi,
+        totalIntendedAward: "$100,000",
+      },
+    ],
+    metadata: {},
+  });
 }
+
+// The real nsf-awards peer's typed error envelope — see errorResponse in
+// packages/shared/src/base-server.ts.
+const ERROR_ENVELOPE = JSON.stringify({
+  status: "error",
+  executed: false,
+  error: { code: "error", message: "NSF service returned a 503" },
+});
 
 function findFundedProjects(
   server: AllocationsServer,
@@ -121,14 +137,14 @@ describe("findFundedProjects service-unavailable — Cause A (peer throws)", () 
 });
 
 describe("findFundedProjects service-unavailable — Cause B (error-shaped body)", () => {
-  it("renders the unavailable signal for an 'Error' body and does not silently zero to a clean confirmed aggregate", async () => {
+  it("renders the unavailable signal for the peer's real typed error envelope and does not silently zero to a clean confirmed aggregate", async () => {
     const server = new AllocationsServer();
     vi.spyOn(
       server as unknown as {
         callRemoteServer: (s: string, t: string, a: unknown) => Promise<unknown>;
       },
       "callRemoteServer",
-    ).mockResolvedValue({ content: [{ text: "Error: NSF service returned a 503" }] });
+    ).mockResolvedValue({ content: [{ text: ERROR_ENVELOPE }] });
 
     const project = rec("Smith, John", "Error Body Project", "Example University");
     mockSingleProject(server, project);
@@ -142,7 +158,7 @@ describe("findFundedProjects service-unavailable — Cause B (error-shaped body)
     expect(text).not.toContain("No NSF awards found");
   });
 
-  it("renders the unavailable signal for a 'not available' body and does not silently zero to a clean confirmed aggregate", async () => {
+  it("renders the unavailable signal for a malformed/unparseable body and does not silently zero to a clean confirmed aggregate", async () => {
     const server = new AllocationsServer();
     vi.spyOn(
       server as unknown as {
@@ -173,10 +189,10 @@ describe("findFundedProjects service-unavailable — positive control (normal ru
       },
       "callRemoteServer",
     ).mockImplementation(async (_serverName, _tool, args) => {
-      const personnel = (args as { personnel?: string }).personnel ?? "";
+      const pi = (args as { pi?: string }).pi ?? "";
       return {
         content: [
-          { text: nsfBlob(personnel, "Example University", "9998887", "Confirmed Grant Title") },
+          { text: nsfEnvelope(pi, "Example University", "9998887", "Confirmed Grant Title") },
         ],
       };
     });
@@ -192,6 +208,54 @@ describe("findFundedProjects service-unavailable — positive control (normal ru
     expect(text).toMatch(/\*\*1\*\*\s+projects with confirmed NSF funding/);
 
     // The unavailable path must not fire spuriously on a clean run.
+    expect(text).not.toContain(UNAVAILABLE_STRING);
+    expect(text).not.toContain(UNKNOWN_STRING);
+  });
+});
+
+describe("findFundedProjects — 'Amount not available' is a REAL award, not an error", () => {
+  it("treats an award whose totalIntendedAward is the literal string 'Amount not available' as a real confirmed award, not unavailable", async () => {
+    const server = new AllocationsServer();
+    vi.spyOn(
+      server as unknown as {
+        callRemoteServer: (s: string, t: string, a: unknown) => Promise<unknown>;
+      },
+      "callRemoteServer",
+    ).mockImplementation(async (_serverName, _tool, args) => {
+      const pi = (args as { pi?: string }).pi ?? "";
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              total: 1,
+              items: [
+                {
+                  awardNumber: "4443332",
+                  title: "Grant With No Public Amount",
+                  institution: "Example University",
+                  principalInvestigator: pi,
+                  totalIntendedAward: "Amount not available",
+                },
+              ],
+              metadata: {},
+            }),
+          },
+        ],
+      };
+    });
+
+    const project = rec("Kim, Sora", "No-Amount Confirmed Project", "Example University");
+    mockSingleProject(server, project);
+
+    const response = await findFundedProjects(server, "Kim, Sora");
+    const text = response.content[0].text;
+
+    // The award reaches the confirmed tier — it must NOT be swallowed by
+    // the unavailable path just because its serialized blob happens to
+    // contain the substring "not available" (error detection is structural
+    // — parsed.status === "error" — never a substring scan over the blob).
+    expect(text).toContain(CONFIRMED_AGGREGATE_STRING);
+    expect(text).toContain("4443332");
     expect(text).not.toContain(UNAVAILABLE_STRING);
     expect(text).not.toContain(UNKNOWN_STRING);
   });

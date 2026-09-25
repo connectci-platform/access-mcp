@@ -64,18 +64,36 @@ function rec(pi: string, requestTitle: string, piInstitution: string): Rec {
   };
 }
 
-// Real NSF response shape: "Award Number:" / "Principal Investigator:" /
-// "Institution:" / "Title:" / "Amount:" lines, matching the fixture
-// convention established in nsf-tier-assembly.test.ts / nsf-demote-rendering.test.ts.
-function nsfBlob(pi: string, institution: string, awardNumber: string, title: string): string {
-  return [
-    `Award Number: ${awardNumber}`,
-    `Principal Investigator: ${pi}`,
-    `Institution: ${institution}`,
-    `Title: ${title}`,
-    "Amount: $100,000",
-  ].join("\n");
+// Real nsf-awards peer shape: search_nsf_awards returns content[0].text as
+// a JSON STRING of {total, items, metadata} — see
+// packages/nsf-awards/src/server.ts's NSFAward interface / envelope
+// construction — matching the fixture convention established in
+// nsf-tier-assembly.test.ts / nsf-demote-rendering.test.ts.
+function nsfEnvelope(pi: string, institution: string, awardNumber: string, title: string): string {
+  return JSON.stringify({
+    total: 1,
+    items: [
+      {
+        awardNumber,
+        title,
+        institution,
+        principalInvestigator: pi,
+        totalIntendedAward: "$100,000",
+      },
+    ],
+    metadata: {},
+  });
 }
+
+// Merge multiple single-award envelope strings into one envelope carrying
+// all their items — mirrors a single search_nsf_awards call returning
+// several awards for one PI query.
+function combineEnvelopes(...envelopes: string[]): string {
+  const items = envelopes.flatMap((e) => (JSON.parse(e) as { items: unknown[] }).items);
+  return JSON.stringify({ total: items.length, items, metadata: {} });
+}
+
+const NO_AWARDS_ENVELOPE = JSON.stringify({ total: 0, items: [], metadata: {} });
 
 function findFundedProjects(
   server: AllocationsServer,
@@ -125,66 +143,47 @@ function mockFindProjectById(server: AllocationsServer, project: Rec): void {
   ).mockResolvedValue(project);
 }
 
-// Records every `personnel` argument passed to callRemoteServer, so tests
-// can assert the REAL capped path (limit:3) was actually exercised, not
+// Records every `pi` argument passed to callRemoteServer, so tests can
+// assert the REAL capped path (limit:3) was actually exercised, not
 // bypassed.
-function mockRemoteByPersonnel(
+function mockRemoteByPI(
   server: AllocationsServer,
-  handler: (personnel: string) => string,
-): { calls: Array<{ personnel: string; limit: number }> } {
-  const calls: Array<{ personnel: string; limit: number }> = [];
+  handler: (pi: string) => string,
+): { calls: Array<{ pi: string; limit: number }> } {
+  const calls: Array<{ pi: string; limit: number }> = [];
   vi.spyOn(
     server as unknown as {
       callRemoteServer: (s: string, t: string, a: unknown) => Promise<unknown>;
     },
     "callRemoteServer",
   ).mockImplementation(async (_serverName, _tool, args) => {
-    const personnel = (args as { personnel?: string }).personnel ?? "";
+    const pi = (args as { pi?: string }).pi ?? "";
     const limit = (args as { limit?: number }).limit ?? 0;
-    calls.push({ personnel, limit });
-    return { content: [{ text: handler(personnel) }] };
+    calls.push({ pi, limit });
+    return { content: [{ text: handler(pi) }] };
   });
   return { calls };
 }
 
 describe("oracle: coexist/discriminate — confirmed award and namesake for the SAME PI name", () => {
-  // NOTE on the `Title:` field: parseNSFResponse/parseNSFResponseExact treat
-  // any line containing "Title:" as an award-boundary reset, identically to
-  // "Award Number:" (server.ts ~2994/~2507). When a real NSF award record
-  // has BOTH an "Award Number:" line and a separate "Title:" line (as real
-  // NSF records do, and as this file's own established nsfBlob() fixture
-  // shape produces — see nsf-demote-rendering.test.ts / nsf-service-
-  // unavailable.test.ts), the "Title:" line flushes the in-progress award
-  // (PI + Institution already accumulated) and starts a NEW "award" from
-  // just the title line, which then never accumulates a PI/Institution/
-  // Amount of its own and is dropped. Net effect: the award IS correctly
-  // captured (Award Number, PI, Institution, Amount all survive and the
-  // institution match still fires correctly), but the Title text itself is
-  // silently absent from the rendered blob. This is a PRE-EXISTING gap in
-  // Tasks 1-7's parser (not introduced here) that the existing unit tests
-  // did not catch because none of them assert the title text is present in
-  // rendered output. Flagged in the Task 8 report; not fixed here per this
-  // task's scope (test-file only, no source changes). This oracle asserts
-  // on what the pipeline actually renders (award number + institution),
-  // which is what the discrimination claim depends on.
   it("promotes the institution-confirmed award to the primary block and demotes the namesake, through the real bulk path", async () => {
     const server = new AllocationsServer();
 
     // Held-out PI: "Nguyen, Thanh" at "University of Texas at Austin". NSF
-    // returns TWO awards for the same personnel query: one confirmed (same
+    // returns TWO awards for the same pi query: one confirmed (same
     // institution), one namesake (a different real institution,
     // "University of Washington" — not a superstring/substring collision,
     // a genuinely distinct researcher case).
-    const { calls } = mockRemoteByPersonnel(server, (personnel) =>
-      [
-        nsfBlob(
-          personnel,
+    const { calls } = mockRemoteByPI(server, (pi) =>
+      combineEnvelopes(
+        nsfEnvelope(
+          pi,
           "University of Texas at Austin",
           "2233445",
           "Distributed Systems for Climate Modeling",
         ),
-        nsfBlob(personnel, "University of Washington", "9988776", "Coral Reef Namesake Study"),
-      ].join("\n"),
+        nsfEnvelope(pi, "University of Washington", "9988776", "Coral Reef Namesake Study"),
+      ),
     );
 
     const project = rec("Nguyen, Thanh", "Climate Modeling at Scale", "University of Texas at Austin");
@@ -195,7 +194,7 @@ describe("oracle: coexist/discriminate — confirmed award and namesake for the 
 
     // Prove the REAL capped path ran: normalized query, limit 3.
     expect(calls).toHaveLength(1);
-    expect(calls[0].personnel).toBe("Thanh Nguyen");
+    expect(calls[0].pi).toBe("Thanh Nguyen");
     expect(calls[0].limit).toBe(3);
 
     // DISCRIMINATION, not blanket suppression: the confirmed award reaches
@@ -221,16 +220,16 @@ describe("oracle: coexist/discriminate — confirmed award and namesake for the 
   it("shows the same discrimination through the single-project path (analyzeProjectFunding)", async () => {
     const server = new AllocationsServer();
 
-    mockRemoteByPersonnel(server, (personnel) =>
-      [
-        nsfBlob(
-          personnel,
+    mockRemoteByPI(server, (pi) =>
+      combineEnvelopes(
+        nsfEnvelope(
+          pi,
           "University of Texas at Austin",
           "2233445",
           "Distributed Systems for Climate Modeling",
         ),
-        nsfBlob(personnel, "University of Washington", "9988776", "Coral Reef Namesake Study"),
-      ].join("\n"),
+        nsfEnvelope(pi, "University of Washington", "9988776", "Coral Reef Namesake Study"),
+      ),
     );
 
     const project = rec("Nguyen, Thanh", "Climate Modeling at Scale", "University of Texas at Austin");
@@ -262,8 +261,8 @@ describe("oracle: short-institution over-match — Delaware State vs University 
     // {delaware} — different sizes, so validateInstitutionMatch correctly
     // separates them (verified directly against the matcher before writing
     // this fixture).
-    mockRemoteByPersonnel(server, (personnel) =>
-      nsfBlob(personnel, "University of Delaware", "5566778", "Coastal Erosion Namesake Grant"),
+    mockRemoteByPI(server, (pi) =>
+      nsfEnvelope(pi, "University of Delaware", "5566778", "Coastal Erosion Namesake Grant"),
     );
 
     const project = rec(
@@ -300,12 +299,12 @@ describe("oracle regression: namesake flood is gone (common-name PI, all differe
     // Held-out common name distinct from the "Long"/"Wang"/"Kim" set used
     // elsewhere. All three NSF hits are namesakes at institutions unrelated
     // to the ACCESS PI's institution.
-    mockRemoteByPersonnel(server, (personnel) =>
-      [
-        nsfBlob(personnel, "Riverbend Polytechnic Institute", "1112223", "Flood Namesake One"),
-        nsfBlob(personnel, "Lakeshore State College", "1112224", "Flood Namesake Two"),
-        nsfBlob(personnel, "Prairie Technical University", "1112225", "Flood Namesake Three"),
-      ].join("\n"),
+    mockRemoteByPI(server, (pi) =>
+      combineEnvelopes(
+        nsfEnvelope(pi, "Riverbend Polytechnic Institute", "1112223", "Flood Namesake One"),
+        nsfEnvelope(pi, "Lakeshore State College", "1112224", "Flood Namesake Two"),
+        nsfEnvelope(pi, "Prairie Technical University", "1112225", "Flood Namesake Three"),
+      ),
     );
 
     const project = rec("Silva, Carla", "Materials Science Computation", "Example University");
@@ -343,14 +342,14 @@ describe("oracle regression: word-boundary holds end-to-end (forward-substring n
     // only if matching were raw substring; token/word-boundary matching
     // must reject it because "chen" is not a whole token in "wen
     // chenoweth".
-    mockRemoteByPersonnel(server, (personnel) => {
+    mockRemoteByPI(server, (pi) => {
       // Only respond with an award if queried with the literal namesake
       // name, to prove the real query normalization + real name-match gate
       // ran (not a hand-fed predicate).
-      if (personnel === "Wen Chen") {
-        return nsfBlob("Wen Chenoweth", "Some Other University", "3334445", "Unrelated Grant");
+      if (pi === "Wen Chen") {
+        return nsfEnvelope("Wen Chenoweth", "Some Other University", "3334445", "Unrelated Grant");
       }
-      return "No awards found";
+      return NO_AWARDS_ENVELOPE;
     });
 
     const project = rec("Chen, Wen", "Materials Informatics", "Example University");
@@ -375,7 +374,7 @@ describe("oracle regression: confirmed=0 degrades to the safe message (analyzePr
   it("renders the safe unhedged message when zero awards are found at all", async () => {
     const server = new AllocationsServer();
 
-    mockRemoteByPersonnel(server, () => "No awards found");
+    mockRemoteByPI(server, () => NO_AWARDS_ENVELOPE);
 
     const project = rec("Adeyemi, Bola", "Genomics Pipeline Scaling", "Example University");
     mockFindProjectById(server, project);

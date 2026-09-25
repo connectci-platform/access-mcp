@@ -57,17 +57,31 @@ function rec(id: number, pi: string, piInstitution: string, fos: string): Rec {
   };
 }
 
-function nsfBlob(pi: string, institution: string, awardNumber: string, title: string): string {
-  return [
-    `Award Number: ${awardNumber}`,
-    `Principal Investigator: ${pi}`,
-    `Institution: ${institution}`,
-    `Title: ${title}`,
-    "Amount: $100,000",
-  ].join("\n");
+// Real peer shape: content[0].text is a JSON STRING of {total, items,
+// metadata} — see packages/nsf-awards/src/server.ts.
+function nsfEnvelope(pi: string, institution: string, awardNumber: string, title: string): string {
+  return JSON.stringify({
+    total: 1,
+    items: [
+      {
+        awardNumber,
+        title,
+        institution,
+        principalInvestigator: pi,
+        coPIs: [],
+        totalIntendedAward: "$100,000",
+        totalAwardedToDate: "$100,000",
+        startDate: "2026-01-01",
+        endDate: "2027-01-01",
+      },
+    ],
+    metadata: {},
+  });
 }
 
-function server(records: Rec[], nsfHandler: (personnel: string) => string): AllocationsServer {
+const NO_AWARDS_ENVELOPE = JSON.stringify({ total: 0, items: [], metadata: {} });
+
+function server(records: Rec[], nsfHandler: (pi: string) => string): AllocationsServer {
   const s = new AllocationsServer();
   const snapshot: CorpusSnapshot<Rec> = {
     records: records as never,
@@ -87,15 +101,15 @@ function server(records: Rec[], nsfHandler: (personnel: string) => string): Allo
     "callRemoteServer",
   ).mockImplementation(async (_serverName, tool, args) => {
     if (tool === "search_nsf_awards") {
-      const a = args as { personnel?: string; institution?: string };
-      if (a.personnel !== undefined) {
-        return { content: [{ text: nsfHandler(a.personnel) }] };
+      const a = args as { pi?: string; institution?: string };
+      if (a.pi !== undefined) {
+        return { content: [{ text: nsfHandler(a.pi) }] };
       }
       // institution-variant NSF fan-out query (institutionalFundingProfile
-      // step 3) — irrelevant to this leak, return a clean empty body.
-      return { content: [{ text: "No NSF awards found." }] };
+      // step 3) — irrelevant to this leak, return a clean empty envelope.
+      return { content: [{ text: NO_AWARDS_ENVELOPE }] };
     }
-    return { content: [{ text: "" }] };
+    return { content: [{ text: NO_AWARDS_ENVELOPE }] };
   });
   return s;
 }
@@ -122,14 +136,14 @@ describe("crossReferenceInstitutionPIs namesake-count leak (C1)", () => {
       rec(2, "Ada Lovelace", "Example University", "Mathematics"),
     ];
 
-    const s = server(CORPUS, (personnel) => {
-      if (personnel.includes("Wei Wang")) {
-        return nsfBlob(personnel, "Totally Unrelated Institute", "5551234", "Namesake Award");
+    const s = server(CORPUS, (pi) => {
+      if (pi.includes("Wei Wang")) {
+        return nsfEnvelope(pi, "Totally Unrelated Institute", "5551234", "Namesake Award");
       }
-      if (personnel.includes("Ada Lovelace")) {
-        return nsfBlob(personnel, "Example University", "9998887", "Confirmed Grant");
+      if (pi.includes("Ada Lovelace")) {
+        return nsfEnvelope(pi, "Example University", "9998887", "Confirmed Grant");
       }
-      return "No NSF awards found.";
+      return NO_AWARDS_ENVELOPE;
     });
 
     const text = await profile(s, "Example University");
