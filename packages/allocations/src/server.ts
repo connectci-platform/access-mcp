@@ -2256,23 +2256,41 @@ sort_by: "date_desc"
       // Step 1: Get multiple name variations for better matching
       const piNameVariations = this.generatePINameVariations(accessProject.pi);
 
-      // Step 2: Search NSF database with exact name matching
+      // Step 2: Search NSF database with exact name matching.
+      //
+      // Wedge fix (same prod incident as crossReferenceWithNSF): this used
+      // to await each name variation SERIALLY at the base 30s axios
+      // timeout, with an extra 150ms delay between each. generatePINameVariations
+      // can return up to ~20+ variations for a hyphenated name with
+      // suffixes/initials, so a single project_id lookup could cost
+      // ~20*30s ≈ 10+ minutes of wall-clock, blocking the single-threaded
+      // server. Same bounds as crossReferenceWithNSF: bounded concurrency,
+      // a short per-call timeout, and an overall wall-clock deadline (kept
+      // here too since the variation count is unbounded by the caller).
+      const CONCURRENCY_CAP = 5;
+      const PER_CALL_TIMEOUT_MS = 5000;
+      const OVERALL_BUDGET_MS = 30000;
+
       const nsfSearchResults = new Map<string, string>();
       const relevantAwards: NSFAward[] = [];
       // Counts variations that returned a USABLE (non-error-shaped) body —
       // distinct from relevantAwards.length, which can legitimately be zero
       // on a usable response that just finds nothing. If EVERY variation
-      // fails (throws OR returns an error-shaped body), usableResponseCount
-      // stays 0 and funding status is UNKNOWN, not "unfunded" (mirrors
-      // Task 6's fix on the bulk path — see isNSFUnavailable).
+      // fails (throws, times out, OR returns an error-shaped body),
+      // usableResponseCount stays 0 and funding status is UNKNOWN, not
+      // "unfunded" (mirrors Task 6's fix on the bulk path — see
+      // isNSFUnavailable). A per-call timeout falls into the same catch
+      // path as any other failure, so it naturally feeds this disclosure.
       let usableResponseCount = 0;
 
-      for (const nameVariation of piNameVariations) {
+      const searchVariation = async (nameVariation: string): Promise<void> => {
         try {
-          const nsfData = (await this.callRemoteServer("nsf-awards", "search_nsf_awards", {
-            pi: this.normalizePIQuery(nameVariation),
-            limit: 3,
-          })) as { content?: Array<{ text?: string }> };
+          const nsfData = (await this.callRemoteServer(
+            "nsf-awards",
+            "search_nsf_awards",
+            { pi: this.normalizePIQuery(nameVariation), limit: 3 },
+            { timeoutMs: PER_CALL_TIMEOUT_MS }
+          )) as { content?: Array<{ text?: string }> };
           const nsfResponse = this.formatNsfResponse(nsfData);
 
           if (!this.isNSFUnavailable(nsfResponse)) {
@@ -2283,12 +2301,26 @@ sort_by: "date_desc"
             const exactMatches = this.parseNSFResponseExact(nsfResponse, accessProject.pi);
             relevantAwards.push(...exactMatches);
           }
-
-          // Rate limiting
-          await new Promise((resolve) => setTimeout(resolve, 150));
         } catch (error) {
+          // Peer unreachable, threw, or (via the axios timeout option
+          // above) took longer than PER_CALL_TIMEOUT_MS. usableResponseCount
+          // is not incremented, so a total wipeout renders "unavailable",
+          // never a confident "no funding".
           console.warn(`Error searching NSF for name variation "${nameVariation}":`, error);
         }
+      };
+
+      const searchStartedAt = Date.now();
+      for (let i = 0; i < piNameVariations.length; i += CONCURRENCY_CAP) {
+        if (Date.now() - searchStartedAt >= OVERALL_BUDGET_MS) {
+          // Remaining variations were never attempted; usableResponseCount
+          // already reflects only what was actually tried, so the existing
+          // usableResponseCount === 0 disclosure below still fires honestly
+          // if nothing usable came back before the deadline.
+          break;
+        }
+        const batch = piNameVariations.slice(i, i + CONCURRENCY_CAP);
+        await Promise.all(batch.map((variation) => searchVariation(variation)));
       }
 
       // Step 3: Cross-validate with institution matching. Match against the
@@ -2758,8 +2790,11 @@ sort_by: "date_desc"
       }
 
       // Step 2: For each ACCESS project PI, find corresponding NSF awards
-      const { correlations: fundedProjectCorrelations, unavailableCount } =
-        await this.crossReferenceWithNSF(accessProjects, limit);
+      const {
+        correlations: fundedProjectCorrelations,
+        unavailableCount,
+        incompleteSkippedCount,
+      } = await this.crossReferenceWithNSF(accessProjects, limit);
 
       // Step 3: Build comprehensive result
       let result = `🎯 **Funded Projects Analysis**\n\n`;
@@ -2772,7 +2807,11 @@ sort_by: "date_desc"
       }
       result += `\n`;
 
-      if (fundedProjectCorrelations.length === 0 && unavailableCount === 0) {
+      if (
+        fundedProjectCorrelations.length === 0 &&
+        unavailableCount === 0 &&
+        incompleteSkippedCount === 0
+      ) {
         result += `**🏛️ ACCESS Projects (${fieldOfScience || "All Fields"}):**\n`;
         result += this.formatProjectSummaries(accessProjects.slice(0, limit));
         result += `\n\n**🏆 NSF Funding Status:**\n`;
@@ -2804,12 +2843,18 @@ sort_by: "date_desc"
         }
 
         result += `**📊 Correlation Insights:**\n`;
-        if (unavailableCount > 0) {
-          // A mid-batch outage corrupts the denominator, so the confirmed
-          // aggregate is suppressed entirely rather than reported alongside
-          // a partial/unknown count (design decision #5/#8 — no "N of Y
-          // funded" style line when an outage is in play).
-          result += `• NSF lookup unavailable for ${unavailableCount} projects — funding status unknown\n`;
+        if (unavailableCount > 0 || incompleteSkippedCount > 0) {
+          // A mid-batch outage or a deadline cutoff corrupts the
+          // denominator, so the confirmed aggregate is suppressed entirely
+          // rather than reported alongside a partial/unknown count (design
+          // decision #5/#8 — no "N of Y funded" style line when the batch
+          // is incomplete or degraded).
+          if (unavailableCount > 0) {
+            result += `• NSF lookup unavailable for ${unavailableCount} projects — funding status unknown\n`;
+          }
+          if (incompleteSkippedCount > 0) {
+            result += `• Cross-reference incomplete (time budget reached): ${incompleteSkippedCount} of ${accessProjects.length} candidate projects were not checked — funding status unknown for those\n`;
+          }
         } else {
           const confirmedProjectCount = fundedProjectCorrelations.filter(
             (correlation) => correlation.confirmedAwards.length > 0
@@ -2928,6 +2973,21 @@ sort_by: "date_desc"
   // partition each project's awards into confirmedAwards/nameOnlyAwards,
   // rank institution-confirmed correlations before name-only ones, THEN
   // slice to `limit`.
+  //
+  // Wedge fix (prod incident): this used to await each project's NSF call
+  // SERIALLY with the base 30s axios timeout, so up to `limit*2` projects
+  // (~20 at default limit 10) could cost up to ~10 minutes of wall-clock,
+  // blocking the single-threaded server for every other in-flight request.
+  // Three coordinated bounds now apply:
+  //  - CONCURRENCY_CAP calls in flight at once (batched Promise.all) instead
+  //    of one-at-a-time.
+  //  - a short PER_CALL_TIMEOUT_MS per NSF lookup — a dead/slow single PI
+  //    must not cost the full 30s inside a fan-out. A timeout counts as
+  //    unavailable, same as the existing catch → Cause A path.
+  //  - an overall OVERALL_BUDGET_MS wall-clock deadline for the whole
+  //    cross-ref. Once exceeded, no further batches are dispatched; projects
+  //    not yet processed are reported as skipped (deadline), not silently
+  //    treated as "no funding" — see incompleteSkippedCount below.
   private async crossReferenceWithNSF(
     accessProjects: Project[],
     limit: number
@@ -2938,73 +2998,89 @@ sort_by: "date_desc"
       nameOnlyAwards: NSFAward[];
     }>;
     unavailableCount: number;
+    incompleteSkippedCount: number;
   }> {
+    const CONCURRENCY_CAP = 5;
+    const PER_CALL_TIMEOUT_MS = 5000;
+    const OVERALL_BUDGET_MS = 30000;
+
     const correlations: Array<{
       accessProject: Project;
       confirmedAwards: NSFAward[];
       nameOnlyAwards: NSFAward[];
     }> = [];
     // Counts projects whose NSF lookup failed via EITHER cause below — the
-    // peer threw (Cause A), or it returned an error-shaped body (Cause B).
-    // Neither is a correlation NOR a clean "no match": the project's
-    // funding status is simply unknown, and must render as such rather
-    // than silently collapsing to "unfunded" (see design decision #5/#8).
+    // peer threw or timed out (Cause A), or it returned an error-shaped body
+    // (Cause B). Neither is a correlation NOR a clean "no match": the
+    // project's funding status is simply unknown, and must render as such
+    // rather than silently collapsing to "unfunded" (see design decision
+    // #5/#8).
     let unavailableCount = 0;
+    // Projects never even attempted because the overall deadline was hit
+    // before their batch was dispatched. Distinct from unavailableCount
+    // (which means "we tried and it failed") — this means "we didn't get to
+    // it" — but both render as "funding status unknown", never "no funding".
+    let incompleteSkippedCount = 0;
 
-    // Process projects in batches to avoid overwhelming the NSF server.
-    // No limit-based early exit here: ranking confirmed-before-name-only
-    // must see every candidate before the batch limit is applied below.
-    const batchSize = 5;
-    for (let i = 0; i < accessProjects.length; i += batchSize) {
-      const batch = accessProjects.slice(i, i + batchSize);
+    const startedAt = Date.now();
+    const deadlineHit = () => Date.now() - startedAt >= OVERALL_BUDGET_MS;
 
-      for (const project of batch) {
-        try {
-          // Search for NSF awards by PI name
-          const nsfData = (await this.callRemoteServer("nsf-awards", "search_nsf_awards", {
-            pi: this.normalizePIQuery(project.pi),
-            limit: 3,
-          })) as { content?: Array<{ text?: string }> };
-          const nsfResponse = this.formatNsfResponse(nsfData);
+    const processProject = async (project: Project): Promise<void> => {
+      try {
+        const nsfData = (await this.callRemoteServer(
+          "nsf-awards",
+          "search_nsf_awards",
+          { pi: this.normalizePIQuery(project.pi), limit: 3 },
+          { timeoutMs: PER_CALL_TIMEOUT_MS }
+        )) as { content?: Array<{ text?: string }> };
+        const nsfResponse = this.formatNsfResponse(nsfData);
 
-          // Cause B: an error-shaped body. Detect BEFORE parsing so it's
-          // counted as unavailable rather than silently parsed to zero
-          // awards (which parseNSFResponse's own guard would otherwise do).
-          if (this.isNSFUnavailable(nsfResponse)) {
-            unavailableCount++;
-            continue;
-          }
-
-          // Parse NSF response to extract award summaries
-          const nsfAwards = this.parseNSFResponse(nsfResponse, project.pi);
-
-          if (nsfAwards.length > 0) {
-            // Partition before any slicing: confirmed matches must not be
-            // pushed out by name-only ones even within a single PI's awards.
-            const confirmedAwards = nsfAwards.filter((award) =>
-              this.validateInstitutionMatch(award.institution, project.piInstitution)
-            );
-            const nameOnlyAwards = nsfAwards.filter(
-              (award) => !this.validateInstitutionMatch(award.institution, project.piInstitution)
-            );
-            correlations.push({
-              accessProject: project,
-              confirmedAwards,
-              nameOnlyAwards,
-            });
-          }
-
-          // Add small delay to be respectful to NSF server
-          if (i % 3 === 0) {
-            await new Promise((resolve) => setTimeout(resolve, 100));
-          }
-        } catch (error) {
-          // Cause A: the NSF peer is unreachable or threw. Same "unknown,
-          // not unfunded" treatment as Cause B.
-          console.warn(`Error checking NSF funding for ${project.pi}:`, error);
+        // Cause B: an error-shaped body. Detect BEFORE parsing so it's
+        // counted as unavailable rather than silently parsed to zero
+        // awards (which parseNSFResponse's own guard would otherwise do).
+        if (this.isNSFUnavailable(nsfResponse)) {
           unavailableCount++;
+          return;
         }
+
+        const nsfAwards = this.parseNSFResponse(nsfResponse, project.pi);
+
+        if (nsfAwards.length > 0) {
+          // Partition before any slicing: confirmed matches must not be
+          // pushed out by name-only ones even within a single PI's awards.
+          const confirmedAwards = nsfAwards.filter((award) =>
+            this.validateInstitutionMatch(award.institution, project.piInstitution)
+          );
+          const nameOnlyAwards = nsfAwards.filter(
+            (award) => !this.validateInstitutionMatch(award.institution, project.piInstitution)
+          );
+          correlations.push({
+            accessProject: project,
+            confirmedAwards,
+            nameOnlyAwards,
+          });
+        }
+      } catch (error) {
+        // Cause A: the NSF peer is unreachable, threw, or (via the axios
+        // timeout option above) took longer than PER_CALL_TIMEOUT_MS. Same
+        // "unknown, not unfunded" treatment as Cause B.
+        console.warn(`Error checking NSF funding for ${project.pi}:`, error);
+        unavailableCount++;
       }
+    };
+
+    // Process projects in CONCURRENCY_CAP-sized batches, calls within a
+    // batch concurrent (Promise.all) rather than serial. No limit-based
+    // early exit here: ranking confirmed-before-name-only must see every
+    // candidate before the batch limit is applied below — the only early
+    // exit is the overall wall-clock deadline.
+    for (let i = 0; i < accessProjects.length; i += CONCURRENCY_CAP) {
+      if (deadlineHit()) {
+        incompleteSkippedCount += accessProjects.length - i;
+        break;
+      }
+      const batch = accessProjects.slice(i, i + CONCURRENCY_CAP);
+      await Promise.all(batch.map((project) => processProject(project)));
     }
 
     // Rank institution-confirmed correlations before name-only ones, THEN
@@ -3019,7 +3095,7 @@ sort_by: "date_desc"
         return aConfirmed - bConfirmed;
       });
 
-    return { correlations: ranked.slice(0, limit), unavailableCount };
+    return { correlations: ranked.slice(0, limit), unavailableCount, incompleteSkippedCount };
   }
 
   // Parse NSF server response and extract relevant awards
@@ -3157,40 +3233,64 @@ sort_by: "date_desc"
       // are free text (no controlled vocab), so query a few name variants — but
       // NOT the "University of X" <-> "X University" swap, which manufactures
       // cross-institution false positives.
+      //
+      // Wedge fix (same prod incident): this used to await each of the (up
+      // to 3) variant calls SERIALLY at the base 30s timeout (up to 90s),
+      // AND its catch only console.warn'd — a failed/timed-out variant left
+      // totalNSFAwards at 0 with no record that anything had gone wrong, so
+      // a transient NSF outage rendered the CONFIDENT false-negative "No
+      // NSF awards found where X is the primary recipient" line (line
+      // ~3282 below) — the exact laundering this feature exists to
+      // prevent. Now: variants run concurrently (Promise.all, only ≤3 so no
+      // separate concurrency cap needed), each gets a short per-call
+      // timeout, and any failure/timeout is tracked so the renderer can
+      // disclose incompleteness instead of asserting a clean zero.
+      const NSF_VARIANT_TIMEOUT_MS = 5000;
       const nsfVariants = this.nsfQueryVariants(canonical);
       const nsfAwardsByVariant = new Map<string, string>();
       let totalNSFAwards = 0;
+      let nsfVariantUnavailableCount = 0;
 
-      for (const variant of nsfVariants.slice(0, 3)) {
+      const fetchVariant = async (variant: string): Promise<void> => {
         try {
           // Use primary_only parameter - filtering now handled by NSF server
-          const nsfData = (await this.callRemoteServer("nsf-awards", "search_nsf_awards", {
-            institution: variant,
-            limit: Math.ceil(limit / 2),
-            primary_only: true, // Filter at source for cleaner architecture
-          })) as { content?: Array<{ text?: string }> };
+          const nsfData = (await this.callRemoteServer(
+            "nsf-awards",
+            "search_nsf_awards",
+            { institution: variant, limit: Math.ceil(limit / 2), primary_only: true },
+            { timeoutMs: NSF_VARIANT_TIMEOUT_MS }
+          )) as { content?: Array<{ text?: string }> };
           const nsfResponse = this.formatNsfResponse(nsfData);
 
-          if (!this.isNSFUnavailable(nsfResponse)) {
-            // Don't trust the peer's primary_only filter alone — add a
-            // local validateInstitutionMatch guard on the returned items
-            // before counting/rendering them, consistent with the PI
-            // paths, so a regression upstream can't leak a co-PI/
-            // collaborator award into this institution's confident
-            // NSF Research Portfolio block.
-            const items = this.parseNSFItems(nsfResponse).filter((item) =>
-              this.validateInstitutionMatch(item.institution ?? "", canonical)
-            );
-            if (items.length > 0) {
-              const awards = items.map((item) => this.buildNSFAward(item));
-              nsfAwardsByVariant.set(variant, awards.map((a) => a.blob).join("\n"));
-              totalNSFAwards += items.length;
-            }
+          if (this.isNSFUnavailable(nsfResponse)) {
+            nsfVariantUnavailableCount++;
+            return;
+          }
+
+          // Don't trust the peer's primary_only filter alone — add a
+          // local validateInstitutionMatch guard on the returned items
+          // before counting/rendering them, consistent with the PI
+          // paths, so a regression upstream can't leak a co-PI/
+          // collaborator award into this institution's confident
+          // NSF Research Portfolio block.
+          const items = this.parseNSFItems(nsfResponse).filter((item) =>
+            this.validateInstitutionMatch(item.institution ?? "", canonical)
+          );
+          if (items.length > 0) {
+            const awards = items.map((item) => this.buildNSFAward(item));
+            nsfAwardsByVariant.set(variant, awards.map((a) => a.blob).join("\n"));
+            totalNSFAwards += items.length;
           }
         } catch (error) {
+          // Peer unreachable, threw, or (via the axios timeout option
+          // above) took longer than NSF_VARIANT_TIMEOUT_MS. Same "unknown,
+          // not a confirmed zero" treatment as the error-shaped-body branch.
           console.warn(`Error fetching NSF data for variant "${variant}":`, error);
+          nsfVariantUnavailableCount++;
         }
-      }
+      };
+
+      await Promise.all(nsfVariants.slice(0, 3).map((variant) => fetchVariant(variant)));
 
       // Step 4: Cross-reference ACCESS PIs with NSF awards
       const piCrossReference = await this.crossReferenceInstitutionPIs(accessProjects);
@@ -3222,6 +3322,19 @@ sort_by: "date_desc"
         for (const [variant, awards] of nsfAwardsByVariant) {
           result += `\n*${variant}:*\n${awards}\n`;
         }
+        if (nsfVariantUnavailableCount > 0) {
+          result += `\n⚠️ NSF lookup unavailable for ${nsfVariantUnavailableCount} of ${Math.min(nsfVariants.length, 3)} name variant(s) checked — portfolio may be incomplete.\n`;
+        }
+      } else if (nsfVariantUnavailableCount > 0) {
+        // zero results here does NOT mean "confirmed no NSF awards" — one
+        // or more variant lookups failed/timed out, so the true award
+        // count for this institution is unknown. Rendering the confident
+        // "No NSF awards found" line here would be exactly the
+        // false-negative laundering this feature exists to prevent.
+        result += `⚠️ **NSF lookup unavailable for ${nsfVariantUnavailableCount} of ${Math.min(nsfVariants.length, 3)} name variant(s) — NSF portfolio for "${institutionName}" is unknown, not confirmed zero.**\n\n`;
+        result += `**💡 What this means:**\n`;
+        result += `• The NSF service did not return a usable response for one or more institution name variants within the time budget\n`;
+        result += `• This is NOT a confirmed absence of NSF funding — retry, or check individual PI names instead\n`;
       } else {
         result += `✅ **No NSF awards found where "${institutionName}" is the primary recipient.**\n\n`;
         result += `**💡 What this means:**\n`;
@@ -3243,6 +3356,12 @@ sort_by: "date_desc"
         result += `• **${piCrossReference.matches}** ACCESS PIs have confirmed NSF awards\n`;
         result += `• **Strong institutional research profile** with federal funding\n`;
         result += `• ACCESS resources effectively supporting NSF-funded research\n`;
+        result += piCrossReference.details;
+      } else if (piCrossReference.unavailableCount > 0) {
+        // matches === 0 here does NOT mean "confirmed no funding" — some
+        // lookups failed/timed out, so the true match count is unknown.
+        // Must not render the confident "no direct PI matches" framing.
+        result += `• NSF lookup unavailable for ${piCrossReference.unavailableCount} PIs — funding status unknown for those, cross-reference incomplete\n`;
         result += piCrossReference.details;
       } else {
         result += `• No direct PI matches found between ACCESS and NSF databases\n`;
@@ -3325,50 +3444,85 @@ sort_by: "date_desc"
     return result;
   }
 
+  // Wedge fix (same prod incident as crossReferenceWithNSF): this already
+  // capped input to 10 projects, but made 10 SERIAL NSF calls at the base
+  // 30s timeout (up to 5 minutes of wall-clock, blocking the single-
+  // threaded server). Same three bounds applied here: bounded concurrency,
+  // a short per-call timeout, and honest disclosure of any lookups that
+  // failed or timed out (no overall deadline needed — 10 projects at
+  // CONCURRENCY_CAP 5 is only 2 batches, well within budget even if every
+  // call takes the full per-call timeout).
   private async crossReferenceInstitutionPIs(accessProjects: Project[]): Promise<{
     matches: number;
     details: string;
+    unavailableCount: number;
   }> {
-    let matches = 0;
-    let details = "\n**PI Cross-Reference Details:**\n";
+    const CONCURRENCY_CAP = 5;
+    const PER_CALL_TIMEOUT_MS = 5000;
 
-    for (const project of accessProjects.slice(0, 10)) {
-      // Limit to first 10 for performance
+    const candidates = accessProjects.slice(0, 10);
+    // Indexed by candidates' position so concurrent completion order can't
+    // scramble the rendered detail lines — output stays deterministic.
+    const matchLines: Array<string | undefined> = new Array(candidates.length);
+    let unavailableCount = 0;
+
+    const processProject = async (project: Project, idx: number): Promise<void> => {
       try {
-        const nsfData = (await this.callRemoteServer("nsf-awards", "search_nsf_awards", {
-          pi: this.normalizePIQuery(project.pi),
-          limit: 2,
-        })) as { content?: Array<{ text?: string }> };
+        const nsfData = (await this.callRemoteServer(
+          "nsf-awards",
+          "search_nsf_awards",
+          { pi: this.normalizePIQuery(project.pi), limit: 2 },
+          { timeoutMs: PER_CALL_TIMEOUT_MS }
+        )) as { content?: Array<{ text?: string }> };
         const nsfResponse = this.formatNsfResponse(nsfData);
 
-        if (!this.isNSFUnavailable(nsfResponse)) {
-          // relevantAwards is the UN-partitioned name-matched set (confirmed
-          // + name-only namesakes mixed). Rendering its raw length as "N NSF
-          // award(s)" is the laundering vector the design forbids (a bare
-          // namesake count reads as "identifiable NSF awards" for this ACCESS
-          // PI). Partition by institution and only count/render the
-          // institution-confirmed subset — this path has no demote-secondary
-          // contract, so name-only awards simply don't appear here at all.
-          const relevantAwards = this.parseNSFResponse(nsfResponse, project.pi);
-          const confirmedAwards = relevantAwards.filter((award) =>
-            this.validateInstitutionMatch(award.institution, project.piInstitution)
-          );
-          if (confirmedAwards.length > 0) {
-            matches++;
-            details += `• **${project.pi}:** ${confirmedAwards.length} confirmed NSF award(s) - ${project.fos}\n`;
-          }
+        if (this.isNSFUnavailable(nsfResponse)) {
+          unavailableCount++;
+          return;
         }
 
-        // Small delay to be respectful
-        if (matches % 3 === 0) {
-          await new Promise((resolve) => setTimeout(resolve, 100));
+        // relevantAwards is the UN-partitioned name-matched set (confirmed
+        // + name-only namesakes mixed). Rendering its raw length as "N NSF
+        // award(s)" is the laundering vector the design forbids (a bare
+        // namesake count reads as "identifiable NSF awards" for this ACCESS
+        // PI). Partition by institution and only count/render the
+        // institution-confirmed subset — this path has no demote-secondary
+        // contract, so name-only awards simply don't appear here at all.
+        const relevantAwards = this.parseNSFResponse(nsfResponse, project.pi);
+        const confirmedAwards = relevantAwards.filter((award) =>
+          this.validateInstitutionMatch(award.institution, project.piInstitution)
+        );
+        if (confirmedAwards.length > 0) {
+          matchLines[idx] =
+            `• **${project.pi}:** ${confirmedAwards.length} confirmed NSF award(s) - ${project.fos}\n`;
         }
       } catch (error) {
+        // Peer unreachable, threw, or (via the axios timeout option above)
+        // took longer than PER_CALL_TIMEOUT_MS. Same "unknown" treatment as
+        // the error-shaped-body branch above.
         console.warn(`Error cross-referencing ${project.pi}:`, error);
+        unavailableCount++;
       }
+    };
+
+    for (let i = 0; i < candidates.length; i += CONCURRENCY_CAP) {
+      const batch = candidates.slice(i, i + CONCURRENCY_CAP);
+      await Promise.all(batch.map((project, j) => processProject(project, i + j)));
     }
 
-    return { matches, details };
+    let matches = 0;
+    let details = "\n**PI Cross-Reference Details:**\n";
+    for (const line of matchLines) {
+      if (line) {
+        matches++;
+        details += line;
+      }
+    }
+    if (unavailableCount > 0) {
+      details += `• NSF lookup unavailable for ${unavailableCount} of ${candidates.length} PIs checked — funding status unknown for those\n`;
+    }
+
+    return { matches, details, unavailableCount };
   }
 
   private getUniqueFieldsCount(projects: Project[]): number {
