@@ -470,7 +470,10 @@ Does NOT return tags — use suggest_tags after the user provides content.`,
           type: "object",
           properties: {},
         },
-        access: "public",
+        // User-scoped: resolves the acting user and returns THEIR coordinator
+        // status, so it requires an identity (verified token or the agent's
+        // key) — it is not usable anonymously.
+        access: "authenticated",
       },
       {
         name: "suggest_tags",
