@@ -8,10 +8,13 @@ function tools(): ToolWithAccess[] {
 }
 
 describe("announcements tool classification", () => {
-  it("search_announcements and get_announcement_context are public", () => {
+  it("search_announcements is public", () => {
     const t = tools();
     expect(classifyTool(t.find((x) => x.name === "search_announcements")!)).toBe("public");
-    expect(classifyTool(t.find((x) => x.name === "get_announcement_context")!)).toBe("public");
+  });
+  it("get_announcement_context is authenticated (user-scoped: returns the acting user's coordinator status)", () => {
+    const t = tools();
+    expect(classifyTool(t.find((x) => x.name === "get_announcement_context")!)).toBe("authenticated");
   });
   it("create/update/delete are authenticated and mutate", () => {
     const t = tools();
@@ -29,6 +32,6 @@ describe("announcements tool classification", () => {
       .filter((t) => classifyTool(t) === "public")
       .map((t) => t.name)
       .sort();
-    expect(publicNames).toEqual(["get_announcement_context", "search_announcements"]);
+    expect(publicNames).toEqual(["search_announcements"]);
   });
 });
