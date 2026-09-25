@@ -846,7 +846,8 @@ export abstract class BaseAccessServer {
   protected async callRemoteServer(
     serviceName: string,
     toolName: string,
-    args: Record<string, unknown> = {}
+    args: Record<string, unknown> = {},
+    options?: { timeoutMs?: number }
   ): Promise<unknown> {
     const serviceUrl = this.getServiceEndpoint(serviceName);
     if (!serviceUrl) {
@@ -877,7 +878,7 @@ export abstract class BaseAccessServer {
         arguments: args,
       },
       {
-        timeout: 30000,
+        timeout: options?.timeoutMs ?? 30000,
         validateStatus: () => true,
         headers,
       }
