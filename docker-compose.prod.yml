@@ -316,6 +316,23 @@ services:
         limits:
           memory: 256M
 
+  # Full-screen chat client (Next.js standalone). Only on the default
+  # (mcp-network) so Caddy routes qa.access-ci.org to it as chatbot:3000. No
+  # DB and no agent-network: it talks to the agent over HTTP same-origin via
+  # Caddy (/api/* -> access-agent), never by service name. NEXT_PUBLIC_API_URL
+  # is baked to the relative /api at image build time, so no env is needed here.
+  chatbot:
+    image: ghcr.io/connectci-platform/chatbot-fullscreen-client:latest
+    expose:
+      - "3000"
+    restart: unless-stopped
+    networks:
+      - default
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
   # Daily pg_dump of the reporting schema (human review data — the most
   # expensive thing in the system to recreate). Keeps 14 days. Dumps to a
   # docker volume on the same host as the DB — v1, revisit for off-host.

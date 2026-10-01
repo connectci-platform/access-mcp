@@ -205,14 +205,29 @@ qa.access-ci.org {
         reverse_proxy dashboard:3000
     }
 
-    # Agent container is reachable on this Caddy's mcp-network as access-agent.
-    handle {
+    # Agent API (and its docs) — reachable on this Caddy's mcp-network as
+    # access-agent. The agent serves only /api/v1/* plus FastAPI's /docs and
+    # /openapi.json; keep the SSE-friendly settings on the streaming API path.
+    handle /api/* {
         reverse_proxy access-agent:8000 {
             flush_interval -1
             transport http {
                 read_timeout 0
             }
         }
+    }
+    handle /docs* {
+        reverse_proxy access-agent:8000
+    }
+    handle /openapi.json {
+        reverse_proxy access-agent:8000
+    }
+
+    # Everything else is the full-screen chat client, reachable as chatbot:3000.
+    # Same-origin with the agent above, so its credentialed /api/* calls and the
+    # .access-ci.org auth cookie flow with no CORS.
+    handle {
+        reverse_proxy chatbot:3000
     }
 
     log {
