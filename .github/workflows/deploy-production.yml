@@ -149,7 +149,7 @@ jobs:
             echo "Restarting services (force-recreate app tier)..."
             docker compose -f docker-compose.prod.yml up -d --remove-orphans
             docker compose -f docker-compose.prod.yml up -d --force-recreate \
-              caddy dashboard \
+              caddy dashboard chatbot \
               mcp-auth mcp-affinity-groups mcp-compute-resources mcp-system-status \
               mcp-software-discovery mcp-xdmod mcp-allocations mcp-nsf-awards \
               mcp-announcements mcp-documentation mcp-events mcp-jsm mcp-xdmod-data
