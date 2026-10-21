@@ -10,7 +10,7 @@ import json
 import os
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from datetime import timedelta
 
 import pandas as pd
@@ -18,6 +18,15 @@ import requests
 from dotenv import load_dotenv
 from mcp.types import TextContent, Tool
 from .base_server import BaseAccessServer
+
+# xdmod-data sends its requests with no timeout and offers no way to set one,
+# so this deadline is what bounds how long a tool call waits on XDMoD. The
+# worker thread itself can't be cancelled and is left to finish on its own.
+XDMOD_CALL_TIMEOUT_SECONDS = float(os.getenv("XDMOD_CALL_TIMEOUT_SECONDS", "60"))
+
+
+class XDMoDUnavailableError(Exception):
+    pass
 
 
 class XDMoDPythonServer(BaseAccessServer):
@@ -33,7 +42,20 @@ class XDMoDPythonServer(BaseAccessServer):
         if request_token:
             return request_token
         return self._env_api_token
-    
+
+    async def _xdmod_call(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        """Run a blocking xdmod-data call in a worker thread so a stalled XDMoD
+        can't freeze the event loop for every other session."""
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(fn, *args, **kwargs), XDMOD_CALL_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            raise XDMoDUnavailableError(
+                f"XDMoD at {self.base_url} did not respond within "
+                f"{XDMOD_CALL_TIMEOUT_SECONDS:g}s; it may be down or unreachable."
+            ) from None
+
     def get_tools(self) -> List[Tool]:
         """Return list of available tools"""
         return [
@@ -390,7 +412,7 @@ class XDMoDPythonServer(BaseAccessServer):
             dw = DataWarehouse(xdmod_host=self.base_url)
             
             with dw:
-                filter_df = dw.get_filter_values(realm=realm, dimension='person')
+                filter_df = await self._xdmod_call(dw.get_filter_values, realm=realm, dimension='person')
                 
                 # Convert DataFrame to list of strings (same as smart filters)
                 valid_users = filter_df['label'].tolist() if 'label' in filter_df.columns else filter_df.iloc[:, 0].tolist()
@@ -639,7 +661,7 @@ class XDMoDPythonServer(BaseAccessServer):
                     
                     if filters and isinstance(filters, dict) and len(filters) > 0:
                         # Use smart validation to improve user experience
-                        processed_filters, filter_warnings = self._validate_filters_with_smart_matching(dw, filters, realm, False)
+                        processed_filters, filter_warnings = await self._validate_filters_with_smart_matching(dw, filters, realm, False)
                     
                     # Display filter warnings
                     if filter_warnings:
@@ -650,7 +672,7 @@ class XDMoDPythonServer(BaseAccessServer):
                     
                     # Get chart data using provided dimension - don't pass filters parameter if None
                     if processed_filters is not None:
-                        chart_data = dw.get_data(
+                        chart_data = await self._xdmod_call(dw.get_data,
                             duration=(start_date, end_date),
                             realm=realm,
                             dimension=dimension,
@@ -659,7 +681,7 @@ class XDMoDPythonServer(BaseAccessServer):
                             filters=processed_filters
                         )
                     else:
-                        chart_data = dw.get_data(
+                        chart_data = await self._xdmod_call(dw.get_data,
                             duration=(start_date, end_date),
                             realm=realm,
                             dimension=dimension,
@@ -942,7 +964,7 @@ class XDMoDPythonServer(BaseAccessServer):
             
             with dw:
                 # Get system-wide usage data
-                system_data = dw.get_data(
+                system_data = await self._xdmod_call(dw.get_data,
                     duration=(start_date, end_date),
                     realm="Jobs",
                     dimension="resource",
@@ -961,7 +983,7 @@ class XDMoDPythonServer(BaseAccessServer):
         except Exception as e:
             return f"❌ XDMoD data access error: {str(e)}"
 
-    def _validate_filters_with_smart_matching(self, dw, filters: dict, realm: str, show_progress: bool = False) -> tuple:
+    async def _validate_filters_with_smart_matching(self, dw, filters: dict, realm: str, show_progress: bool = False) -> tuple:
         """
         Validate and process filters with smart matching logic.
         Returns (processed_filters, filter_warnings)
@@ -975,7 +997,7 @@ class XDMoDPythonServer(BaseAccessServer):
                 # Note: show_progress handled by calling function
                 
                 # Get valid values for this dimension in this realm
-                filter_df = dw.get_filter_values(realm=realm, dimension=key)
+                filter_df = await self._xdmod_call(dw.get_filter_values, realm=realm, dimension=key)
                 
                 # Convert DataFrame to list of strings (same as smart filters)
                 valid_values = filter_df['label'].tolist() if 'label' in filter_df.columns else filter_df.iloc[:, 0].tolist()
@@ -1042,6 +1064,8 @@ class XDMoDPythonServer(BaseAccessServer):
                             clean_prefix = str(value).replace(',', '').split()[0].lower() if str(value) else ''
                             filter_warnings.append(f"💡 Try get_smart_filters(dimension='{key}', search_prefix='{clean_prefix}') to find similar names")
                             
+            except XDMoDUnavailableError:
+                raise
             except Exception as e:
                 # If validation fails, use the filter as-is with a warning
                 if isinstance(value, list):
@@ -1147,7 +1171,7 @@ class XDMoDPythonServer(BaseAccessServer):
                                 result += f"🔍 Validating filter {key}...\n"
                             
                             # Get valid values for this dimension in this realm
-                            filter_df = dw.get_filter_values(realm=realm, dimension=key)
+                            filter_df = await self._xdmod_call(dw.get_filter_values, realm=realm, dimension=key)
                             
                             # Convert DataFrame to list of strings (same as smart filters)
                             valid_values = filter_df['label'].tolist() if 'label' in filter_df.columns else filter_df.iloc[:, 0].tolist()
@@ -1242,6 +1266,8 @@ class XDMoDPythonServer(BaseAccessServer):
                                         clean_prefix = str(value).replace(',', '').split()[0].lower() if str(value) else ''
                                         filter_warnings.append(f"💡 Try get_smart_filters(dimension='{key}', search_prefix='{clean_prefix}') to find similar names")
                                     
+                        except XDMoDUnavailableError:
+                            raise
                         except Exception as e:
                             # If validation fails, use the filter as-is with a warning
                             if isinstance(value, list):
@@ -1293,7 +1319,7 @@ class XDMoDPythonServer(BaseAccessServer):
                     if processed_filters:
                         kwargs['filters'] = processed_filters
                     
-                    data = dw.get_data(**kwargs)
+                    data = await self._xdmod_call(dw.get_data, **kwargs)
                     
                     if show_progress:
                         elapsed = time.time() - start_time
@@ -1507,7 +1533,7 @@ class XDMoDPythonServer(BaseAccessServer):
             with dw:
                 # Get dimensions
                 try:
-                    dimensions = dw.describe_dimensions(realm)
+                    dimensions = await self._xdmod_call(dw.describe_dimensions, realm)
                     result += "**Available Dimensions:**\n"
                     if dimensions is not None and not dimensions.empty:
                         for _, dim in dimensions.iterrows():
@@ -1518,6 +1544,8 @@ class XDMoDPythonServer(BaseAccessServer):
                                 result += f"  - {dim['description']}\n"
                     else:
                         result += "• No dimensions available or realm not accessible\n"
+                except XDMoDUnavailableError:
+                    raise
                 except Exception as dim_error:
                     result += f"• Error fetching dimensions: {str(dim_error)}\n"
                 
@@ -1526,7 +1554,7 @@ class XDMoDPythonServer(BaseAccessServer):
                 # Get metrics if requested
                 if include_metrics:
                     try:
-                        metrics = dw.describe_metrics(realm)
+                        metrics = await self._xdmod_call(dw.describe_metrics, realm)
                         result += "**Available Metrics:**\n"
                         if metrics is not None and not metrics.empty:
                             # Group metrics by category if available
@@ -1542,6 +1570,8 @@ class XDMoDPythonServer(BaseAccessServer):
                                     result += f"  - {metric['description']}\n"
                         else:
                             result += "• No metrics available for this realm\n"
+                    except XDMoDUnavailableError:
+                        raise
                     except Exception as metric_error:
                         result += f"• Error fetching metrics: {str(metric_error)}\n"
                 
@@ -1577,7 +1607,7 @@ class XDMoDPythonServer(BaseAccessServer):
                             break
                             
                         try:
-                            values = dw.get_filter_values(realm, dim_label)
+                            values = await self._xdmod_call(dw.get_filter_values, realm, dim_label)
                             if values is not None and not values.empty:
                                 result += f"\n• **{dim_label}** ({len(values)} values):\n"
                                 
@@ -1593,6 +1623,8 @@ class XDMoDPythonServer(BaseAccessServer):
                                     result += f"  ... and {len(values) - sample_size} more values\n"
                                     
                                 shown_count += 1
+                        except XDMoDUnavailableError:
+                            raise
                         except Exception:
                             pass  # Skip if can't get values for this dimension
                     
@@ -1635,7 +1667,7 @@ class XDMoDPythonServer(BaseAccessServer):
             
             with dw:
                 try:
-                    realms = dw.describe_realms()
+                    realms = await self._xdmod_call(dw.describe_realms)
                     
                     if realms is not None and not realms.empty:
                         for _, realm in realms.iterrows():
@@ -1650,12 +1682,14 @@ class XDMoDPythonServer(BaseAccessServer):
                                 
                                 # Try to get dimension and metric counts
                                 try:
-                                    dims = dw.describe_dimensions(realm_id)
-                                    metrics = dw.describe_metrics(realm_id)
+                                    dims = await self._xdmod_call(dw.describe_dimensions, realm_id)
+                                    metrics = await self._xdmod_call(dw.describe_metrics, realm_id)
                                     dim_count = len(dims) if dims is not None else 0
                                     metric_count = len(metrics) if metrics is not None else 0
                                     result += f"  • Dimensions: {dim_count}\n"
                                     result += f"  • Metrics: {metric_count}\n"
+                                except XDMoDUnavailableError:
+                                    raise
                                 except Exception:
                                     pass  # Skip if can't get counts
                             
@@ -1710,7 +1744,7 @@ class XDMoDPythonServer(BaseAccessServer):
             
             with dw:
                 # Get all available filter values dynamically
-                filter_df = dw.get_filter_values(realm, dimension)
+                filter_df = await self._xdmod_call(dw.get_filter_values, realm, dimension)
                 
                 if filter_df.empty:
                     result += f"❌ No filter values found for {dimension} in {realm}\n"
