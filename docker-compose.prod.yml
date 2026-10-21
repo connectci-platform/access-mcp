@@ -290,12 +290,12 @@ services:
         limits:
           memory: 256M
 
-  # Reporting dashboard (Nuxt) — image built by necyberteam/access-agent-reporting.
+  # Reporting dashboard (Nuxt) — image built by connectci-platform/access-agent-reporting.
   # On BOTH networks: default (mcp-network) so Caddy can route qa.access-ci.org/dashboard
   # to it, and the agent project's network so it reads the agent's Postgres by
   # service name (never the host loopback).
   dashboard:
-    image: ghcr.io/necyberteam/access-agent-reporting/dashboard:latest
+    image: ghcr.io/connectci-platform/access-agent-reporting/dashboard:latest
     expose:
       - "3000"
     restart: unless-stopped
