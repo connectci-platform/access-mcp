@@ -32,6 +32,7 @@ jobs:
 
   xdmod-mcp-data:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: packages/xdmod-mcp-data
