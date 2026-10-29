@@ -29,3 +29,32 @@ jobs:
 
       - name: Test
         run: npm test
+
+  xdmod-mcp-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: packages/xdmod-mcp-data
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: packages/xdmod-mcp-data/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+
+      # Integration tests call the live XDMoD API; an upstream outage
+      # would otherwise block every deploy.
+      - name: Test
+        run: uv run --frozen pytest -m "not integration"
+        env:
+          XDMOD_API_TOKEN: ""
