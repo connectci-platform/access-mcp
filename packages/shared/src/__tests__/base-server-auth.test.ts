@@ -33,11 +33,9 @@ let baseUrl: string;
 beforeEach(async () => {
   process.env.MCP_API_KEY = KEY;
   server = new MixedServer();
-  // 3600-3899: non-overlapping with base-server.test.ts (3100-3399) to avoid
-  // EADDRINUSE flakiness when the suites run in parallel.
-  port = 3600 + Math.floor(Math.random() * 300);
+  await server.start({ httpPort: 0 });
+  port = server.httpPort!;
   baseUrl = `http://localhost:${port}`;
-  await server.start({ httpPort: port });
 });
 afterEach(async () => {
   await server.stop();
