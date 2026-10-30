@@ -95,9 +95,9 @@ describe("BaseAccessServer HTTP Mode", () => {
 
   beforeEach(async () => {
     server = new TestServer();
-    port = 3100 + Math.floor(Math.random() * 100);
+    await server.start({ httpPort: 0 });
+    port = server.httpPort!;
     baseUrl = `http://localhost:${port}`;
-    await server.start({ httpPort: port });
   });
 
   afterEach(async () => {
@@ -454,9 +454,9 @@ describe("HTTP Mode - Acting User Headers", () => {
 
   beforeEach(async () => {
     server = new TestServer();
-    port = 3200 + Math.floor(Math.random() * 100);
+    await server.start({ httpPort: 0 });
+    port = server.httpPort!;
     baseUrl = `http://localhost:${port}`;
-    await server.start({ httpPort: port });
   });
 
   afterEach(async () => {
@@ -577,11 +577,11 @@ describe("API Key Authentication", () => {
 
   beforeEach(async () => {
     server = new ApiKeyRequiredServer();
-    port = 3300 + Math.floor(Math.random() * 100);
-    baseUrl = `http://localhost:${port}`;
     // Set the API key environment variable
     process.env.MCP_API_KEY = TEST_API_KEY;
-    await server.start({ httpPort: port });
+    await server.start({ httpPort: 0 });
+    port = server.httpPort!;
+    baseUrl = `http://localhost:${port}`;
   });
 
   afterEach(async () => {
