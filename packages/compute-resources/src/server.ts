@@ -5,9 +5,9 @@ import {
   resolveResourceId,
   projectFields,
   FIELDS_OF_SCIENCE,
-  Tool,
   Resource,
   CallToolResult,
+  type ToolWithAccess,
 } from "@access-mcp/shared";
 import {
   CallToolRequest,
@@ -111,10 +111,11 @@ export class ComputeResourcesServer extends BaseAccessServer {
     return undefined;
   }
 
-  protected getTools(): Tool[] {
+  protected getTools(): ToolWithAccess[] {
     return [
       {
         name: "search_resources",
+        mutates: false,
         description:
           "Search ACCESS-CI compute resources by name, type, or feature (ACCESS OnDemand, " +
           "Globus, preemption, NAIRR participation). Returns resource IDs for other services. " +
@@ -175,6 +176,7 @@ export class ComputeResourcesServer extends BaseAccessServer {
       },
       {
         name: "get_resource_hardware",
+        mutates: false,
         description:
           "Get a resource's hardware description from CiDeR (CPU, GPU, memory, storage). " +
           "KNOWN STALE — prefer https://support.access-ci.org/documentation/resources, which " +

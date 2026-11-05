@@ -1,6 +1,5 @@
 import {
   BaseAccessServer,
-  Tool,
   Resource,
   CallToolResult,
   DrupalAuthProvider,
@@ -10,7 +9,6 @@ import {
   MAX_LIMIT,
   coerceOffset,
   coerceLimit,
-  assertNoPublicWrites,
   type ToolWithAccess,
 } from "@access-mcp/shared";
 import {
@@ -130,7 +128,6 @@ export class AnnouncementsServer extends BaseAccessServer {
     super("access-announcements", version, "https://support.access-ci.org", {
       requireApiKey: true,
     });
-    assertNoPublicWrites(this.getTools() as ToolWithAccess[]);
   }
 
   /**
@@ -159,11 +156,12 @@ export class AnnouncementsServer extends BaseAccessServer {
     return this.drupalAuth;
   }
 
-  protected getTools(): Tool[] {
+  protected getTools(): ToolWithAccess[] {
     const tools: ToolWithAccess[] = [
       // Read operations (existing)
       {
         name: "search_announcements",
+        mutates: false,
         description:
           "Search ACCESS announcements (news, updates, notifications). Read-only view of public announcements. For managing your own announcements (update/delete), use get_my_announcements which returns UUIDs. Returns {total, items: [{title, summary, body, published_date, tags, affiliation, affinity_group}]}.",
         inputSchema: {
@@ -425,6 +423,7 @@ Returns the write envelope {action:"delete", status, executed, data}. "confirmed
       },
       {
         name: "get_my_announcements",
+        mutates: false,
         description: `List all announcements created by the authenticated user.
 
 Returns announcements with: uuid, nid, title, status (draft/published), created date, published_date, summary, tags (english NAMES, ready to display or reuse as the tags parameter for update_announcement), edit_url
@@ -457,6 +456,7 @@ Use this to:
       },
       {
         name: "get_announcement_context",
+        mutates: false,
         description: `Get user context and options BEFORE creating an announcement. Call this first.
 
 Returns:
@@ -477,6 +477,7 @@ Does NOT return tags — use suggest_tags after the user provides content.`,
       },
       {
         name: "suggest_tags",
+        mutates: false,
         description: `Suggest relevant tags for announcement content. Call this AFTER the user provides their announcement body text. Returns {tags: [{name, ...}]}. Use ONLY the "name" values (english words): show those names to the user and pass exactly those names as the tags array when calling create_announcement or update_announcement. Ignore any id/uuid fields — they are internal and must never be passed to create/update.`,
         inputSchema: {
           type: "object",
@@ -496,6 +497,7 @@ Does NOT return tags — use suggest_tags after the user provides content.`,
       },
       {
         name: "suggest_summary",
+        mutates: false,
         description: `Generate a concise summary for announcement content. Call this to auto-generate a summary from the announcement body. Returns a summary of up to 150 characters.`,
         inputSchema: {
           type: "object",

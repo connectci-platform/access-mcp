@@ -32,7 +32,13 @@ import { DrupalApiError } from "./drupal-auth.js";
 import { traceMcpToolCall } from "./telemetry.js";
 import { UsageLogger } from "./usage-logger.js";
 import { StandardWriteResponse, StandardErrorResponse } from "./types.js";
-import { isCallAuthorized, classifyTool, stripAccessMarkers, type ToolWithAccess } from "./tool-access.js";
+import {
+  isCallAuthorized,
+  classifyTool,
+  toClientTools,
+  assertToolMarkers,
+  type ToolWithAccess,
+} from "./tool-access.js";
 
 // Re-export SDK types for convenience
 export type { Tool, Resource, Prompt, CallToolResult, ReadResourceResult, GetPromptResult };
@@ -160,7 +166,7 @@ export abstract class BaseAccessServer {
     this.setupServerHandlers(this.server);
   }
 
-  protected abstract getTools(): Tool[];
+  protected abstract getTools(): ToolWithAccess[];
   protected abstract getResources(): Resource[];
   protected abstract handleToolCall(request: CallToolRequest): Promise<CallToolResult>;
 
@@ -389,6 +395,10 @@ export abstract class BaseAccessServer {
    * Start the MCP server with optional HTTP service layer for inter-server communication
    */
   async start(options?: { httpPort?: number }) {
+    // Before any transport opens: a tool without its markers must stop the
+    // server, not be listed. listToolsForClient is wrapped in try/catch, so a
+    // check there would only empty the catalog.
+    assertToolMarkers(this.getTools());
     // Start HTTP service layer if port is specified
     if (options?.httpPort) {
       this._httpPort = options.httpPort;
@@ -893,15 +903,15 @@ export abstract class BaseAccessServer {
     return response.data;
   }
 
-  /** Tools as clients should see them — internal auth markers removed. */
+  /** Tools as clients should see them: internal markers removed, write-ness as readOnlyHint. */
   protected listToolsForClient(): Tool[] {
-    return stripAccessMarkers(this.getTools() as ToolWithAccess[]);
+    return toClientTools(this.getTools());
   }
 
   /** Public tool names for this server (default-deny classification). */
   private publicToolNames(): Set<string> {
     const names = new Set<string>();
-    for (const tool of this.getTools() as ToolWithAccess[]) {
+    for (const tool of this.getTools()) {
       if (classifyTool(tool) === "public") names.add(tool.name);
     }
     return names;

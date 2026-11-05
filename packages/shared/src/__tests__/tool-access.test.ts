@@ -2,14 +2,15 @@ import { describe, it, expect } from "vitest";
 import {
   classifyTool,
   isCallAuthorized,
-  stripAccessMarkers,
+  toClientTools,
+  assertToolMarkers,
   assertNoPublicWrites,
   type ToolWithAccess,
 } from "../tool-access.js";
 
-const publicTool: ToolWithAccess = { name: "search_events", description: "", inputSchema: { type: "object" }, access: "public" };
+const publicTool: ToolWithAccess = { name: "search_events", description: "", inputSchema: { type: "object" }, access: "public", mutates: false };
 const authedTool: ToolWithAccess = { name: "create_event", description: "", inputSchema: { type: "object" }, access: "authenticated", mutates: true };
-const unmarkedTool: ToolWithAccess = { name: "mystery", description: "", inputSchema: { type: "object" } };
+const unmarkedTool: ToolWithAccess = { name: "mystery", description: "", inputSchema: { type: "object" }, mutates: false };
 
 const publicNames = new Set(["search_events"]);
 const call = (name: string) => ({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: {} } });
@@ -97,14 +98,48 @@ describe("isCallAuthorized", () => {
   });
 });
 
-describe("stripAccessMarkers", () => {
+describe("toClientTools", () => {
   it("removes access and mutates, keeps the rest", () => {
-    const [t] = stripAccessMarkers([authedTool]);
+    const [t] = toClientTools([authedTool]);
     expect(t).not.toHaveProperty("access");
     expect(t).not.toHaveProperty("mutates");
     expect(t.name).toBe("create_event");
     expect(t.description).toBe("");
   });
+
+  it("publishes mutates as annotations.readOnlyHint", () => {
+    const [write, read] = toClientTools([authedTool, publicTool]);
+    expect(write.annotations?.readOnlyHint).toBe(false);
+    expect(read.annotations?.readOnlyHint).toBe(true);
+  });
+
+  it("a tool without its marker is published as making changes", () => {
+    const unmarked = { name: "new_tool", description: "", inputSchema: { type: "object" } };
+    const [t] = toClientTools([unmarked as unknown as ToolWithAccess]);
+    expect(t.annotations?.readOnlyHint).toBe(false);
+  });
+
+  it("the mutates-derived hint wins over a tool's own, and other annotations are kept", () => {
+    const [t] = toClientTools([
+      { ...authedTool, annotations: { readOnlyHint: true, title: "Create event" } },
+    ]);
+    expect(t.annotations).toEqual({ readOnlyHint: false, title: "Create event" });
+  });
+});
+
+describe("assertToolMarkers", () => {
+  it("passes when every tool declares a boolean mutates", () =>
+    expect(() => assertToolMarkers([publicTool, authedTool])).not.toThrow());
+
+  it("throws naming a tool without mutates", () => {
+    const missing = { name: "new_tool", description: "", inputSchema: { type: "object" } };
+    expect(() => assertToolMarkers([publicTool, missing as unknown as ToolWithAccess])).toThrow(
+      /new_tool/
+    );
+  });
+
+  it("throws for a public write", () =>
+    expect(() => assertToolMarkers([{ ...authedTool, access: "public" }])).toThrow(/public/i));
 });
 
 describe("assertNoPublicWrites", () => {

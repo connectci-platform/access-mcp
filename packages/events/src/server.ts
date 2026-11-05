@@ -2,7 +2,6 @@ import {
   BaseAccessServer,
   handleApiError,
   projectFields,
-  Tool,
   Resource,
   CallToolResult,
   DrupalAuthProvider,
@@ -10,7 +9,6 @@ import {
   getRequestContext,
   coerceOffset,
   coerceLimit,
-  assertNoPublicWrites,
   type ToolWithAccess,
 } from "@access-mcp/shared";
 import {
@@ -203,7 +201,6 @@ export class EventsServer extends BaseAccessServer {
     super("access-mcp-events", version, "https://support.access-ci.org", {
       requireApiKey: true,
     });
-    assertNoPublicWrites(this.getTools() as ToolWithAccess[]);
   }
 
   protected listingLinks(
@@ -280,10 +277,11 @@ export class EventsServer extends BaseAccessServer {
     return this._eventsHttpClient;
   }
 
-  protected getTools(): Tool[] {
+  protected getTools(): ToolWithAccess[] {
     const tools: ToolWithAccess[] = [
       {
         name: "search_events",
+        mutates: false,
         description:
           "Search ACCESS-CI events (workshops, webinars, training). Returns future events by default. Use date='past' or an absolute date_range for historical events. Returns {total, items}. Each event may carry `access_registration` (native ACCESS registration — when enabled, the user can register through ACCESS itself; manage it with get_event for live availability, register_for_event to sign up, get_my_registrations to list, and cancel_registration to cancel) and/or `registration_url` (an external link to register on the resource provider's own site — ACCESS does not manage these; direct the user to the URL). access_registration.enabled true means act via the ACCESS tools; registration_url means go offsite.",
         inputSchema: {
@@ -360,6 +358,7 @@ export class EventsServer extends BaseAccessServer {
       },
       {
         name: "get_my_events",
+        mutates: false,
         description: `Events the acting user CREATED or organized — NOT events they are attending. For events the user has registered to attend, use get_my_registrations instead.
 
 Returns events the user has created or is associated with, including unpublished/draft events.
@@ -389,6 +388,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       },
       {
         name: "get_my_registrations",
+        mutates: false,
         description:
           "List the events the authenticated user has registered to attend (distinct from get_my_events, which lists events they CREATED). Returns one entry per registration: registrant_id (the handle for cancel_registration), eventinstance_id, event_title, start/end dates, location, virtual_meeting_link, event_type, waitlist status, and cancelled. cancelled:true means an organizer cancelled that occurrence (the event was archived) — the registration itself is KEPT (not removed) and the user was notified. If the organizer restores a cancelled event, its registrations reactivate (cancelled reverts to false); an occurrence the organizer cancelled individually stays cancelled until an editor restores it. Defaults to upcoming registrations; pass when=past or when=all to see past/all. Scoped to the authenticated acting user. Read-only.",
         inputSchema: {
@@ -406,6 +406,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       },
       {
         name: "get_event",
+        mutates: false,
         description:
           "Fetch one ACCESS event's full detail and LIVE registration state (seats_remaining, registration_open, and whether the acting user is already_registered). Use before register_for_event to show the user current availability. Read the top-level registration_path to decide how to register: \"native\" means native ACCESS registration is on — use register_for_event (any external offsite link is surfaced as external_registration_url, a labeled alternative); \"external\" means native registration is off but an offsite registration_url exists — direct the user there, register_for_event does NOT apply; \"none\" means no registration is available. Before reporting seat availability, read registration.capacity_type: \"limited\" means seats_remaining is a real count, \"unlimited\" means there is no cap — do not report a seat count.",
         inputSchema: {

@@ -15,7 +15,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from xdmod_mcp_data.base_server import BaseAccessServer, get_request_header
-from mcp.types import Tool, TextContent
+from mcp.types import ToolAnnotations, Tool, TextContent
 
 
 class SimpleTestServer(BaseAccessServer):
@@ -28,6 +28,7 @@ class SimpleTestServer(BaseAccessServer):
         return [
             Tool(
                 name="echo",
+                annotations=ToolAnnotations(readOnlyHint=True),
                 description="Echoes input back",
                 inputSchema={
                     "type": "object",
@@ -126,6 +127,17 @@ class TestToolsListEndpoint:
                 assert "name" in tool
                 assert "description" in tool
                 assert "inputSchema" in tool
+
+    @pytest.mark.asyncio
+    async def test_list_tools_passes_annotations_through(self):
+        """The route builds its JSON by hand, so a tool's readOnlyHint must be copied."""
+        _, app = make_server_and_app()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            tools = {t["name"]: t for t in (await client.get("/tools")).json()["tools"]}
+            assert tools["echo"]["annotations"] == {"readOnlyHint": True}
+            assert tools["check_token"]["annotations"] is None
 
 
 class TestToolExecutionEndpoint:
