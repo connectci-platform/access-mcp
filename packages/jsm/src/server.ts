@@ -1,9 +1,7 @@
 import {
   BaseAccessServer,
-  Tool,
   Resource,
   CallToolResult,
-  assertNoPublicWrites,
   type ToolWithAccess,
 } from "@access-mcp/shared";
 import { CallToolRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -169,8 +167,6 @@ export class JsmServer extends BaseAccessServer {
     if (dryRun) {
       this.logger.info("JSM dry-run mode ENABLED — no tickets will be created");
     }
-
-    assertNoPublicWrites(this.getTools() as ToolWithAccess[]);
   }
 
   private get proxyClient(): AxiosInstance {
@@ -188,7 +184,7 @@ export class JsmServer extends BaseAccessServer {
     return this._proxyClient;
   }
 
-  protected getTools(): Tool[] {
+  protected getTools(): ToolWithAccess[] {
     const tools: ToolWithAccess[] = [
       {
         name: "create_support_ticket",
@@ -341,6 +337,7 @@ export class JsmServer extends BaseAccessServer {
       },
       {
         name: "get_ticket_types",
+        mutates: false,
         description:
           "Get information about available ticket types. Use this to understand what kinds of tickets can be created and their categories.",
         inputSchema: {

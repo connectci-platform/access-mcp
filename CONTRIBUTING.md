@@ -61,10 +61,10 @@ To add a new ACCESS-CI API server:
 
 1. Create new package in `packages/your-server`
 2. Extend `BaseAccessServer` from `@access-mcp/shared`
-3. Implement required abstract methods
+3. Implement required abstract methods, declaring `mutates` on every tool (see "Tool markers" in `CLAUDE.md`)
 4. Add to root `tsconfig.json` references
 5. Add build script to root `package.json`
-6. Create tests
+6. Create tests, and add the server to `tests/tool-markers.test.ts`
 7. Document in package README
 8. Update main documentation
 

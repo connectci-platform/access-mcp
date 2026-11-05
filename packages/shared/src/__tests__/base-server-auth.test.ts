@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { BaseAccessServer, type Tool, type Resource, type CallToolResult } from "../base-server.js";
+import { BaseAccessServer, type Resource, type CallToolResult } from "../base-server.js";
 import type { CallToolRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolWithAccess } from "../tool-access.js";
 
@@ -8,13 +8,13 @@ class MixedServer extends BaseAccessServer {
   constructor() {
     super("mixed-test", "1.0.0", "https://api.example.com", { requireApiKey: true });
   }
-  protected getTools(): Tool[] {
+  protected getTools(): ToolWithAccess[] {
     // Local variable typed ToolWithAccess[] — the inline-literal form fails
     // TS excess-property checks against Tool[].
     const tools: ToolWithAccess[] = [
-      { name: "search_things", description: "public read", inputSchema: { type: "object" }, access: "public" },
+      { name: "search_things", description: "public read", inputSchema: { type: "object" }, access: "public", mutates: false },
       { name: "create_thing", description: "write", inputSchema: { type: "object" }, access: "authenticated", mutates: true },
-      { name: "get_my_things", description: "user-scoped read", inputSchema: { type: "object" }, access: "authenticated" },
+      { name: "get_my_things", description: "user-scoped read", inputSchema: { type: "object" }, access: "authenticated", mutates: false },
     ];
     return tools;
   }
@@ -114,6 +114,7 @@ describe("auth markers never leak to clients (wire surfaces)", () => {
     for (const t of tools) {
       expect(t).not.toHaveProperty("access");
       expect(t).not.toHaveProperty("mutates");
+      expect(t.annotations?.readOnlyHint).toBe(t.name !== "create_thing");
     }
     expect(tools.map((t: { name: string }) => t.name)).toContain("search_things");
   });
@@ -149,6 +150,36 @@ describe("auth markers never leak to clients (wire surfaces)", () => {
     for (const t of tools) {
       expect(t).not.toHaveProperty("access");
       expect(t).not.toHaveProperty("mutates");
+      expect(t.annotations?.readOnlyHint).toBe(t.name !== "create_thing");
     }
+  });
+});
+
+describe("start() refuses tools without their markers", () => {
+  class MisconfiguredServer extends BaseAccessServer {
+    constructor(private readonly tools: unknown[]) {
+      super("misconfigured-test", "1.0.0", "https://api.example.com");
+    }
+    protected getTools(): ToolWithAccess[] {
+      return this.tools as ToolWithAccess[];
+    }
+    protected getResources(): Resource[] { return []; }
+    protected async handleToolCall(_req: CallToolRequest): Promise<CallToolResult> {
+      return { content: [{ type: "text", text: "ok" }] };
+    }
+  }
+
+  const unmarked = { name: "new_tool", description: "", inputSchema: { type: "object" } };
+  const publicWrite = { ...unmarked, name: "public_write", access: "public", mutates: true };
+
+  it.each([
+    ["a tool without mutates", unmarked],
+    ["a public write", publicWrite],
+  ])("rejects %s before anything listens", async (_label, tool) => {
+    const port = 3900 + Math.floor(Math.random() * 100);
+    const misconfigured = new MisconfiguredServer([tool]);
+
+    await expect(misconfigured.start({ httpPort: port })).rejects.toThrow(/misconfiguration/);
+    await expect(fetch(`http://localhost:${port}/tools`)).rejects.toThrow();
   });
 });

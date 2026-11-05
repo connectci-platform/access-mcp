@@ -2,12 +2,12 @@ import {
   BaseAccessServer,
   handleApiError,
   projectFields,
-  Tool,
   Resource,
   CallToolResult,
   resolveResourceId,
   buildPagination,
   MAX_LIMIT,
+  type ToolWithAccess,
 } from "@access-mcp/shared";
 import {
   CallToolRequest,
@@ -128,10 +128,11 @@ export class SystemStatusServer extends BaseAccessServer {
     }
   }
 
-  protected getTools(): Tool[] {
+  protected getTools(): ToolWithAccess[] {
     return [
       {
         name: "get_infrastructure_news",
+        mutates: false,
         description:
           "Get ACCESS-CI infrastructure status including outages, maintenance, and incidents. With no parameters, returns current active outages. Use 'time' to get scheduled/past outages, 'resource' to filter to a specific system, or 'ids' to check status of specific resources.",
         inputSchema: {

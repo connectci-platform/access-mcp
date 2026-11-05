@@ -3,9 +3,9 @@ import {
   handleApiError,
   sanitizeGroupId,
   projectFields,
-  Tool,
   Resource,
   CallToolResult,
+  type ToolWithAccess,
 } from "@access-mcp/shared";
 import {
   CallToolRequest,
@@ -38,10 +38,11 @@ export class AffinityGroupsServer extends BaseAccessServer {
     return undefined;
   }
 
-  protected getTools(): Tool[] {
+  protected getTools(): ToolWithAccess[] {
     return [
       {
         name: "search_affinity_groups",
+        mutates: false,
         description: "Search ACCESS-CI affinity groups. Returns {total, items}.",
         inputSchema: {
           type: "object",

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { BaseAccessServer, Tool, Resource, CallToolResult } from "@access-mcp/shared";
+import { BaseAccessServer, Resource, CallToolResult, type ToolWithAccess } from "@access-mcp/shared";
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -383,10 +383,11 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     .filter((r) => r !== "Storage")
     .sort();
 
-  protected getTools(): Tool[] {
-    const tools: Tool[] = [
+  protected getTools(): ToolWithAccess[] {
+    const tools: ToolWithAccess[] = [
       {
         name: "get_chart_data",
+        mutates: false,
         description:
           "The go-to tool for ACCESS-wide usage statistics, counts, and trends: " +
           "job counts, CPU/GPU hours, utilization, most-used resources, active users/PIs, " +
@@ -483,6 +484,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       },
       {
         name: "get_chart_image",
+        mutates: false,
         description:
           "Get chart image (SVG, PNG, or PDF) for a specific statistic. Use PNG format for direct display in Claude Desktop.",
         inputSchema: {
@@ -576,6 +578,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       },
       {
         name: "get_chart_link",
+        mutates: false,
         description:
           "Generate a direct URL to view an interactive chart in the XDMoD web portal. Use this when users want to explore data interactively, apply additional filters, or share charts with collaborators. The web interface provides more filtering options than the API.",
         inputSchema: {
@@ -600,6 +603,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       },
       {
         name: "describe_realms",
+        mutates: false,
         description:
           "List all available XDMoD data realms (Jobs, SUPREMM, Cloud, Storage, etc.) with their available dimensions and statistics. Use this when you need to know what data categories exist or where to find specific metrics (e.g., GPU metrics are in the SUPREMM realm). No authentication required.",
         inputSchema: {
@@ -610,6 +614,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       },
       {
         name: "describe_fields",
+        mutates: false,
         description:
           "List all dimensions and statistics for a realm. Use this only when you need to discover a statistic ID not listed in get_chart_data's description. Returns group_by dimensions and statistic IDs with labels.",
         inputSchema: {
@@ -627,6 +632,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       },
       {
         name: "get_dimension_values",
+        mutates: false,
         description:
           "Get the list of filter values for a dimension in a realm. For example, get all available resources, all institutions, or all fields of science. Use this to discover valid filter values before calling get_chart_data. No authentication required.",
         inputSchema: {

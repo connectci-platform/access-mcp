@@ -2,18 +2,18 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import axios from "axios";
 import {
   BaseAccessServer,
-  Tool,
   Resource,
   CallToolResult,
   requestContextStorage,
 } from "../base-server.js";
+import type { ToolWithAccess } from "../tool-access.js";
 import { CallToolRequest } from "@modelcontextprotocol/sdk/types.js";
 
 class CallerServer extends BaseAccessServer {
   constructor() {
     super("caller", "1.0.0");
   }
-  protected getTools(): Tool[] {
+  protected getTools(): ToolWithAccess[] {
     return [];
   }
   protected getResources(): Resource[] {

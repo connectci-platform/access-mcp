@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   BaseAccessServer,
-  Tool,
   Resource,
   CallToolResult,
   getRequestContext,
@@ -9,6 +8,7 @@ import {
   requestContextStorage,
   RequestContext,
 } from "../base-server.js";
+import type { ToolWithAccess } from "../tool-access.js";
 import { DrupalApiError } from "../drupal-auth.js";
 import { CallToolRequest } from "@modelcontextprotocol/sdk/types.js";
 
@@ -21,10 +21,11 @@ class TestServer extends BaseAccessServer {
     super("test-server", "1.0.0", "https://api.example.com");
   }
 
-  protected getTools(): Tool[] {
+  protected getTools(): ToolWithAccess[] {
     return [
       {
         name: "test_tool",
+        mutates: false,
         description: "A test tool",
         inputSchema: {
           type: "object",
@@ -35,6 +36,7 @@ class TestServer extends BaseAccessServer {
       },
       {
         name: "get_context",
+        mutates: false,
         description: "Returns the current request context",
         inputSchema: {
           type: "object",
@@ -540,10 +542,11 @@ class ApiKeyRequiredServer extends BaseAccessServer {
     });
   }
 
-  protected getTools(): Tool[] {
+  protected getTools(): ToolWithAccess[] {
     return [
       {
         name: "protected_tool",
+        mutates: false,
         description: "A tool that requires API key",
         inputSchema: {
           type: "object",
