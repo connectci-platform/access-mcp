@@ -29,7 +29,7 @@ describe("SystemStatusServer", () => {
       OutageStart: "2024-08-27T10:00:00Z",
       OutageEnd: "2024-08-27T11:00:00Z",
       OutageType: "Full",
-      AffectedResources: [{ ResourceName: "Anvil", ResourceID: "anvil-1.purdue.access-ci.org" }],
+      AffectedResources: [{ ResourceID: "anvil-1.purdue.access-ci.org" }],
     },
     {
       id: "2",
@@ -38,7 +38,7 @@ describe("SystemStatusServer", () => {
       OutageStart: "2024-08-27T08:00:00Z",
       OutageEnd: "2024-08-27T08:30:00Z",
       OutageType: "Partial",
-      AffectedResources: [{ ResourceName: "Bridges-2", ResourceID: "bridges2.psc.access-ci.org" }],
+      AffectedResources: [{ ResourceID: "bridges2.psc.access-ci.org" }],
     },
   ];
 
@@ -49,7 +49,7 @@ describe("SystemStatusServer", () => {
       Content: "Planned maintenance",
       OutageStart: "2024-08-30T10:00:00Z",
       OutageEnd: "2024-08-30T14:00:00Z",
-      AffectedResources: [{ ResourceName: "Jetstream", ResourceID: "jetstream-1" }],
+      AffectedResources: [{ ResourceID: "jetstream-1" }],
     },
   ];
 
@@ -61,7 +61,7 @@ describe("SystemStatusServer", () => {
       OutageStart: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(), // 3 days ago
       OutageEnd: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000 + 6 * 60 * 60 * 1000).toISOString(), // 3 days ago + 6 hours
       OutageType: "Full",
-      AffectedResources: [{ ResourceName: "Stampede3", ResourceID: "stampede3-1" }],
+      AffectedResources: [{ ResourceID: "stampede3-1" }],
     },
   ];
 
@@ -129,11 +129,16 @@ describe("SystemStatusServer", () => {
       const content = result.content[0] as TextContent;
       const response = JSON.parse(content.text);
       expect(response.total).toBe(2);
-      expect(response.metadata.aggregations.affected_resources).toEqual(["Anvil", "Bridges-2"]);
+      expect(response.metadata.aggregations.affected_resources).toEqual([
+        "anvil-1.purdue.access-ci.org",
+        "bridges2.psc.access-ci.org",
+      ]);
       expect(response.metadata.aggregations.severity_counts).toHaveProperty("high", 1); // Emergency
       expect(response.metadata.aggregations.severity_counts).toHaveProperty("low", 1); // Scheduled maintenance
       expect(response.items[0]).toHaveProperty("severity");
-      expect(response.documentation.links.see_all_url).toBe("https://operations.access-ci.org/infrastructure_news_view");
+      expect(response.documentation.links.see_all_url).toBe(
+        "https://operations.access-ci.org/infrastructure_news_view"
+      );
     });
 
     it("should filter outages by resource", async () => {
@@ -343,7 +348,7 @@ describe("SystemStatusServer", () => {
       const content = result.content[0] as TextContent;
       const response = JSON.parse(content.text);
       expect(response.total).toBe(1);
-      expect(response.metadata.aggregations.affected_resources).toEqual(["Jetstream"]);
+      expect(response.metadata.aggregations.affected_resources).toEqual(["jetstream-1"]);
       expect(response.items[0]).toHaveProperty("hours_until_start");
       expect(response.items[0]).toHaveProperty("duration_hours", 4); // 10am to 2pm = 4 hours
       expect(response.items[0]).toHaveProperty("has_scheduled_time", true);
@@ -701,7 +706,7 @@ describe("SystemStatusServer", () => {
           ...mockCurrentOutagesData[0],
           id: `cur-delta-${i}`,
           Subject: `Current outage on Delta ${i}`,
-          AffectedResources: [{ ResourceName: "Delta", ResourceID: `delta-${i}` }],
+          AffectedResources: [{ ResourceID: `delta-${i}` }],
         }));
       const currentBridges2 = Array(3)
         .fill(0)
@@ -709,7 +714,7 @@ describe("SystemStatusServer", () => {
           ...mockCurrentOutagesData[0],
           id: `cur-bridges2-${i}`,
           Subject: `Current outage on Bridges2 ${i}`,
-          AffectedResources: [{ ResourceName: "Bridges2", ResourceID: `bridges2-${i}` }],
+          AffectedResources: [{ ResourceID: `bridges2-${i}` }],
         }));
       const currentMixed = [...currentDelta, ...currentBridges2];
 
@@ -718,7 +723,7 @@ describe("SystemStatusServer", () => {
           ...mockFutureOutagesData[0],
           id: "fut-delta-0",
           Subject: "Future outage on Delta",
-          AffectedResources: [{ ResourceName: "Delta", ResourceID: "delta-fut-0" }],
+          AffectedResources: [{ ResourceID: "delta-fut-0" }],
         },
       ];
 
@@ -728,7 +733,7 @@ describe("SystemStatusServer", () => {
           id: "past-delta-0",
           Subject: "Past outage on Delta",
           OutageEnd: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(), // within 30 days
-          AffectedResources: [{ ResourceName: "Delta", ResourceID: "delta-past-0" }],
+          AffectedResources: [{ ResourceID: "delta-past-0" }],
         },
       ];
 
@@ -752,8 +757,8 @@ describe("SystemStatusServer", () => {
       expect(response.items).toHaveLength(4);
       for (const item of response.items) {
         expect(
-          item.AffectedResources?.some((r: { ResourceName?: string }) =>
-            r.ResourceName?.toLowerCase().includes("delta")
+          item.AffectedResources?.some((r: { ResourceID?: string }) =>
+            r.ResourceID?.toLowerCase().includes("delta")
           )
         ).toBe(true);
       }
@@ -779,7 +784,7 @@ describe("SystemStatusServer", () => {
         ...mockCurrentOutagesData[0],
         id: "cur-subject-only",
         Subject: "Emergency maintenance affecting Delta users",
-        AffectedResources: [{ ResourceName: "Bridges2", ResourceID: "bridges2-x" }],
+        AffectedResources: [{ ResourceID: "bridges2-x" }],
       };
 
       mockHttpClient.get
@@ -863,8 +868,12 @@ describe("SystemStatusServer", () => {
           data: { results: [activeOutage] }, // anvil has active outage
         })
         .mockResolvedValueOnce({
+          status: 400,
+          data: { status_code: 400, detail: "Specified info_groupid not found" },
+        })
+        .mockResolvedValueOnce({
           status: 200,
-          data: { results: [] }, // unknown resource has no outages
+          data: { results: { active_groups: [] } }, // catalog doesn't know it either
         });
 
       // Use full IDs with dots to skip resolution lookup
@@ -886,7 +895,7 @@ describe("SystemStatusServer", () => {
       const content = result.content[0] as TextContent;
       const response = JSON.parse(content.text);
       expect(response.total).toBe(2);
-      expect(response.metadata.aggregations.counts.operational).toBe(1); // unknown.resource.org
+      expect(response.metadata.aggregations.counts.unknown).toBe(1); // unknown.resource.org
       expect(response.metadata.aggregations.counts.affected).toBe(1); // anvil.purdue.access-ci.org
 
       const anvilStatus = response.items.find(
@@ -988,6 +997,230 @@ describe("SystemStatusServer", () => {
       const response = JSON.parse(content.text);
       expect(response.error).toContain("Could not resolve");
       expect(response.resolution_errors[0].error).toContain("Multiple resources match");
+    });
+
+    describe("lookups the group API can't answer", () => {
+      const notAGroup = {
+        status: 400,
+        data: { status_code: 400, detail: "Specified info_groupid not found" },
+      };
+      const catalog = {
+        status: 200,
+        data: {
+          results: {
+            active_groups: [
+              {
+                info_groupid: "bridges2.psc.access-ci.org",
+                group_descriptive_name: "Bridges-2",
+                rollup_info_resourceids: [
+                  "bridges2-rm.psc.access-ci.org",
+                  "bridges2-gpu.psc.access-ci.org",
+                ],
+              },
+            ],
+          },
+        },
+      };
+      const outage = (affected: string[]) => ({
+        Subject: "Bridges-2 migration",
+        OutageStart: new Date(Date.now() - 3600000).toISOString(),
+        OutageEnd: new Date(Date.now() + 3600000).toISOString(),
+        OutageType: "Full",
+        AffectedResources: affected.map((ResourceID) => ({ ResourceID })),
+      });
+      const mockApi = (groupOutages: unknown[]) =>
+        mockHttpClient.get.mockImplementation(async (url: string) => {
+          if (url.includes("/cider/")) return catalog;
+          if (url === "/wh2/news/v1/info_groupid/bridges2.psc.access-ci.org/") {
+            return { status: 200, data: { results: groupOutages } };
+          }
+          return notAGroup;
+        });
+      const checkStatus = async (id: string) => {
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: { name: "get_infrastructure_news", arguments: { ids: [id] } },
+        });
+        return JSON.parse((result.content[0] as TextContent).text).items[0];
+      };
+
+      it("reports unknown for an ID no group or catalog entry recognizes", async () => {
+        mockApi([]);
+        const status = await checkStatus("this-does-not-exist.example.org");
+        expect(status.status).toBe("unknown");
+        expect(status).toHaveProperty("error");
+      });
+
+      it("reports unknown when the group API returns a server error", async () => {
+        mockHttpClient.get.mockResolvedValue({ status: 500, data: null });
+        const status = await checkStatus("anvil.purdue.access-ci.org");
+        expect(status.status).toBe("unknown");
+      });
+
+      it("reports affected for a resource ID named in its group's outage", async () => {
+        mockApi([outage(["bridges2-rm.psc.access-ci.org"])]);
+        const status = await checkStatus("bridges2-rm.psc.access-ci.org");
+        expect(status.resource_id).toBe("bridges2-rm.psc.access-ci.org");
+        expect(status.status).toBe("affected");
+      });
+
+      it("reports operational when the outage only names a sibling resource", async () => {
+        mockApi([outage(["bridges2-gpu.psc.access-ci.org"])]);
+        const status = await checkStatus("bridges2-rm.psc.access-ci.org");
+        expect(status.status).toBe("operational");
+      });
+    });
+
+    it("does not report a canceled outage as affecting the resource", async () => {
+      mockHttpClient.get.mockResolvedValue({
+        status: 200,
+        data: {
+          results: [
+            {
+              Subject: "(Canceled) Anvil Outage On November 6-8, 2026",
+              OutageStart: new Date(Date.now() - 3600000).toISOString(),
+              OutageEnd: new Date(Date.now() + 3600000).toISOString(),
+              OutageType: "Full",
+            },
+          ],
+        },
+      });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "get_infrastructure_news",
+          arguments: { ids: ["anvil.purdue.access-ci.org"] },
+        },
+      });
+
+      const response = JSON.parse((result.content[0] as TextContent).text);
+      expect(response.items[0].status).toBe("operational");
+      expect(response.items[0].active_outages).toBe(0);
+    });
+  });
+  describe("canceled outages", () => {
+    const hoursFromNow = (hours: number) => new Date(Date.now() + hours * 3600000).toISOString();
+    const canceled = {
+      Subject: "(Canceled) Anvil Outage On November 6-8, 2026",
+      OutageStart: hoursFromNow(2),
+      OutageEnd: hoursFromNow(50),
+      OutageType: "Full",
+      AffectedResources: [{ ResourceID: "anvil.purdue.access-ci.org" }],
+    };
+    const scheduled = {
+      Subject: "Bridges-2 Migration Scheduled Downtime",
+      OutageStart: hoursFromNow(3),
+      OutageEnd: hoursFromNow(70),
+      OutageType: "Full",
+      AffectedResources: [{ ResourceID: "bridges2-rm.psc.access-ci.org" }],
+    };
+    const news = async (time: string) => {
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: { name: "get_infrastructure_news", arguments: { time } },
+      });
+      return JSON.parse((result.content[0] as TextContent).text);
+    };
+
+    it("keeps a canceled outage in the scheduled list, marked as canceled", async () => {
+      mockHttpClient.get.mockResolvedValue({
+        status: 200,
+        data: { results: [canceled, scheduled] },
+      });
+      const response = await news("scheduled");
+      expect(response.total).toBe(2);
+      const item = response.items.find((i: { Subject: string }) => i.Subject === canceled.Subject);
+      expect(item.canceled).toBe(true);
+      expect(
+        response.items.find((i: { Subject: string }) => i.Subject === scheduled.Subject).canceled
+      ).toBe(false);
+    });
+
+    it("leaves canceled outages out of the upcoming counts", async () => {
+      mockHttpClient.get.mockResolvedValue({
+        status: 200,
+        data: { results: [canceled, scheduled] },
+      });
+      const { aggregations } = (await news("scheduled")).metadata;
+      expect(aggregations.upcoming_24h).toBe(1);
+      expect(aggregations.upcoming_week).toBe(1);
+      expect(aggregations.affected_resources).toEqual(["bridges2-rm.psc.access-ci.org"]);
+    });
+
+    it("recognizes the British spelling and a trailing marker", async () => {
+      const variants = [
+        "(Cancelled) Anvil Scheduled Maintenance August 25, 2026",
+        "SDSC Comet Maintenance, 9AM-1PM (PT), Feb 18, 2021 [canceled]",
+      ];
+      mockHttpClient.get.mockResolvedValue({
+        status: 200,
+        data: { results: variants.map((Subject) => ({ ...canceled, Subject })) },
+      });
+      const response = await news("scheduled");
+      expect(response.items.map((i: { canceled: boolean }) => i.canceled)).toEqual([true, true]);
+    });
+
+    it("does not treat a rescheduled outage as canceled", async () => {
+      mockHttpClient.get.mockResolvedValue({
+        status: 200,
+        data: {
+          results: [{ ...scheduled, Subject: "Bridges Maintenance Rescheduled June 26-28" }],
+        },
+      });
+      expect((await news("scheduled")).items[0].canceled).toBe(false);
+    });
+
+    it("drops a canceled outage from the current list once its window starts", async () => {
+      mockHttpClient.get.mockResolvedValue({ status: 200, data: { results: [canceled] } });
+      const response = await news("current");
+      expect(response.total).toBe(0);
+      expect(response.metadata.aggregations.affected_resources).toEqual([]);
+    });
+
+    it("excludes canceled outages from the combined view's active counts", async () => {
+      mockHttpClient.get.mockImplementation(async (url: string) => ({
+        status: 200,
+        data: {
+          results: url.includes("current_outages")
+            ? [canceled]
+            : url.includes("future_outages")
+              ? [canceled, scheduled]
+              : [],
+        },
+      }));
+      const response = await news("all");
+      expect(response.metadata.aggregations.current_outages).toBe(0);
+      expect(response.metadata.aggregations.scheduled_maintenance).toBe(1);
+      // categories counts what's in the list, so the canceled outage is still in it.
+      expect(response.metadata.aggregations.categories.scheduled).toBe(2);
+      const item = response.items.find((i: { Subject: string }) => i.Subject === canceled.Subject);
+      expect(item.canceled).toBe(true);
+    });
+  });
+  describe("resource filter", () => {
+    it("matches resource IDs regardless of case", async () => {
+      mockHttpClient.get.mockResolvedValue({
+        status: 200,
+        data: {
+          results: [
+            {
+              Subject: "Network work",
+              AffectedResources: [{ ResourceID: "rockfish-LM.jhu.access-ci.org" }],
+            },
+          ],
+        },
+      });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "get_infrastructure_news",
+          arguments: { time: "current", resource: "rockfish-lm" },
+        },
+      });
+
+      expect(JSON.parse((result.content[0] as TextContent).text).total).toBe(1);
     });
   });
 
@@ -1134,7 +1367,9 @@ describe("SystemStatusServer", () => {
       const tool = tools.find((t: { name: string }) => t.name === "get_infrastructure_news");
 
       expect(tool?.inputSchema.properties?.fields).toBeDefined();
-      expect((tool as { _meta?: { supportsFieldProjection?: boolean } })._meta?.supportsFieldProjection).toBe(true);
+      expect(
+        (tool as { _meta?: { supportsFieldProjection?: boolean } })._meta?.supportsFieldProjection
+      ).toBe(true);
     });
   });
 
@@ -1174,9 +1409,7 @@ describe("SystemStatusServer", () => {
 
       expect(negative.metadata.pagination.offset).toBe(0);
       expect(negative.items[0].Subject).toEqual(zero.items[0].Subject);
-      expect(negative.items[0].Subject).not.toEqual(
-        manyOutages[manyOutages.length - 1].Subject
-      );
+      expect(negative.items[0].Subject).not.toEqual(manyOutages[manyOutages.length - 1].Subject);
     });
 
     it("time=current coerces a negative offset forward to 0", async () => {
