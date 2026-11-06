@@ -399,8 +399,9 @@ export abstract class BaseAccessServer {
     // server, not be listed. listToolsForClient is wrapped in try/catch, so a
     // check there would only empty the catalog.
     assertToolMarkers(this.getTools());
-    // Start HTTP service layer if port is specified
-    if (options?.httpPort) {
+    // Start HTTP service layer if port is specified. Port 0 asks the OS for a
+    // free port; read it back from `httpPort` once start() resolves.
+    if (options?.httpPort !== undefined) {
       this._httpPort = options.httpPort;
       await this.startHttpService();
       this.logger.info("HTTP server running", { port: this._httpPort });
@@ -410,6 +411,11 @@ export abstract class BaseAccessServer {
       // MCP servers should not output anything to stderr/stdout when running
       // as it interferes with JSON-RPC communication
     }
+  }
+
+  /** The bound HTTP port, which differs from the requested one when that was 0. */
+  get httpPort(): number | undefined {
+    return this._httpPort;
   }
 
   /**
@@ -431,7 +437,7 @@ export abstract class BaseAccessServer {
    * Start HTTP service layer with Streamable HTTP support for remote MCP connections
    */
   private async startHttpService(): Promise<void> {
-    if (!this._httpPort) return;
+    if (this._httpPort === undefined) return;
 
     const app = new Hono();
     this._httpApp = app;
@@ -764,7 +770,8 @@ export abstract class BaseAccessServer {
         fetch: app.fetch,
         hostname: "0.0.0.0",
         port: this._httpPort!,
-      }, () => {
+      }, (info) => {
+        this._httpPort = info.port;
         resolve();
       });
       this._nodeServer = server as unknown as HttpServer;

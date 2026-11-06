@@ -44,9 +44,9 @@ beforeEach(async () => {
   server = new AllocationsServer();
   // 3900-3999: a range clear of base-server.test.ts (3100-3399) and
   // base-server-auth.test.ts (3600-3899).
-  port = 3900 + Math.floor(Math.random() * 100);
+  await server.start({ httpPort: 0 });
+  port = server.httpPort!;
   baseUrl = `http://localhost:${port}`;
-  await server.start({ httpPort: port });
 });
 
 afterEach(async () => {
