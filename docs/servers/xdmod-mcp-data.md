@@ -183,6 +183,8 @@ Add to your Claude Desktop configuration:
 
 **Note:** After installing with pipx, restart Claude Desktop to detect the new command.
 
+`XDMOD_CALL_TIMEOUT_SECONDS` (default `60`) caps how long any single XDMoD request may take. When XDMoD is down or unreachable, tools return an error after this long instead of hanging.
+
 ## Analysis Templates
 
 The server provides 14 pre-configured analysis templates organized by operational value. Each template includes base configuration, dynamic semantic filters, multi-metric support, and context parameters for professional analysis.

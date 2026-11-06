@@ -136,7 +136,7 @@ packages/
 ### Package Dependencies
 
 **Production Dependencies:**
-- `@access-mcp/shared`: `^0.5.0` - Shared base classes, types, and utilities
+- `@access-mcp/shared`: `^0.10.0` - Shared base classes, types, and utilities
 - `@modelcontextprotocol/sdk`: MCP protocol implementation
 - `axios`: HTTP client for API requests
 - Additional dependencies vary by server (e.g., `express` for allocations)
@@ -146,7 +146,7 @@ packages/
 - `vitest`: Test framework
 - `@types/node`: Node.js type definitions
 
-**Important:** All published packages use version references (e.g., `^0.5.0`) to `@access-mcp/shared`. The `file:../shared` pattern should **never** appear in published packages, only in local development workspaces if needed.
+**Important:** All published packages use version references (e.g., `^0.10.0`) to `@access-mcp/shared`. The `file:../shared` pattern should **never** appear in published packages, only in local development workspaces if needed.
 
 ## Testing Patterns
 
@@ -233,14 +233,14 @@ describe("Server Integration Tests", () => {
      "main": "dist/index.js",
      "bin": { "access-mcp-new-server": "dist/index.js" },
      "dependencies": {
-       "@access-mcp/shared": "^0.5.0",
+       "@access-mcp/shared": "^0.10.0",
        "@modelcontextprotocol/sdk": "^1.16.0",
        "axios": "^1.7.0"
      }
    }
    ```
 
-   **Important:** Use version references (e.g., `^0.5.0`) for the shared package, NOT `file:../shared`. This ensures:
+   **Important:** Use version references (e.g., `^0.10.0`) for the shared package, NOT `file:../shared`. This ensures:
    - npm users get automatic dependency resolution
    - Published packages work correctly
    - No manual installation of shared package required
@@ -337,7 +337,7 @@ Documentation auto-deploys to https://access-mcp.netlify.app from GitHub pushes.
 
 ## Important Conventions
 
-1. **Use version references for shared package** - All packages should depend on `@access-mcp/shared` using version references like `^0.5.0`, never `file:../shared`. This ensures proper dependency resolution for npm users.
+1. **Use version references for shared package** - All packages should depend on `@access-mcp/shared` using version references like `^0.10.0`, never `file:../shared`. This ensures proper dependency resolution for npm users.
 2. **Include integration tests** - Real API calls validate functionality
 3. **Follow enhancement patterns** - Transform raw data into useful structures
 4. **Comprehensive error handling** - Handle API errors gracefully

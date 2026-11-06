@@ -7,6 +7,10 @@
   "bin": {
     "access-mcp-documentation": "dist/index.js"
   },
+  "files": [
+    "dist/**/*",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
@@ -21,7 +25,7 @@
   "author": "ACCESS-CI",
   "license": "MIT",
   "dependencies": {
-    "@access-mcp/shared": "^0.9.0",
+    "@access-mcp/shared": "^0.10.0",
     "@modelcontextprotocol/sdk": "^1.28.0",
     "axios": "^1.7.0"
   },

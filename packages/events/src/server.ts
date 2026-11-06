@@ -348,7 +348,7 @@ export class EventsServer extends BaseAccessServer {
             offset: {
               type: "number",
               description:
-                "Number of results to skip, for paging past the first `limit`. Default 0. Results beyond roughly the first 500 records are unreachable — paging past that ceiling returns a `capped` response with `total_lower_bound` instead of more records.",
+                "Number of results to skip, for paging past the first `limit`. Default 0. Upcoming searches reach roughly the first 500 records, and past or date_range searches reach the full history. Past a ceiling, the response is `capped` with `total_lower_bound` instead of more records.",
             },
             full_description: {
               type: "boolean",
