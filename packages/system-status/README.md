@@ -32,8 +32,10 @@ Get infrastructure status, outages, and maintenance information for ACCESS-CI re
 | `time` | enum | Time period: `current`, `scheduled`, `past`, `all` (default: "current") |
 | `resource` | string | Filter by resource name (e.g., "delta", "bridges2", "anvil") |
 | `outage_type` | enum | Filter by type: `Full`, `Partial`, `Degraded`, `Reconfiguration` |
-| `ids` | array | Check operational status for specific resources by name or ID |
+| `ids` | array | Check status by name, group ID or resource ID. Returns `operational`, `affected`, or `unknown` when the status can't be determined |
 | `limit` | number | Max results (default: 50 for "all", 100 for "past") |
+
+A canceled outage stays in the `scheduled` and `all` results with `canceled: true`. It doesn't count as current or upcoming, and it doesn't make a resource report as `affected`. The news API has no cancellation field, so this is read from the subject.
 
 **Examples:**
 ```javascript
