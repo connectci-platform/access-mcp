@@ -40,10 +40,9 @@ npm install -g @access-mcp/software-discovery
 npm install -g @access-mcp/xdmod-metrics
 npm install -g @access-mcp/allocations
 npm install -g @access-mcp/affinity-groups
-npm install -g @access-mcp/documentation
 
 # Or install all at once
-npm install -g @access-mcp/announcements @access-mcp/events @access-mcp/compute-resources @access-mcp/system-status @access-mcp/software-discovery @access-mcp/xdmod-metrics @access-mcp/allocations @access-mcp/affinity-groups @access-mcp/documentation
+npm install -g @access-mcp/announcements @access-mcp/events @access-mcp/compute-resources @access-mcp/system-status @access-mcp/software-discovery @access-mcp/xdmod-metrics @access-mcp/allocations @access-mcp/affinity-groups
 ```
 
 ### For Developers

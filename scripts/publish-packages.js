@@ -15,8 +15,10 @@ const PACKAGES = [
   "nsf-awards",
   "announcements",
   "xdmod",
-  "documentation",
 ];
+
+// documentation isn't published: it needs the server-side ACCESS_AI_API_KEY, so
+// a local install can't search. Clients use the hosted server instead.
 
 function runCommand(command, options = {}) {
   try {
