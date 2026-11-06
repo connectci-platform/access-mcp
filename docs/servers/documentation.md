@@ -79,21 +79,10 @@ On empty results, `total` is 0 and a `documentation.usage_notes` hint is include
 
 ## Installation
 
+This server is hosted and isn't published to npm, because searching needs an API key held on the server. Connect to the hosted server, with no key needed:
+
 ```bash
-npm install -g @access-mcp/documentation
-```
-
-## Configuration
-
-```json
-{
-  "mcpServers": {
-    "access-documentation": {
-      "command": "npx",
-      "args": ["@access-mcp/documentation"]
-    }
-  }
-}
+claude mcp add access-documentation -t http -s user https://mcp.access-ci.org/documentation/mcp
 ```
 
 ### Environment
