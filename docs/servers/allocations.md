@@ -169,5 +169,5 @@ The allocations server works without NSF integration (gracefully degrades to ACC
 ---
 
 **Package:** `@access-mcp/allocations`
-**Version:** v0.7.0
+**Version:** v0.8.0
 **Main:** `dist/index.js`

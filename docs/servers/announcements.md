@@ -174,5 +174,5 @@ For full access (creating/managing announcements), authentication is required:
 ---
 
 **Package:** `@access-mcp/announcements`
-**Version:** v0.5.0
+**Version:** v0.6.0
 **Main:** `dist/index.js`

@@ -1,6 +1,6 @@
 {
   "name": "@access-mcp/compute-resources",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "MCP server for ACCESS-CI Compute Resources API",
   "type": "module",
   "main": "dist/index.js",
@@ -39,7 +39,7 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
-    "@access-mcp/shared": "^0.9.0",
+    "@access-mcp/shared": "^0.10.0",
     "@modelcontextprotocol/sdk": "^1.28.0",
     "express": "^4.18.0"
   },

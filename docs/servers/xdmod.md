@@ -115,5 +115,5 @@ No authentication required - the server accesses publicly available system-wide 
 ---
 
 **Package:** `@access-mcp/xdmod`
-**Version:** v0.8.0
+**Version:** v0.9.0
 **Main:** `dist/index.js`
