@@ -2,9 +2,13 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 export type AccessTier = "public" | "authenticated";
 
+// `mutates` is required: whether a tool changes anything is published to
+// clients as annotations.readOnlyHint, and the ACCESS agent refuses write
+// tools to callers without write permission. A tool that left it out would
+// read as a read everywhere, so assertToolMarkers refuses to start without it.
 export type ToolWithAccess = Tool & {
   access?: AccessTier;
-  mutates?: boolean;
+  mutates: boolean;
 };
 
 // Default-deny: a tool is public ONLY if it explicitly says so.
@@ -72,13 +76,36 @@ export function isCallAuthorized(args: {
   return messages.every((m) => messageAuthorized(m, publicToolNames, transportAuthorized));
 }
 
-export function stripAccessMarkers(tools: ToolWithAccess[]): Tool[] {
+/**
+ * Tools as clients see them: the internal markers removed, and `mutates`
+ * published as MCP's standard `annotations.readOnlyHint`. The hint derived from
+ * `mutates` wins over any `annotations.readOnlyHint` a tool sets itself. Only
+ * an explicit `mutates: false` is published as read-only, so a tool that
+ * somehow reaches here without its marker is listed as making changes.
+ */
+export function toClientTools(tools: ToolWithAccess[]): Tool[] {
   return tools.map((t) => {
-    // Structural copy without the internal markers. Everything else passes through.
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to omit from `rest`
-    const { access: _access, mutates: _mutates, ...rest } = t;
-    return rest;
+    const { access: _access, mutates, ...rest } = t;
+    return { ...rest, annotations: { ...rest.annotations, readOnlyHint: mutates === false } };
   });
+}
+
+/**
+ * Refuse to start with tools whose markers are missing or contradictory:
+ * every tool must say whether it mutates, and a write must never be public.
+ * Runs in BaseAccessServer.start(), not in a constructor, because a subclass's
+ * tools don't exist until its constructor finishes.
+ */
+export function assertToolMarkers(tools: ToolWithAccess[]): void {
+  const unmarked = tools.filter((t) => typeof t.mutates !== "boolean").map((t) => t.name);
+  if (unmarked.length > 0) {
+    throw new Error(
+      `Tool marker misconfiguration: tool(s) without a boolean mutates: ${unmarked.join(", ")}. ` +
+        `Every tool must declare mutates: true or mutates: false.`
+    );
+  }
+  assertNoPublicWrites(tools);
 }
 
 export function assertNoPublicWrites(tools: ToolWithAccess[]): void {

@@ -86,6 +86,17 @@ async get_events(args: EventsFilters): Promise<any> {
 }
 ```
 
+### Tool markers
+
+Every tool in `getTools()` declares `mutates: true` or `mutates: false`, and
+`access: "public"` only when anonymous callers may use it. Type the list as
+`ToolWithAccess[]` so the compiler catches a missing marker. `start()` refuses
+to run with one missing, and `tests/tool-markers.test.ts` checks every server
+in CI. Clients receive `mutates` as MCP's `annotations.readOnlyHint`; the ACCESS
+agent uses it to refuse change-making tools to callers who can't make changes.
+A new write tool also goes in that test's `WRITE_TOOLS` and the agent's
+`WRITE_MCP_TOOL_NAMES`.
+
 ### Data Enhancement Pattern
 
 Raw API data is enhanced with calculated fields:

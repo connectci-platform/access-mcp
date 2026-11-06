@@ -4,9 +4,9 @@ import {
   projectFields,
   normalizeGlobalResourceId,
   buildPagination,
-  Tool,
   Resource,
   CallToolResult,
+  type ToolWithAccess,
 } from "@access-mcp/shared";
 import {
   CallToolRequest,
@@ -181,10 +181,11 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
     return Array.isArray(responseData) ? responseData : [];
   }
 
-  protected getTools(): Tool[] {
+  protected getTools(): ToolWithAccess[] {
     return [
       {
         name: "search_software",
+        mutates: false,
         description:
           "Search software packages on ACCESS-CI HPC resources with fuzzy matching. Returns {total, items}.",
         inputSchema: {
@@ -248,6 +249,7 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
       },
       {
         name: "list_all_software",
+        mutates: false,
         description:
           "List all available software packages on ACCESS-CI resources. Returns {total, items}.",
         inputSchema: {
@@ -297,6 +299,7 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
       },
       {
         name: "get_software_details",
+        mutates: false,
         description:
           "Get detailed info about a specific software package including versions and availability. Returns {found, details, other_matches}.",
         inputSchema: {
@@ -332,6 +335,7 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
       },
       {
         name: "compare_software_availability",
+        mutates: false,
         description:
           "Compare availability of multiple software packages across resources. Returns {comparison, summary}.",
         inputSchema: {

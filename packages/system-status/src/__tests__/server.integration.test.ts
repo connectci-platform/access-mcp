@@ -14,7 +14,6 @@ interface ResourceStatus {
 }
 
 interface AffectedResource {
-  ResourceName?: string;
   ResourceID?: string | number;
 }
 
@@ -224,10 +223,8 @@ describe("SystemStatusServer Integration Tests", () => {
         responseData.items.forEach((outage: OutageItem) => {
           const matchesFilter =
             outage.Subject?.toLowerCase().includes("anvil") ||
-            outage.AffectedResources?.some(
-              (resource: AffectedResource) =>
-                resource.ResourceName?.toLowerCase().includes("anvil") ||
-                resource.ResourceID?.toString().includes("anvil")
+            outage.AffectedResources?.some((resource: AffectedResource) =>
+              resource.ResourceID?.toString().includes("anvil")
             );
           expect(matchesFilter).toBe(true);
         });

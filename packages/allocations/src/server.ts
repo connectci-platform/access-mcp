@@ -5,13 +5,11 @@ import {
   FIELDS_OF_SCIENCE,
   ALLOCATION_TYPES,
   getFieldNames,
-  Tool,
   CallToolResult,
   DrupalAuthProvider,
   getRequestContext,
   fetchAllPages,
   buildPagination,
-  assertNoPublicWrites,
   type ToolWithAccess,
 } from "@access-mcp/shared";
 import { CorpusCache, type CorpusSnapshot } from "./corpus-cache.js";
@@ -214,7 +212,6 @@ export class AllocationsServer extends BaseAccessServer {
     super("access-allocations", version, "https://allocations.access-ci.org", {
       requireApiKey: true,
     });
-    assertNoPublicWrites(this.getTools() as ToolWithAccess[]);
   }
 
   /**
@@ -405,10 +402,11 @@ export class AllocationsServer extends BaseAccessServer {
     return undefined;
   }
 
-  protected getTools(): Tool[] {
+  protected getTools(): ToolWithAccess[] {
     const tools: ToolWithAccess[] = [
       {
         name: "search_projects",
+        mutates: false,
         description: "Search ACCESS-CI research projects. Returns {total, items}.",
         inputSchema: {
           type: "object" as const,
@@ -558,6 +556,7 @@ export class AllocationsServer extends BaseAccessServer {
       },
       {
         name: "analyze_funding",
+        mutates: false,
         description:
           "Analyze NSF funding for ACCESS projects/institutions. Returns detailed markdown analysis.",
         inputSchema: {
@@ -623,6 +622,7 @@ export class AllocationsServer extends BaseAccessServer {
       },
       {
         name: "get_allocation_statistics",
+        mutates: false,
         description:
           "Get allocation statistics (top fields of science, resources, institutions, and allocation types) as an exact census over all current ACCESS-CI projects. Returns aggregate counts.",
         inputSchema: {
@@ -640,6 +640,7 @@ export class AllocationsServer extends BaseAccessServer {
       },
       {
         name: "get_rp_account",
+        mutates: false,
         description:
           "Get the authenticated user's account and live balance on ONE resource provider (RP). Returns the RP display name, the user's rp_username, and their grants with current balances and units. Pass resource_id (ACCESS Global Resource ID, e.g. delta-gpu.ncsa.access-ci.org) — get it from get_my_rp_accounts (which lists the resources the user actually has), or from search_resources for an arbitrary resource. Use this for a fresh balance on a specific RP; use get_my_rp_accounts to see all accounts at once. Scoped to the authenticated acting user. Read-only.",
         inputSchema: {
@@ -673,6 +674,7 @@ export class AllocationsServer extends BaseAccessServer {
       },
       {
         name: "get_my_rp_accounts",
+        mutates: false,
         description:
           "List all resource-provider (RP) accounts for the authenticated user — every resource they have an allocation on, with cached balances. Returns one entry per RP: the resource_id (ACCESS Global Resource ID, e.g. delta-gpu.ncsa.access-ci.org), rp_display_name, rp_username, account state, and grants with balances and units. Start here to discover which resources the user has; then call get_rp_account with a resource_id for a live, up-to-the-minute balance on one of them. Balances here reflect the last sync (synced_at); a first-time query may return state \"syncing\" — ask again in a few seconds. Scoped to the authenticated acting user. Read-only.",
         inputSchema: { type: "object" as const, properties: {}, required: [] },

@@ -152,6 +152,12 @@ class TestXDMoDPythonServer:
             invalid_date = True
         assert invalid_date == True
 
+    def test_every_tool_is_marked_read_only(self):
+        """Clients such as the ACCESS agent tell reads from changes by this hint."""
+        tools = XDMoDPythonServer().get_tools()
+        assert tools
+        assert all(t.annotations is not None and t.annotations.readOnlyHint is True for t in tools)
+
     def test_tools_list(self):
         """Test that server provides expected tools"""
         server = XDMoDPythonServer()

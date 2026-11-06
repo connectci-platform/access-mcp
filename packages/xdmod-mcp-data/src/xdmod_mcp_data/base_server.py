@@ -183,6 +183,11 @@ class BaseAccessServer(ABC):
                     "name": tool.name,
                     "description": tool.description,
                     "inputSchema": tool.inputSchema,
+                    # This route builds the JSON by hand, so annotations
+                    # (readOnlyHint) must be copied or REST clients lose them.
+                    "annotations": (
+                        tool.annotations.model_dump(exclude_none=True) if tool.annotations else None
+                    ),
                 }
                 for tool in tools
             ]

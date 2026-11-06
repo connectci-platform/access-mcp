@@ -16,7 +16,11 @@ from datetime import timedelta
 import pandas as pd
 import requests
 from dotenv import load_dotenv
-from mcp.types import TextContent, Tool
+from mcp.types import TextContent, Tool, ToolAnnotations
+
+# Every tool here only reads XDMoD. Clients such as the ACCESS agent use the
+# hint to tell reads from changes, so each tool carries it explicitly.
+_READS_ONLY = ToolAnnotations(readOnlyHint=True)
 from .base_server import BaseAccessServer
 
 # xdmod-data sends its requests with no timeout and offers no way to set one,
@@ -61,6 +65,7 @@ class XDMoDPythonServer(BaseAccessServer):
         return [
                 Tool(
                     name="get_user_data",
+                    annotations=_READS_ONLY,
                     description="Get user-specific usage data by exact user identifier. Use the COMPLETE user name exactly as provided.",
                     inputSchema={
                         "type": "object",
@@ -93,6 +98,7 @@ class XDMoDPythonServer(BaseAccessServer):
                 ),
                 Tool(
                     name="get_raw_data",
+                    annotations=_READS_ONLY,
                     description="Extract actual XDMoD metrics data with filtering. This is the PRIMARY data extraction tool. Use filters parameter with values discovered via get_smart_filters() or use configuration from get_analysis_template(). Supports complex boolean filters, timeseries/aggregate modes, and progress tracking for large datasets.",
                     inputSchema={
                         "type": "object",
@@ -144,6 +150,7 @@ class XDMoDPythonServer(BaseAccessServer):
                 ),
                 Tool(
                     name="describe_fields",
+                    annotations=_READS_ONLY,
                     description="Discover what dimensions and metrics exist in a specific realm (e.g., Jobs, SUPREMM). Use this to learn what can be queried. For example: 'What dimensions are available in the Jobs realm?' Returns dimension names (resource, person, institution, etc.) and available metrics (total_cpu_hours, job_count, etc.).",
                     inputSchema={
                         "type": "object",
@@ -169,6 +176,7 @@ class XDMoDPythonServer(BaseAccessServer):
                 ),
                 Tool(
                     name="describe_realms",
+                    annotations=_READS_ONLY,
                     description="List all available XDMoD data realms (Jobs, SUPREMM, Cloud, Storage, etc.) with their capabilities. Use this when you need to know what data categories exist. For example: 'What realms are available?' or 'Where can I find GPU metrics?' (Answer: SUPREMM realm).",
                     inputSchema={
                         "type": "object",
@@ -184,6 +192,7 @@ class XDMoDPythonServer(BaseAccessServer):
                 ),
                 Tool(
                     name="get_smart_filters",
+                    annotations=_READS_ONLY,
                     description="Discover what filter values are available for use with get_raw_data(). Use this BEFORE calling get_raw_data() to find valid resources, queues, institutions, etc. Returns categorized lists like 'GPU resources', 'batch queues', 'physical sciences'. Workflow: get_smart_filters() → get_raw_data() with discovered values.",
                     inputSchema={
                         "type": "object",
@@ -224,6 +233,7 @@ class XDMoDPythonServer(BaseAccessServer):
                 ),
                 Tool(
                     name="get_analysis_template",
+                    annotations=_READS_ONLY,
                     description="Get pre-configured analysis patterns for common scenarios (queue analysis, allocation efficiency, performance analysis, etc.). Use this when you want a standardized analysis instead of building a custom query. Returns ready-to-use configuration with pre-defined metrics and semantic filters. Workflow: get_analysis_template() → Use returned config with get_raw_data().",
                     inputSchema={
                         "type": "object",
@@ -243,6 +253,7 @@ class XDMoDPythonServer(BaseAccessServer):
                 ),
                 Tool(
                     name="integrate_nsf_xdmod",
+                    annotations=_READS_ONLY,
                     description="Integrate NSF funding data with XDMoD computational usage patterns. Query by researcher, award, or institution to correlate funding with actual usage.",
                     inputSchema={
                         "type": "object",

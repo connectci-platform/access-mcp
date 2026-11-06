@@ -7,9 +7,9 @@ import {
   coerceOffset,
   MAX_LIMIT,
   fetchAllPages,
-  Tool,
   Resource,
   CallToolResult,
+  type ToolWithAccess,
 } from "@access-mcp/shared";
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
@@ -138,10 +138,11 @@ export class NSFAwardsServer extends BaseAccessServer {
     super("access-mcp-nsf-awards", version, "https://api.nsf.gov");
   }
 
-  protected getTools(): Tool[] {
+  protected getTools(): ToolWithAccess[] {
     return [
       {
         name: "search_nsf_awards",
+        mutates: false,
         description: "Search NSF awards and funding. Returns {total, items}.",
         inputSchema: {
           type: "object",

@@ -2,12 +2,12 @@ import {
   BaseAccessServer,
   handleApiError,
   projectFields,
-  Tool,
   Resource,
   CallToolResult,
   resolveResourceId,
   buildPagination,
   MAX_LIMIT,
+  type ToolWithAccess,
 } from "@access-mcp/shared";
 import {
   CallToolRequest,
@@ -39,7 +39,6 @@ interface InfrastructureNewsRouterArgs {
 }
 
 interface AffectedResource {
-  ResourceName?: string;
   ResourceID?: string | number;
 }
 
@@ -63,11 +62,13 @@ interface EnhancedOutage extends OutageItem {
   outage_end?: string;
   days_ago?: number;
   outage_type?: string;
+  canceled?: boolean;
 }
 
 interface ResourceGroup {
   info_groupid?: string;
   group_descriptive_name?: string;
+  rollup_info_resourceids?: string[];
 }
 
 interface FiltersApplied {
@@ -91,6 +92,16 @@ function buildFiltersApplied(resource?: string, outageType?: string): FiltersApp
   };
 }
 
+/**
+ * The news API has no cancellation field: a canceled outage keeps its dates and
+ * its Full/Partial type, and only the subject says so. Subjects mark it in
+ * several ways, such as "(Canceled) ...", "... [canceled]" and "... has been
+ * cancelled". A rescheduled outage is still going to happen, so it doesn't match.
+ */
+function isCanceled(outage: OutageItem): boolean {
+  return /\bcancell?ed\b/i.test(outage.Subject ?? "");
+}
+
 export class SystemStatusServer extends BaseAccessServer {
   constructor() {
     super("access-mcp-system-status", version, "https://operations-api.access-ci.org");
@@ -110,28 +121,59 @@ export class SystemStatusServer extends BaseAccessServer {
    * Used by resolveResourceId callback.
    */
   private async searchResourcesByName(query: string): Promise<Array<{ id: string; name: string }>> {
+    const groups = await this.fetchResourceGroups();
+    const queryLower = query.toLowerCase();
+
+    return groups
+      .filter((g) => g.group_descriptive_name?.toLowerCase().includes(queryLower))
+      .map((g) => ({
+        id: g.info_groupid || "",
+        name: g.group_descriptive_name || "",
+      }));
+  }
+
+  private async fetchResourceGroups(): Promise<ResourceGroup[]> {
     try {
       const response = await this.httpClient.get(
         "/wh2/cider/v1/access-active-groups/type/resource-catalog.access-ci.org/"
       );
-      const groups: ResourceGroup[] = response.data.results?.active_groups || [];
-      const queryLower = query.toLowerCase();
-
-      return groups
-        .filter((g) => g.group_descriptive_name?.toLowerCase().includes(queryLower))
-        .map((g) => ({
-          id: g.info_groupid || "",
-          name: g.group_descriptive_name || "",
-        }));
+      return response.data.results?.active_groups || [];
     } catch {
       return [];
     }
   }
 
-  protected getTools(): Tool[] {
+  /**
+   * The HTTP client doesn't throw on error statuses, so without this check a
+   * failed feed would read as "no outages".
+   */
+  private async fetchOutageFeed(
+    feed: "current_outages" | "future_outages" | "past_outages"
+  ): Promise<OutageItem[]> {
+    const response = await this.httpClient.get(`/wh2/news/v1/affiliation/access-ci.org/${feed}/`);
+    if (response.status !== 200 || !Array.isArray(response.data?.results)) {
+      throw new Error(`News API error: ${response.status} for ${feed}`);
+    }
+    return response.data.results;
+  }
+
+  /**
+   * Outages for a group, or null when the API has no answer. It returns a 400
+   * for anything that isn't a group ID, including resource IDs, and the shared
+   * HTTP client doesn't throw on error statuses.
+   */
+  private async fetchGroupOutages(groupId: string): Promise<OutageItem[] | null> {
+    const response = await this.httpClient.get(`/wh2/news/v1/info_groupid/${groupId}/`);
+    return response.status === 200 && Array.isArray(response.data?.results)
+      ? response.data.results
+      : null;
+  }
+
+  protected getTools(): ToolWithAccess[] {
     return [
       {
         name: "get_infrastructure_news",
+        mutates: false,
         description:
           "Get ACCESS-CI infrastructure status including outages, maintenance, and incidents. With no parameters, returns current active outages. Use 'time' to get scheduled/past outages, 'resource' to filter to a specific system, or 'ids' to check status of specific resources.",
         inputSchema: {
@@ -353,11 +395,10 @@ export class SystemStatusServer extends BaseAccessServer {
     offset?: number,
     fields?: string[]
   ): Promise<CallToolResult> {
-    const response = await this.httpClient.get(
-      "/wh2/news/v1/affiliation/access-ci.org/current_outages/"
+    // The feed lists a canceled outage as current once its window starts.
+    let outages = (await this.fetchOutageFeed("current_outages")).filter(
+      (outage) => !isCanceled(outage)
     );
-
-    let outages: OutageItem[] = response.data.results || [];
     const filtersApplied = buildFiltersApplied(resourceFilter, outageTypeFilter);
 
     // Filter by outage type if specified
@@ -373,10 +414,8 @@ export class SystemStatusServer extends BaseAccessServer {
       outages = outages.filter(
         (outage: OutageItem) =>
           outage.Subject?.toLowerCase().includes(filter) ||
-          outage.AffectedResources?.some(
-            (resource: AffectedResource) =>
-              resource.ResourceName?.toLowerCase().includes(filter) ||
-              resource.ResourceID?.toString().includes(filter)
+          outage.AffectedResources?.some((resource: AffectedResource) =>
+            resource.ResourceID?.toString().toLowerCase().includes(filter)
           )
       );
     }
@@ -387,10 +426,9 @@ export class SystemStatusServer extends BaseAccessServer {
 
     // Enhance outages with status summary
     const enhancedOutages = outages.map((outage: OutageItem): EnhancedOutage => {
-      // Track affected resources (use ResourceID as fallback if ResourceName is missing)
+      // Track affected resources
       outage.AffectedResources?.forEach((resource: AffectedResource) => {
-        const resourceIdentifier = resource.ResourceName || resource.ResourceID;
-        if (resourceIdentifier) affectedResources.add(String(resourceIdentifier));
+        if (resource.ResourceID) affectedResources.add(String(resource.ResourceID));
       });
 
       // Categorize severity (basic heuristic)
@@ -472,11 +510,7 @@ export class SystemStatusServer extends BaseAccessServer {
     offset?: number,
     fields?: string[]
   ): Promise<CallToolResult> {
-    const response = await this.httpClient.get(
-      "/wh2/news/v1/affiliation/access-ci.org/future_outages/"
-    );
-
-    let maintenance: OutageItem[] = response.data.results || [];
+    let maintenance = await this.fetchOutageFeed("future_outages");
     const filtersApplied = buildFiltersApplied(resourceFilter, outageTypeFilter);
 
     // Filter by outage type if specified
@@ -492,10 +526,8 @@ export class SystemStatusServer extends BaseAccessServer {
       maintenance = maintenance.filter(
         (item: OutageItem) =>
           item.Subject?.toLowerCase().includes(filter) ||
-          item.AffectedResources?.some(
-            (resource: AffectedResource) =>
-              resource.ResourceName?.toLowerCase().includes(filter) ||
-              resource.ResourceID?.toString().includes(filter)
+          item.AffectedResources?.some((resource: AffectedResource) =>
+            resource.ResourceID?.toString().toLowerCase().includes(filter)
           )
       );
     }
@@ -513,11 +545,15 @@ export class SystemStatusServer extends BaseAccessServer {
     let upcomingWeek = 0;
 
     const enhancedMaintenance = maintenance.map((item: OutageItem): EnhancedOutage => {
+      // A canceled outage stays listed but doesn't count as upcoming.
+      const canceled = isCanceled(item);
+
       // Track affected resources
-      item.AffectedResources?.forEach((resource: AffectedResource) => {
-        const resourceIdentifier = resource.ResourceName || resource.ResourceID;
-        if (resourceIdentifier) affectedResources.add(String(resourceIdentifier));
-      });
+      if (!canceled) {
+        item.AffectedResources?.forEach((resource: AffectedResource) => {
+          if (resource.ResourceID) affectedResources.add(String(resource.ResourceID));
+        });
+      }
 
       // Check timing - use OutageStart for scheduling
       const hasScheduledTime = !!item.OutageStart;
@@ -525,11 +561,12 @@ export class SystemStatusServer extends BaseAccessServer {
       const now = new Date();
       const hoursUntil = (startTime.getTime() - now.getTime()) / (1000 * 60 * 60);
 
-      if (hoursUntil <= 24) upcoming24h++;
-      if (hoursUntil <= 168) upcomingWeek++; // 7 days * 24 hours
+      if (!canceled && hoursUntil <= 24) upcoming24h++;
+      if (!canceled && hoursUntil <= 168) upcomingWeek++; // 7 days * 24 hours
 
       return {
         ...item,
+        canceled,
         scheduled_start: item.OutageStart,
         scheduled_end: item.OutageEnd,
         hours_until_start: Math.max(0, Math.round(hoursUntil)),
@@ -591,11 +628,7 @@ export class SystemStatusServer extends BaseAccessServer {
     offset?: number,
     fields?: string[]
   ): Promise<CallToolResult> {
-    const response = await this.httpClient.get(
-      "/wh2/news/v1/affiliation/access-ci.org/past_outages/"
-    );
-
-    let pastOutages: OutageItem[] = response.data.results || [];
+    let pastOutages = await this.fetchOutageFeed("past_outages");
     const filtersApplied = buildFiltersApplied(resourceFilter, outageTypeFilter);
 
     // Filter by outage type if specified
@@ -611,10 +644,8 @@ export class SystemStatusServer extends BaseAccessServer {
       pastOutages = pastOutages.filter(
         (outage: OutageItem) =>
           outage.Subject?.toLowerCase().includes(filter) ||
-          outage.AffectedResources?.some(
-            (resource: AffectedResource) =>
-              resource.ResourceName?.toLowerCase().includes(filter) ||
-              resource.ResourceID?.toString().includes(filter)
+          outage.AffectedResources?.some((resource: AffectedResource) =>
+            resource.ResourceID?.toString().toLowerCase().includes(filter)
           )
       );
     }
@@ -650,10 +681,9 @@ export class SystemStatusServer extends BaseAccessServer {
 
     // Enhance outages with calculated fields
     const enhancedOutages = pastOutages.map((outage: OutageItem): EnhancedOutage => {
-      // Track affected resources (use ResourceID as fallback if ResourceName is missing)
+      // Track affected resources
       outage.AffectedResources?.forEach((resource: AffectedResource) => {
-        const resourceIdentifier = resource.ResourceName || resource.ResourceID;
-        if (resourceIdentifier) affectedResources.add(String(resourceIdentifier));
+        if (resource.ResourceID) affectedResources.add(String(resource.ResourceID));
       });
 
       // Track outage types
@@ -729,15 +759,15 @@ export class SystemStatusServer extends BaseAccessServer {
     fields?: string[]
   ): Promise<CallToolResult> {
     // Get current, future, and recent past announcements for comprehensive view
-    const [currentResponse, futureResponse, pastResponse] = await Promise.all([
-      this.httpClient.get("/wh2/news/v1/affiliation/access-ci.org/current_outages/"),
-      this.httpClient.get("/wh2/news/v1/affiliation/access-ci.org/future_outages/"),
-      this.httpClient.get("/wh2/news/v1/affiliation/access-ci.org/past_outages/"),
+    const [currentFeed, futureFeed, pastFeed] = await Promise.all([
+      this.fetchOutageFeed("current_outages"),
+      this.fetchOutageFeed("future_outages"),
+      this.fetchOutageFeed("past_outages"),
     ]);
 
-    let currentOutages: OutageItem[] = currentResponse.data.results || [];
-    let futureOutages: OutageItem[] = futureResponse.data.results || [];
-    let pastOutagesData: OutageItem[] = pastResponse.data.results || [];
+    let currentOutages = currentFeed.filter((outage) => !isCanceled(outage));
+    let futureOutages = futureFeed;
+    let pastOutagesData = pastFeed;
     const filtersApplied = buildFiltersApplied(resourceFilter, outageTypeFilter);
 
     // Filter by outage type if specified
@@ -756,10 +786,8 @@ export class SystemStatusServer extends BaseAccessServer {
       const filter = resourceFilter.toLowerCase();
       const matchesResource = (outage: OutageItem) =>
         outage.Subject?.toLowerCase().includes(filter) ||
-        outage.AffectedResources?.some(
-          (resource: AffectedResource) =>
-            resource.ResourceName?.toLowerCase().includes(filter) ||
-            resource.ResourceID?.toString().includes(filter)
+        outage.AffectedResources?.some((resource: AffectedResource) =>
+          resource.ResourceID?.toString().toLowerCase().includes(filter)
         );
       currentOutages = currentOutages.filter(matchesResource);
       futureOutages = futureOutages.filter(matchesResource);
@@ -779,7 +807,11 @@ export class SystemStatusServer extends BaseAccessServer {
     // page is sliced separately below via buildPagination.
     const fullSorted: OutageItem[] = [
       ...currentOutages.map((item: OutageItem) => ({ ...item, category: "current" as const })),
-      ...futureOutages.map((item: OutageItem) => ({ ...item, category: "scheduled" as const })),
+      ...futureOutages.map((item: OutageItem) => ({
+        ...item,
+        category: "scheduled" as const,
+        canceled: isCanceled(item),
+      })),
       ...recentPastOutages.map((item: OutageItem) => ({
         ...item,
         category: "recent_past" as const,
@@ -811,7 +843,9 @@ export class SystemStatusServer extends BaseAccessServer {
       metadata: {
         aggregations: {
           current_outages: currentOutages.length,
-          scheduled_maintenance: futureOutages.length,
+          // Outages still going ahead. categories.scheduled below counts the
+          // list, which keeps canceled outages visible.
+          scheduled_maintenance: futureOutages.filter((item) => !isCanceled(item)).length,
           recent_past_outages: recentPastOutages.length,
           // Reads fullSorted (the full set), not the returned page, so
           // category counts describe the same universe `total` describes.
@@ -889,13 +923,34 @@ export class SystemStatusServer extends BaseAccessServer {
 
     // Use group API for efficient per-resource queries
     const now = new Date();
+    let catalog: Promise<ResourceGroup[]> | undefined;
     const statusPromises = resolvedIds.map(async (resourceId) => {
       try {
-        const response = await this.httpClient.get(`/wh2/news/v1/info_groupid/${resourceId}/`);
-        const allOutages: OutageItem[] = response.data.results || [];
+        let allOutages = await this.fetchGroupOutages(resourceId);
+
+        // A resource ID isn't a group ID, so ask its group and keep the
+        // outages that name this resource.
+        if (!allOutages) {
+          catalog ??= this.fetchResourceGroups();
+          const group = (await catalog).find((g) =>
+            g.rollup_info_resourceids?.includes(resourceId)
+          );
+          const groupOutages = group?.info_groupid
+            ? await this.fetchGroupOutages(group.info_groupid)
+            : null;
+          allOutages =
+            groupOutages?.filter((outage) =>
+              outage.AffectedResources?.some((r) => r.ResourceID === resourceId)
+            ) ?? null;
+        }
+
+        if (!allOutages) {
+          throw new Error(`No status available for ${resourceId}`);
+        }
 
         // Filter to current outages only (started and not ended)
         const currentOutages = allOutages.filter((outage: OutageItem) => {
+          if (isCanceled(outage)) return false;
           const start = outage.OutageStart ? new Date(outage.OutageStart) : null;
           const end = outage.OutageEnd ? new Date(outage.OutageEnd) : null;
           return start && start <= now && (!end || end > now);

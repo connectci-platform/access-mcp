@@ -25,7 +25,7 @@ MCP server for ACCESS-CI events including workshops, webinars, and training sess
 
 Search and filter ACCESS-CI events.
 
-Returns future events by default. Use `date: "past"` or `start_date`/`end_date` for historical events.
+Returns future events by default. Use `date: "past"` for historical events, most recent first, or `date_range` for an absolute window, in date order.
 
 **Parameters:**
 | Parameter | Type | Description |
@@ -55,7 +55,7 @@ search_events({ tags: "gpu", skill: "beginner" })
 search_events({ has_video: true, limit: 20 })
 
 // Events in a specific date range
-search_events({ start_date: "2025-01-01", end_date: "2025-06-30" })
+search_events({ date_range: { start_date: "2025-01-01", end_date: "2025-06-30" } })
 ```
 
 ### `get_my_events`

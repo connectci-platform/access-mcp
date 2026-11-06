@@ -149,6 +149,117 @@ describe("EventsServer", () => {
     });
   });
 
+  describe("historical searches", () => {
+    // The API sorts ascending, so page 0 holds the oldest events.
+    const eventsFrom = (startDay: number, count: number) =>
+      Array.from({ length: count }, (_, i) => {
+        const start = new Date(Date.UTC(2022, 8, 1 + startDay + i)).toISOString();
+        return { id: `d${startDay + i}`, title: "Event", start_date: start, end_date: start };
+      });
+    const mockPages = (pages: unknown[][]) =>
+      mockHttpClient.get.mockImplementation(async (url: string) => ({
+        status: 200,
+        data: pages[Number(new URL(url).searchParams.get("page") ?? 0)] ?? [],
+      }));
+    const search = async (args: Record<string, unknown>) => {
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: { name: "search_events", arguments: args },
+      });
+      return JSON.parse((result.content[0] as { text: string }).text);
+    };
+
+    it("date: past returns the most recent events first, from the last page", async () => {
+      mockPages([eventsFrom(0, 500), eventsFrom(500, 500), eventsFrom(1000, 200)]);
+
+      const response = await search({ date: "past", limit: 2 });
+
+      expect(response.items.map((e: { id: string }) => e.id)).toEqual(["d1199", "d1198"]);
+      expect(response.metadata.pagination.has_more).toBe(true);
+      expect(response.metadata.pagination).not.toHaveProperty("capped");
+    });
+
+    it("date: past can page back to the oldest events", async () => {
+      mockPages([eventsFrom(0, 500), eventsFrom(500, 500), eventsFrom(1000, 200)]);
+
+      const response = await search({ date: "past", limit: 5, offset: 1195 });
+
+      expect(response.items.at(-1).id).toBe("d0");
+      expect(response.metadata.pagination.has_more).toBe(false);
+    });
+
+    it("date_range stays chronological and reaches past the first page", async () => {
+      mockPages([eventsFrom(0, 500), eventsFrom(500, 100)]);
+
+      const response = await search({
+        date_range: { start_date: "2022-01-01", end_date: "2025-01-01" },
+        limit: 2,
+        offset: 500,
+      });
+
+      expect(response.items.map((e: { id: string }) => e.id)).toEqual(["d500", "d501"]);
+    });
+
+    it("has_video filters across every page, newest first", async () => {
+      const withVideo = (rows: ReturnType<typeof eventsFrom>) =>
+        rows.map((row) => ({ ...row, video: "https://example.org/recording" }));
+      mockPages([
+        withVideo(eventsFrom(0, 1)).concat(eventsFrom(1, 499)),
+        withVideo(eventsFrom(500, 1)),
+      ]);
+
+      const response = await search({ has_video: true });
+
+      expect(response.items.map((e: { id: string }) => e.id)).toEqual(["d500", "d0"]);
+    });
+
+    it("ignores anything after the first short page", async () => {
+      mockHttpClient.get.mockResolvedValue({ status: 200, data: eventsFrom(0, 2) });
+
+      expect((await search({ date: "past" })).items).toHaveLength(2);
+    });
+
+    it("reports capped rather than claiming the full set at the page ceiling", async () => {
+      mockHttpClient.get.mockImplementation(async (url: string) => ({
+        status: 200,
+        data: eventsFrom(Number(new URL(url).searchParams.get("page")) * 500, 500),
+      }));
+
+      const { pagination } = (await search({ date: "past", limit: 1 })).metadata;
+
+      expect(pagination.capped).toBe(true);
+      expect(pagination.has_more).toBe(true);
+    });
+
+    it("reports an error when any page fails", async () => {
+      mockHttpClient.get.mockImplementation(async (url: string) =>
+        new URL(url).searchParams.get("page") === "1"
+          ? { status: 503, data: {} }
+          : { status: 200, data: eventsFrom(0, 500) }
+      );
+
+      expect((await search({ date: "past" })).error).toBeDefined();
+    });
+
+    it("reports an error when a page isn't a list, rather than ending the read early", async () => {
+      mockHttpClient.get.mockImplementation(async (url: string) =>
+        new URL(url).searchParams.get("page") === "1"
+          ? { status: 200, data: "<html>Sign in</html>" }
+          : { status: 200, data: eventsFrom(0, 500) }
+      );
+
+      expect((await search({ date: "past" })).error).toBeDefined();
+    });
+
+    it("upcoming searches stay a single request", async () => {
+      mockHttpClient.get.mockResolvedValue({ status: 200, data: eventsFrom(0, 2) });
+
+      await search({ date: "upcoming" });
+
+      expect(mockHttpClient.get).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe("URL Building", () => {
     it("should build correct URLs with the v2.4 read endpoint", () => {
       const url = server["buildEventsUrl"]({});
@@ -168,7 +279,7 @@ describe("EventsServer", () => {
 
     it("should map 'date: past' to date range", () => {
       const url = server["buildEventsUrl"]({ date: "past" });
-      expect(url).toContain("beginning_date_relative=-1year");
+      expect(url).toContain("earliest_date=2020-01-01");
       expect(url).toContain("end_date_relative=today");
     });
 
@@ -234,14 +345,14 @@ describe("EventsServer", () => {
       expect(url).toContain("f%5B1%5D=custom_event_skill_level%3AIntermediate");
     });
 
-    it("date_range routes to absolute beginning_date/end_date Drupal params", () => {
+    it("date_range moves the earliest_date floor, the only way to reach past events", () => {
       const url = server["buildEventsUrl"]({
         date_range: { start_date: "2026-09-17", end_date: "2026-09-25" },
       });
 
-      expect(url).toContain("beginning_date=2026-09-17");
+      expect(url).toContain("earliest_date=2026-09-17");
       expect(url).toContain("end_date=2026-09-25");
-      expect(url).not.toContain("beginning_date_relative");
+      expect(url).not.toContain("beginning_date");
       expect(url).not.toContain("end_date_relative");
     });
 
@@ -251,15 +362,34 @@ describe("EventsServer", () => {
         date_range: { start_date: "2026-09-17" },
       });
 
-      expect(url).toContain("beginning_date=2026-09-17");
+      expect(url).toContain("earliest_date=2026-09-17");
       expect(url).not.toContain("beginning_date_relative");
     });
 
-    it("the date enum still works unchanged when no date_range is given", () => {
+    it("a date_range with only an end date reaches back to the start of the corpus", () => {
+      const url = server["buildEventsUrl"]({ date_range: { end_date: "2024-06-30" } });
+
+      expect(url).toContain("earliest_date=2020-01-01");
+      expect(url).toContain("end_date=2024-06-30");
+    });
+
+    it("date: past lowers the earliest_date floor instead of a one-year window", () => {
       const url = server["buildEventsUrl"]({ date: "past" });
 
-      expect(url).toContain("beginning_date_relative=-1year");
+      expect(url).toContain("earliest_date=2020-01-01");
       expect(url).toContain("end_date_relative=today");
+      expect(url).not.toContain("beginning_date_relative");
+    });
+
+    it("has_video implies a past search, because only past events have recordings", () => {
+      expect(server["buildEventsUrl"]({ has_video: true })).toContain("earliest_date=2020-01-01");
+    });
+
+    it("the upcoming shortcuts don't set earliest_date", () => {
+      const url = server["buildEventsUrl"]({ date: "this_week" });
+
+      expect(url).toContain("beginning_date_relative=today");
+      expect(url).not.toContain("earliest_date");
     });
 
     it("flat start_date/end_date are no longer accepted schema props", () => {

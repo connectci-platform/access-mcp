@@ -2,9 +2,9 @@ import {
   BaseAccessServer,
   handleApiError,
   projectFields,
-  Tool,
   Resource,
   CallToolResult,
+  type ToolWithAccess,
 } from "@access-mcp/shared";
 import { CallToolRequest } from "@modelcontextprotocol/sdk/types.js";
 import axios, { AxiosInstance } from "axios";
@@ -67,10 +67,11 @@ export class DocumentationServer extends BaseAccessServer {
     return process.env.ACCESS_DOCS_RETRIEVE_URL || DEFAULT_RETRIEVE_URL;
   }
 
-  protected getTools(): Tool[] {
+  protected getTools(): ToolWithAccess[] {
     return [
       {
         name: "search_docs",
+        mutates: false,
         description:
           "Search the ACCESS-CI documentation corpus for how-tos, policies, " +
           "concepts, hardware/software references, allocation process, Globus, " +

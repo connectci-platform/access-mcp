@@ -21,11 +21,16 @@ describe("get_my_rp_accounts", () => {
     mockGet.mockReset();
     delete process.env.ACTING_USER;
     process.env.DRUPAL_API_URL = "https://drupal.example";
-    process.env.DRUPAL_USERNAME = "svc"; process.env.DRUPAL_PASSWORD = "pw";
+    process.env.DRUPAL_USERNAME = "svc";
+    process.env.DRUPAL_PASSWORD = "pw";
   });
   const call = (actingUser?: string) =>
     requestContextStorage.run({ actingUser } as RequestContext, () =>
-      server["handleToolCall"]({ method: "tools/call", params: { name: "get_my_rp_accounts", arguments: {} } }));
+      server["handleToolCall"]({
+        method: "tools/call",
+        params: { name: "get_my_rp_accounts", arguments: {} },
+      })
+    );
 
   it("registers with no required args", () => {
     const tool = server["getTools"]().find((t) => t.name === "get_my_rp_accounts");
@@ -37,14 +42,20 @@ describe("get_my_rp_accounts", () => {
   it("calls the no-id route as the acting user and surfaces resource_ids + balances", async () => {
     // auth.get returns the response BODY directly; the rp-accounts endpoint
     // returns { accounts, state, synced_at } at the TOP LEVEL (no data wrapper).
-    mockGet.mockResolvedValue({ state: "rows_fresh", synced_at: "2026-07-07T14:32:00Z",
-      accounts: [{ resource_id: "delta-gpu.ncsa.access-ci.org", rp_display_name: "NCSA Delta",
-        rp_username: "alice", grants: [{ project_balance: 5000, billable_unit: "GPU hours" }] }] });
+    mockGet.mockResolvedValue({
+      state: "rows_fresh",
+      synced_at: "2026-07-07T14:32:00Z",
+      accounts: [
+        {
+          resource_id: "delta-gpu.ncsa.access-ci.org",
+          rp_display_name: "NCSA Delta",
+          rp_username: "alice",
+          grants: [{ project_balance: 5000, billable_unit: "GPU hours" }],
+        },
+      ],
+    });
     const result = await call("apasquale@access-ci.org");
-    expect(mockGet).toHaveBeenCalledWith(
-      "apasquale@access-ci.org",
-      "/api/1.0/rp-accounts"
-    );
+    expect(mockGet).toHaveBeenCalledWith("apasquale@access-ci.org", "/api/1.0/rp-accounts");
     const text = (result.content[0] as { text: string }).text;
     expect(text).toContain("delta-gpu.ncsa.access-ci.org");
     expect(text).toContain("5000");
@@ -89,6 +100,20 @@ describe("get_my_rp_accounts", () => {
     expect(parsed.error.message).not.toContain("307");
   });
 
+  it("shows Drupal's own message for a client error", async () => {
+    mockGet.mockRejectedValue(
+      new DrupalApiError("Drupal API error: 409 Conflict", 409, {
+        error: "account_not_linked",
+        message: "Your ACCESS account isn't linked to a resource provider account.",
+      })
+    );
+    const result = await call("apasquale@access-ci.org");
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("isn't linked to a resource provider account");
+    expect(text).not.toContain("409 Conflict");
+  });
+
   it("surfaces a failed re-login as reauth_failed", async () => {
     mockGet.mockRejectedValue(
       new DrupalApiError(
@@ -105,6 +130,8 @@ describe("get_my_rp_accounts", () => {
 
   it("does not gate the public tools", () => {
     const names = server["getTools"]().map((t) => t.name);
-    expect(names).toEqual(expect.arrayContaining(["search_projects", "analyze_funding", "get_allocation_statistics"]));
+    expect(names).toEqual(
+      expect.arrayContaining(["search_projects", "analyze_funding", "get_allocation_statistics"])
+    );
   });
 });
