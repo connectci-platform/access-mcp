@@ -144,6 +144,20 @@ export class SystemStatusServer extends BaseAccessServer {
   }
 
   /**
+   * The HTTP client doesn't throw on error statuses, so without this check a
+   * failed feed would read as "no outages".
+   */
+  private async fetchOutageFeed(
+    feed: "current_outages" | "future_outages" | "past_outages"
+  ): Promise<OutageItem[]> {
+    const response = await this.httpClient.get(`/wh2/news/v1/affiliation/access-ci.org/${feed}/`);
+    if (response.status !== 200 || !Array.isArray(response.data?.results)) {
+      throw new Error(`News API error: ${response.status} for ${feed}`);
+    }
+    return response.data.results;
+  }
+
+  /**
    * Outages for a group, or null when the API has no answer. It returns a 400
    * for anything that isn't a group ID, including resource IDs, and the shared
    * HTTP client doesn't throw on error statuses.
@@ -381,13 +395,9 @@ export class SystemStatusServer extends BaseAccessServer {
     offset?: number,
     fields?: string[]
   ): Promise<CallToolResult> {
-    const response = await this.httpClient.get(
-      "/wh2/news/v1/affiliation/access-ci.org/current_outages/"
-    );
-
     // The feed lists a canceled outage as current once its window starts.
-    let outages: OutageItem[] = (response.data.results || []).filter(
-      (outage: OutageItem) => !isCanceled(outage)
+    let outages = (await this.fetchOutageFeed("current_outages")).filter(
+      (outage) => !isCanceled(outage)
     );
     const filtersApplied = buildFiltersApplied(resourceFilter, outageTypeFilter);
 
@@ -500,11 +510,7 @@ export class SystemStatusServer extends BaseAccessServer {
     offset?: number,
     fields?: string[]
   ): Promise<CallToolResult> {
-    const response = await this.httpClient.get(
-      "/wh2/news/v1/affiliation/access-ci.org/future_outages/"
-    );
-
-    let maintenance: OutageItem[] = response.data.results || [];
+    let maintenance = await this.fetchOutageFeed("future_outages");
     const filtersApplied = buildFiltersApplied(resourceFilter, outageTypeFilter);
 
     // Filter by outage type if specified
@@ -622,11 +628,7 @@ export class SystemStatusServer extends BaseAccessServer {
     offset?: number,
     fields?: string[]
   ): Promise<CallToolResult> {
-    const response = await this.httpClient.get(
-      "/wh2/news/v1/affiliation/access-ci.org/past_outages/"
-    );
-
-    let pastOutages: OutageItem[] = response.data.results || [];
+    let pastOutages = await this.fetchOutageFeed("past_outages");
     const filtersApplied = buildFiltersApplied(resourceFilter, outageTypeFilter);
 
     // Filter by outage type if specified
@@ -757,17 +759,15 @@ export class SystemStatusServer extends BaseAccessServer {
     fields?: string[]
   ): Promise<CallToolResult> {
     // Get current, future, and recent past announcements for comprehensive view
-    const [currentResponse, futureResponse, pastResponse] = await Promise.all([
-      this.httpClient.get("/wh2/news/v1/affiliation/access-ci.org/current_outages/"),
-      this.httpClient.get("/wh2/news/v1/affiliation/access-ci.org/future_outages/"),
-      this.httpClient.get("/wh2/news/v1/affiliation/access-ci.org/past_outages/"),
+    const [currentFeed, futureFeed, pastFeed] = await Promise.all([
+      this.fetchOutageFeed("current_outages"),
+      this.fetchOutageFeed("future_outages"),
+      this.fetchOutageFeed("past_outages"),
     ]);
 
-    let currentOutages: OutageItem[] = (currentResponse.data.results || []).filter(
-      (outage: OutageItem) => !isCanceled(outage)
-    );
-    let futureOutages: OutageItem[] = futureResponse.data.results || [];
-    let pastOutagesData: OutageItem[] = pastResponse.data.results || [];
+    let currentOutages = currentFeed.filter((outage) => !isCanceled(outage));
+    let futureOutages = futureFeed;
+    let pastOutagesData = pastFeed;
     const filtersApplied = buildFiltersApplied(resourceFilter, outageTypeFilter);
 
     // Filter by outage type if specified
