@@ -169,23 +169,118 @@ describe("EventsServer", () => {
       return JSON.parse((result.content[0] as { text: string }).text);
     };
 
-    it("date: past returns the most recent events first, from the last page", async () => {
-      mockPages([eventsFrom(0, 500), eventsFrom(500, 500), eventsFrom(1000, 200)]);
+    describe("date: past reads backward in date windows", () => {
+      // A stand-in for the real API: filters by date, sorts ascending, and pages,
+      // so these tests hold for any window layout.
+      const DAY = 86400000;
+      const history = (count: number, everyDays = 1, from = Date.now() - DAY) =>
+        Array.from({ length: count }, (_, i) => {
+          const start = new Date(from - i * everyDays * DAY).toISOString();
+          return { id: `n${i}`, title: "Event", start_date: start, end_date: start };
+        }).reverse();
+      const mockApi = (rows: Array<{ start_date: string }>) => {
+        const served: number[] = [];
+        mockHttpClient.get.mockImplementation(async (url: string) => {
+          const q = new URL(url).searchParams;
+          const earliest = q.get("earliest_date") ?? "";
+          const latest = q.get("end_date");
+          const size = Number(q.get("items_per_page"));
+          const page = Number(q.get("page") ?? 0);
+          // A bare end_date means midnight at the start of that day, as on the
+          // real API, so it leaves out that day's events.
+          const cutoff = latest?.length === 10 ? `${latest}T00:00:00Z` : latest;
+          const matched = rows.filter(
+            (row) => row.start_date.slice(0, 10) >= earliest && (!cutoff || row.start_date <= cutoff)
+          );
+          const data = matched.slice(page * size, (page + 1) * size);
+          served.push(data.length);
+          return { status: 200, data };
+        });
+        return served;
+      };
 
-      const response = await search({ date: "past", limit: 2 });
+      it("returns the most recent events first", async () => {
+        mockApi(history(1200));
+        const response = await search({ date: "past", limit: 2 });
+        expect(response.items.map((e: { id: string }) => e.id)).toEqual(["n0", "n1"]);
+        expect(response.metadata.pagination.has_more).toBe(true);
+      });
 
-      expect(response.items.map((e: { id: string }) => e.id)).toEqual(["d1199", "d1198"]);
-      expect(response.metadata.pagination.has_more).toBe(true);
-      expect(response.metadata.pagination).not.toHaveProperty("capped");
+      it("reads a small slice of the history for a typical search", async () => {
+        const served = mockApi(history(1200));
+        await search({ date: "past" });
+        expect(served.reduce((sum, rows) => sum + rows, 0)).toBeLessThan(300);
+        expect(served.length).toBeLessThanOrEqual(3);
+      });
+
+      it("can page back to the oldest event", async () => {
+        mockApi(history(1200));
+        const response = await search({ date: "past", limit: 5, offset: 1195 });
+        expect(response.items.at(-1).id).toBe("n1199");
+        expect(response.metadata.pagination.has_more).toBe(false);
+        expect(response.metadata.pagination).not.toHaveProperty("capped");
+      });
+
+      it("reaches events from years ago when recent windows are empty", async () => {
+        mockApi(history(3, 1, Date.now() - 1200 * DAY));
+        const response = await search({ date: "past" });
+        expect(response.items).toHaveLength(3);
+        expect(response.metadata.pagination.has_more).toBe(false);
+      });
+
+      it("reads every page of a window with more events than one page", async () => {
+        // All within about three hours, so one window holds them on any date.
+        mockApi(history(1200, 0.0001));
+        const response = await search({ date: "past", limit: 5, offset: 1100 });
+        expect(response.items.map((e: { id: string }) => e.id)[0]).toBe("n1100");
+      });
+
+      it("includes events on the last day of a window", async () => {
+        const windows = server["pastEventWindows"](new Date());
+        const lastDay = `${windows[1].end}T16:00:00Z`;
+        mockApi([{ id: "edge", title: "Event", start_date: lastDay, end_date: lastDay }]);
+
+        expect((await search({ date: "past" })).items).toHaveLength(1);
+      });
+
+      it("doesn't repeat an event returned by two windows", async () => {
+        const row = history(1)[0];
+        mockHttpClient.get.mockResolvedValue({ status: 200, data: [row] });
+        expect((await search({ date: "past" })).items).toHaveLength(1);
+      });
+
+      it("keeps going until it has enough events with video", async () => {
+        const rows = history(600).map((row, i) =>
+          i < 2 ? { ...row, video: "https://example.org/recording" } : row
+        );
+        mockApi(rows);
+        const response = await search({ has_video: true });
+        expect(response.items.map((e: { id: string }) => e.id)).toEqual(["n598", "n599"]);
+      });
     });
 
-    it("date: past can page back to the oldest events", async () => {
-      mockPages([eventsFrom(0, 500), eventsFrom(500, 500), eventsFrom(1000, 200)]);
+    it("splits the history into windows that cover it with no gaps", () => {
+      const windows = server["pastEventWindows"](new Date("2026-11-06T12:00:00Z"));
 
-      const response = await search({ date: "past", limit: 5, offset: 1195 });
+      expect(windows[0]).toEqual({ start: "2026-10-01" });
+      expect(windows[1]).toEqual({ start: "2026-07-01", end: "2026-09-30" });
+      expect(windows.at(-1)?.start).toBe("2020-01-01");
+      for (let i = 1; i < windows.length; i++) {
+        const next = new Date(`${windows[i].end}T00:00:00Z`).getTime() + 86400000;
+        expect(new Date(next).toISOString().slice(0, 10)).toBe(windows[i - 1].start);
+      }
+    });
 
-      expect(response.items.at(-1).id).toBe("d0");
-      expect(response.metadata.pagination.has_more).toBe(false);
+    it("keeps window URLs stable through a quarter, so the CDN cache works", () => {
+      expect(server["pastEventWindows"](new Date("2026-10-02T00:00:00Z"))).toEqual(
+        server["pastEventWindows"](new Date("2026-12-30T00:00:00Z"))
+      );
+    });
+
+    it("keeps windows to a year, which fits in one page today", () => {
+      for (const { start, end } of server["pastEventWindows"](new Date("2026-11-06T00:00:00Z"))) {
+        if (end) expect(new Date(end).getTime() - new Date(start).getTime()).toBeLessThan(366 * 86400000);
+      }
     });
 
     it("date_range stays chronological and reaches past the first page", async () => {
@@ -354,6 +449,14 @@ describe("EventsServer", () => {
       expect(url).toContain("end_date=2026-09-25");
       expect(url).not.toContain("beginning_date");
       expect(url).not.toContain("end_date_relative");
+    });
+
+    it("date_range sends the end of the day, because a bare date stops at midnight", () => {
+      const url = new URL(
+        server["buildEventsUrl"]({ date_range: { start_date: "2024-06-01", end_date: "2024-06-30" } })
+      );
+
+      expect(url.searchParams.get("end_date")).toBe("2024-06-30T23:59:59Z");
     });
 
     it("date_range overrides the date enum", () => {

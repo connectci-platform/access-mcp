@@ -92,6 +92,7 @@ interface AddOccurrenceParams {
 }
 
 interface RawEvent {
+  id?: string | number;
   title?: string;
   start_date?: string;
   end_date?: string;
@@ -145,6 +146,16 @@ export function isoInstantUtc(value: string | undefined | null): string | undefi
   if (/Z$/.test(value)) return value; // already canonical
   const ms = Date.parse(value); // offset-bearing → convert to UTC Z
   return Number.isNaN(ms) ? value : new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+// The API reads a bare end_date as midnight at the start of that day, which
+// leaves out the day's events.
+function endOfDay(date: string): string {
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date}T23:59:59Z` : date;
+}
+
+function hasVideo(event: { video?: unknown }): boolean {
+  return typeof event.video === "string" && event.video.trim() !== "";
 }
 
 /**
@@ -269,8 +280,8 @@ export class EventsServer extends BaseAccessServer {
 
       this._eventsHttpClient = axios.create({
         baseURL: this.baseURL,
-        // A cold 500-event page takes about 10 seconds. access-agent gives up
-        // on a tool call at 30, so this has to stay under that.
+        // A cold 500-event page takes about 10 seconds, longer under load.
+        // access-agent gives up on a tool call at 30, so stay under that.
         timeout: 25000,
         headers,
         validateStatus: () => true, // Don't throw on HTTP errors
@@ -944,11 +955,15 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
   // the CDN caches by URL, and a cold 500-event page takes about 10 seconds.
   private static readonly EARLIEST_EVENT_DATE = "2020-01-01";
 
-  // Historical results sort oldest first with no total, so finding the newest
-  // means reading every page. Batches keep a cold search inside the agent's
-  // 30 second limit. There were about 1,200 past events in November 2026, so
-  // nine pages leave plenty of room, and the response reports capped beyond that.
-  private static readonly HISTORY_BATCH_SIZE = 3;
+  // Historical results sort oldest first with no total, and a cold page costs
+  // about 1.5 seconds per 100 events. So a past search reads backward in date
+  // windows and stops once it has enough: usually one request for about 100
+  // events, rather than every page. Windows follow calendar quarters so their
+  // URLs stay stable for the CDN, and grow as they go back, capped at a year
+  // because a year is about 460 events, which fits in one 500-event page.
+  private static readonly WINDOW_QUARTERS = [1, 2, 4];
+
+  // The most pages to read for one window or date_range.
   private static readonly HISTORY_MAX_PAGES = 9;
 
   private isHistoricalSearch(params: SearchEventsParams): boolean {
@@ -1023,7 +1038,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
         params.date_range.start_date || EventsServer.EARLIEST_EVENT_DATE
       );
       if (params.date_range.end_date) {
-        url.searchParams.set("end_date", params.date_range.end_date);
+        url.searchParams.set("end_date", endOfDay(params.date_range.end_date));
       }
     } else if (this.isPastSearch(params)) {
       url.searchParams.set("earliest_date", EventsServer.EARLIEST_EVENT_DATE);
@@ -1089,40 +1104,95 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
   }
 
   /**
-   * Reads pages in batches until one comes back short. `complete` is false when
-   * the page ceiling stopped the read with more events possibly left.
+   * Reads pages until one comes back short. `complete` is false when the page
+   * ceiling stopped the read with more events possibly left.
    */
-  private async fetchHistoricalEvents(
+  private async readEventPages(
     url: string,
     pageSize: number
   ): Promise<{ events: RawEvent[]; complete: boolean }> {
     const events: RawEvent[] = [];
-    const { HISTORY_BATCH_SIZE, HISTORY_MAX_PAGES } = EventsServer;
 
-    for (let first = 0; first < HISTORY_MAX_PAGES; first += HISTORY_BATCH_SIZE) {
-      const pages = await Promise.all(
-        Array.from({ length: HISTORY_BATCH_SIZE }, (_, i) => {
-          const pageUrl = new URL(url);
-          pageUrl.searchParams.set("page", String(first + i));
-          return this.fetchEventPage(pageUrl.toString());
-        })
-      );
-
-      for (const page of pages) {
-        events.push(...page);
-        if (page.length < pageSize) return { events, complete: true };
-      }
+    for (let page = 0; page < EventsServer.HISTORY_MAX_PAGES; page++) {
+      const pageUrl = new URL(url);
+      pageUrl.searchParams.set("page", String(page));
+      const rows = await this.fetchEventPage(pageUrl.toString());
+      events.push(...rows);
+      if (rows.length < pageSize) return { events, complete: true };
     }
 
     return { events, complete: false };
   }
 
+  /**
+   * Date windows from today back to the start of the corpus, newest first. The
+   * first runs from the start of this quarter to today, and each later window
+   * ends the day before the one after it starts.
+   */
+  private pastEventWindows(now: Date): Array<{ start: string; end?: string }> {
+    const isoDate = (date: Date) => date.toISOString().slice(0, 10);
+    const floor = new Date(`${EventsServer.EARLIEST_EVENT_DATE}T00:00:00Z`);
+    const { WINDOW_QUARTERS } = EventsServer;
+
+    let cursor = new Date(
+      Date.UTC(now.getUTCFullYear(), Math.floor(now.getUTCMonth() / 3) * 3, 1)
+    );
+    const windows: Array<{ start: string; end?: string }> = [{ start: isoDate(cursor) }];
+
+    for (let step = 0; cursor > floor; step++) {
+      const quarters = WINDOW_QUARTERS[Math.min(step, WINDOW_QUARTERS.length - 1)];
+      const end = new Date(cursor.getTime() - 86400000);
+      const start = new Date(
+        Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() - quarters * 3, 1)
+      );
+      cursor = start < floor ? floor : start;
+      windows.push({ start: isoDate(cursor), end: isoDate(end) });
+    }
+
+    return windows;
+  }
+
+  /**
+   * Walks the windows until there are enough events to fill the request, so a
+   * past search doesn't pay for history it won't return. Stopping early is safe
+   * because the API matches on start date, so windows don't overlap and each one
+   * is strictly older than the last. Events are keyed in case that ever changes.
+   */
+  private async fetchPastEvents(
+    url: string,
+    params: SearchEventsParams
+  ): Promise<{ events: RawEvent[]; complete: boolean }> {
+    const { needed, fetchSize } = this.resolveEventsPageWindow(params);
+    const seen = new Map<unknown, RawEvent>();
+
+    for (const { start, end } of this.pastEventWindows(new Date())) {
+      const windowUrl = new URL(url);
+      windowUrl.searchParams.set("earliest_date", start);
+      if (end) {
+        windowUrl.searchParams.delete("end_date_relative");
+        windowUrl.searchParams.set("end_date", endOfDay(end));
+      }
+
+      const { events, complete } = await this.readEventPages(windowUrl.toString(), fetchSize);
+      for (const event of events) seen.set(event.id ?? event, event);
+
+      if (!complete) return { events: [...seen.values()], complete };
+
+      const usable = [...seen.values()].filter((e) => !params.has_video || hasVideo(e));
+      if (usable.length >= needed) break;
+    }
+
+    return { events: [...seen.values()], complete: true };
+  }
+
   private async getEvents(params: SearchEventsParams): Promise<CallToolResult> {
     const url = this.buildEventsUrl(params);
     const historical = this.isHistoricalSearch(params);
-    const { events, complete } = historical
-      ? await this.fetchHistoricalEvents(url, this.resolveEventsPageWindow(params).fetchSize)
-      : { events: await this.fetchEventPage(url), complete: true };
+    const { events, complete } = this.isPastSearch(params)
+      ? await this.fetchPastEvents(url, params)
+      : historical
+        ? await this.readEventPages(url, this.resolveEventsPageWindow(params).fetchSize)
+        : { events: await this.fetchEventPage(url), complete: true };
 
     const enhancedEvents = events.map((event: RawEvent) => {
       const {
@@ -1197,9 +1267,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
     }
 
     // Client-side filter: has_video
-    const filtered = params.has_video
-      ? enhancedEvents.filter((e) => typeof e.video === "string" && e.video.trim() !== "")
-      : enhancedEvents;
+    const filtered = params.has_video ? enhancedEvents.filter(hasVideo) : enhancedEvents;
 
     // Local slice of the single fetched (page-0) response — see buildEventsUrl
     // for why offset can't be expressed as a Drupal page number. offset/limit
@@ -1217,8 +1285,8 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
     // has_more must fall to the "assume more" branch below, not a clean
     // false. (This is `fetchSize < needed`, i.e. `offset+limit >= 500` —
     // NOT `> 500`, which would miss exactly that boundary.)
-    // A historical search reads every page, so it only loses the probe when it
-    // hits the page ceiling.
+    // A historical search reads until it has enough or runs out, so it only
+    // loses the probe when it hits the page ceiling.
     const probePreserved = historical ? complete : fetchSize >= needed;
     // window: local slice, not the old slice(0, limit) — an offset must
     // return records [offset, offset+limit), never records from the start.
