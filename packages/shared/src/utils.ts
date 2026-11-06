@@ -16,12 +16,27 @@ interface AxiosErrorLike {
     statusText?: string;
   };
   message?: string;
+  // DrupalApiError carries these directly instead of on `response`.
+  status?: number;
+  body?: { message?: unknown };
 }
 
 export function handleApiError(error: unknown): string {
   const axiosError = error as AxiosErrorLike;
   if (axiosError.response?.data?.message) {
     return axiosError.response.data.message;
+  }
+  // Drupal's message on a 4xx is written for the user, like "You are already
+  // registered." A 5xx body can carry internal exception text, so it stays out.
+  const { status, body } = axiosError;
+  if (
+    status &&
+    status >= 400 &&
+    status < 500 &&
+    body?.message &&
+    typeof body.message === "string"
+  ) {
+    return body.message;
   }
   if (axiosError.response?.status) {
     return `API error: ${axiosError.response.status} ${axiosError.response.statusText}`;

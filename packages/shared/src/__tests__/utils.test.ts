@@ -1,5 +1,6 @@
 import { describe, test, expect } from "vitest";
 import { sanitizeGroupId, formatApiUrl, handleApiError } from "../utils.js";
+import { DrupalApiError } from "../drupal-auth.js";
 
 describe("Utils", () => {
   describe("sanitizeGroupId", () => {
@@ -29,6 +30,30 @@ describe("Utils", () => {
   });
 
   describe("handleApiError", () => {
+    test("returns Drupal's own message for a client error with a flat body", () => {
+      const error = new DrupalApiError("Drupal API error: 409 Conflict", 409, {
+        error: "already_registered",
+        message: "You are already registered.",
+      });
+      expect(handleApiError(error)).toBe("You are already registered.");
+    });
+
+    test("keeps the generic message when a server error body has a message", () => {
+      const error = new DrupalApiError("Drupal API error: 500 Server Error", 500, {
+        message: "SQLSTATE[42S02]: Base table not found",
+      });
+      expect(handleApiError(error)).toBe("Drupal API error: 500 Server Error");
+    });
+
+    test("keeps the generic message when the body has no usable message", () => {
+      expect(handleApiError(new DrupalApiError("Drupal API error: 404", 404, "<html>"))).toBe(
+        "Drupal API error: 404"
+      );
+      expect(
+        handleApiError(new DrupalApiError("Drupal API error: 400", 400, { message: "" }))
+      ).toBe("Drupal API error: 400");
+    });
+
     test("should extract message from response data", () => {
       const error = {
         response: {

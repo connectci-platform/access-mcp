@@ -1225,6 +1225,41 @@ describe("SystemStatusServer", () => {
   });
 
   describe("Error Handling", () => {
+    it.each(["current", "scheduled", "past", "all"])(
+      "reports an error rather than no outages when the %s feed fails",
+      async (time) => {
+        mockHttpClient.get.mockResolvedValue({
+          status: 503,
+          statusText: "Service Unavailable",
+          data: { status_code: 503, detail: "Service unavailable" },
+        });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: { name: "get_infrastructure_news", arguments: { time } },
+        });
+
+        const response = JSON.parse((result.content[0] as TextContent).text);
+        expect(response.error.message).toContain("503");
+        expect(response).not.toHaveProperty("items");
+      }
+    );
+
+    it("reports an error when only one of the combined feeds fails", async () => {
+      mockHttpClient.get.mockImplementation(async (url: string) =>
+        url.includes("future_outages")
+          ? { status: 503, data: { detail: "Service unavailable" } }
+          : { status: 200, data: { results: [] } }
+      );
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: { name: "get_infrastructure_news", arguments: { time: "all" } },
+      });
+
+      expect(JSON.parse((result.content[0] as TextContent).text).error).toBeDefined();
+    });
+
     it("should handle API errors gracefully", async () => {
       mockHttpClient.get.mockResolvedValue({
         status: 500,
