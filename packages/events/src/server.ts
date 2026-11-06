@@ -269,7 +269,9 @@ export class EventsServer extends BaseAccessServer {
 
       this._eventsHttpClient = axios.create({
         baseURL: this.baseURL,
-        timeout: 10000, // 10 seconds for events API (can be slower)
+        // A cold 500-event page takes about 10 seconds. access-agent gives up
+        // on a tool call at 30, so this has to stay under that.
+        timeout: 25000,
         headers,
         validateStatus: () => true, // Don't throw on HTTP errors
       });
@@ -304,7 +306,7 @@ export class EventsServer extends BaseAccessServer {
             date: {
               type: "string",
               description:
-                "Quick date filter. Use 'past' for historical events. Defaults to 'upcoming' if omitted.",
+                "Quick date filter. Use 'past' for historical events, most recent first. Defaults to 'upcoming' if omitted.",
               enum: ["today", "upcoming", "past", "this_week", "this_month"],
               default: "upcoming",
             },
@@ -936,6 +938,34 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
   // list fails the exposed-pager select validation and returns an empty page.
   private static readonly ALLOWED_PAGE_SIZES = [1, 5, 10, 20, 25, 50, 100, 250, 500];
 
+  // The API's default floor is today, and only earliest_date moves it. The
+  // other date params narrow within the floor, so they can't reach past events.
+  // Events start in 2022, so this reaches all of them. Keep it a fixed date:
+  // the CDN caches by URL, and a cold 500-event page takes about 10 seconds.
+  private static readonly EARLIEST_EVENT_DATE = "2020-01-01";
+
+  // Historical results sort oldest first with no total, so finding the newest
+  // means reading every page. Batches keep a cold search inside the agent's
+  // 30 second limit. There were about 1,200 past events in November 2026, so
+  // nine pages leave plenty of room, and the response reports capped beyond that.
+  private static readonly HISTORY_BATCH_SIZE = 3;
+  private static readonly HISTORY_MAX_PAGES = 9;
+
+  private isHistoricalSearch(params: SearchEventsParams): boolean {
+    return this.hasDateRange(params) || this.isPastSearch(params);
+  }
+
+  private hasDateRange(params: SearchEventsParams): boolean {
+    return Boolean(params.date_range?.start_date || params.date_range?.end_date);
+  }
+
+  // has_video implies past events, since only past events have recordings.
+  private isPastSearch(params: SearchEventsParams): boolean {
+    return (
+      !this.hasDateRange(params) && (params.date || (params.has_video ? "past" : null)) === "past"
+    );
+  }
+
   // Single source of truth for the offset/limit/needed/fetchSize window math
   // shared by buildEventsUrl (sizes the actual fetch) and getEvents (sizes
   // the has_more/capped arithmetic over the fetched array). They MUST derive
@@ -957,8 +987,10 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
     const offset = coerceOffset(params.offset);
     const limit = coerceLimit(params.limit, 50);
     const needed = offset + limit + 1;
-    const fetchSize = EventsServer.ALLOWED_PAGE_SIZES.find((s) => s >= needed)
-      || EventsServer.ALLOWED_PAGE_SIZES[EventsServer.ALLOWED_PAGE_SIZES.length - 1];
+    const largestPage = EventsServer.ALLOWED_PAGE_SIZES[EventsServer.ALLOWED_PAGE_SIZES.length - 1];
+    const fetchSize = this.isHistoricalSearch(params)
+      ? largestPage
+      : EventsServer.ALLOWED_PAGE_SIZES.find((s) => s >= needed) || largestPage;
     return { offset, limit, needed, fetchSize };
   }
 
@@ -983,27 +1015,29 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
     }
 
     // Explicit date_range overrides the date shortcut. ISO-only: routes
-    // exclusively to the absolute beginning_date/end_date Drupal params (no
-    // relative detection — that's the enum's job, in the else branch below).
-    if (params.date_range && (params.date_range.start_date || params.date_range.end_date)) {
-      if (params.date_range.start_date) {
-        url.searchParams.set("beginning_date", params.date_range.start_date);
-      }
+    // exclusively to the absolute earliest_date/end_date Drupal params (no
+    // relative detection — that's the enum's job, in the branches below).
+    if (params.date_range && this.hasDateRange(params)) {
+      url.searchParams.set(
+        "earliest_date",
+        params.date_range.start_date || EventsServer.EARLIEST_EVENT_DATE
+      );
       if (params.date_range.end_date) {
         url.searchParams.set("end_date", params.date_range.end_date);
       }
+    } else if (this.isPastSearch(params)) {
+      url.searchParams.set("earliest_date", EventsServer.EARLIEST_EVENT_DATE);
+      url.searchParams.set("end_date_relative", "today");
     } else {
       // Map date shortcut to API params
-      // has_video implies past events since only past events have recordings
       const dateMap: Record<string, { start: string; end?: string }> = {
         today: { start: "today" },
         upcoming: { start: "today" },
-        past: { start: "-1year", end: "today" },
         this_week: { start: "today", end: "+1week" },
         this_month: { start: "today", end: "+1month" },
       };
 
-      const dateKey = params.date || (params.has_video ? "past" : null);
+      const dateKey = params.date;
       if (dateKey && dateMap[dateKey]) {
         url.searchParams.set("beginning_date_relative", dateMap[dateKey].start);
         if (dateMap[dateKey].end) {
@@ -1039,16 +1073,56 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
     return url.toString();
   }
 
-  private async getEvents(params: SearchEventsParams): Promise<CallToolResult> {
-    const url = this.buildEventsUrl(params);
+  private async fetchEventPage(url: string): Promise<RawEvent[]> {
     const response = await this.httpClient.get(url);
 
     if (response.status !== 200) {
       throw new Error(`API error ${response.status}`);
     }
 
-    // Ensure response is an array (non-array means unexpected response like 403 HTML)
-    const events: RawEvent[] = Array.isArray(response.data) ? response.data : [];
+    // A non-array means an unexpected response, like an HTML error page. Treating
+    // it as empty would read as "no events", and end a historical read early.
+    if (!Array.isArray(response.data)) {
+      throw new Error("API error: unexpected response from the events API");
+    }
+    return response.data;
+  }
+
+  /**
+   * Reads pages in batches until one comes back short. `complete` is false when
+   * the page ceiling stopped the read with more events possibly left.
+   */
+  private async fetchHistoricalEvents(
+    url: string,
+    pageSize: number
+  ): Promise<{ events: RawEvent[]; complete: boolean }> {
+    const events: RawEvent[] = [];
+    const { HISTORY_BATCH_SIZE, HISTORY_MAX_PAGES } = EventsServer;
+
+    for (let first = 0; first < HISTORY_MAX_PAGES; first += HISTORY_BATCH_SIZE) {
+      const pages = await Promise.all(
+        Array.from({ length: HISTORY_BATCH_SIZE }, (_, i) => {
+          const pageUrl = new URL(url);
+          pageUrl.searchParams.set("page", String(first + i));
+          return this.fetchEventPage(pageUrl.toString());
+        })
+      );
+
+      for (const page of pages) {
+        events.push(...page);
+        if (page.length < pageSize) return { events, complete: true };
+      }
+    }
+
+    return { events, complete: false };
+  }
+
+  private async getEvents(params: SearchEventsParams): Promise<CallToolResult> {
+    const url = this.buildEventsUrl(params);
+    const historical = this.isHistoricalSearch(params);
+    const { events, complete } = historical
+      ? await this.fetchHistoricalEvents(url, this.resolveEventsPageWindow(params).fetchSize)
+      : { events: await this.fetchEventPage(url), complete: true };
 
     const enhancedEvents = events.map((event: RawEvent) => {
       const {
@@ -1112,8 +1186,15 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       };
     });
 
-    // Sort by starts_in_hours ascending so nearest events come first
-    enhancedEvents.sort((a, b) => a.starts_in_hours - b.starts_in_hours);
+    // Sort by starts_in_hours ascending so nearest events come first. It's
+    // clamped at 0, so past searches sort on the start date, most recent first.
+    if (this.isPastSearch(params)) {
+      const startTime = (event: { start_date?: string | null }) =>
+        new Date(event.start_date ?? 0).getTime() || 0;
+      enhancedEvents.sort((a, b) => startTime(b) - startTime(a));
+    } else {
+      enhancedEvents.sort((a, b) => a.starts_in_hours - b.starts_in_hours);
+    }
 
     // Client-side filter: has_video
     const filtered = params.has_video
@@ -1136,7 +1217,9 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
     // has_more must fall to the "assume more" branch below, not a clean
     // false. (This is `fetchSize < needed`, i.e. `offset+limit >= 500` —
     // NOT `> 500`, which would miss exactly that boundary.)
-    const probePreserved = fetchSize >= needed;
+    // A historical search reads every page, so it only loses the probe when it
+    // hits the page ceiling.
+    const probePreserved = historical ? complete : fetchSize >= needed;
     // window: local slice, not the old slice(0, limit) — an offset must
     // return records [offset, offset+limit), never records from the start.
     // limit:0 (deliberate count-only contract) naturally yields [] here —
