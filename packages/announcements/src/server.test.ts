@@ -1316,6 +1316,569 @@ describe("AnnouncementsServer", () => {
       });
     });
 
+    describe("preview defaults: affiliation and where_to_share", () => {
+      const LABELS = [
+        "Announcements page",
+        "Bi-Weekly Digest",
+        "Affinity Group page",
+        "Email to Affinity Group",
+      ];
+
+      const callTool = (name: string, args: Record<string, unknown>) =>
+        server["handleToolCall"]({
+          method: "tools/call",
+          params: { name, arguments: args },
+        });
+
+      const baseCreate = { title: "T", body: "B", summary: "S" };
+
+      const toolByName = (name: string) => {
+        const tool = server["getTools"]().find((t) => t.name === name);
+        if (!tool) throw new Error(`missing tool ${name}`);
+        return tool;
+      };
+
+      beforeEach(() => {
+        mockDrupalAuth.post.mockResolvedValue({ success: true, uuid: "u", nid: 1, title: "T" });
+        mockDrupalAuth.patch.mockResolvedValue({ success: true, uuid: "u", title: "T" });
+      });
+
+      it("sends Community when affiliation is omitted", async () => {
+        await callTool("create_announcement", baseCreate);
+        const [, , body] = mockDrupalAuth.post.mock.calls[0];
+        expect(body.field_affiliation).toBe("Community");
+      });
+
+      it("preserves an explicit affiliation", async () => {
+        await callTool("create_announcement", { ...baseCreate, affiliation: "ACCESS Collaboration" });
+        const [, , body] = mockDrupalAuth.post.mock.calls[0];
+        expect(body.field_affiliation).toBe("ACCESS Collaboration");
+      });
+
+      it.each(["constructor", "__proto__"])(
+        "rejects inherited property name %s as a where_to_share value without an HTTP call",
+        async (value) => {
+          const create = await callTool("create_announcement", { ...baseCreate, where_to_share: [value] });
+          const createData = JSON.parse((create.content[0] as TextContent).text);
+          expect(createData.error.message).toContain("Invalid where_to_share value");
+          const update = await callTool("update_announcement", { uuid: "u", where_to_share: [value] });
+          const updateData = JSON.parse((update.content[0] as TextContent).text);
+          expect(updateData.error.message).toContain("Invalid where_to_share value");
+          expect(mockDrupalAuth.post).not.toHaveBeenCalled();
+          expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+          expect(mockDrupalAuth.get).not.toHaveBeenCalled();
+        }
+      );
+
+      it("rejects an empty where_to_share array before any HTTP call", async () => {
+        const result = await callTool("create_announcement", { ...baseCreate, where_to_share: [] });
+        const data = JSON.parse((result.content[0] as TextContent).text);
+        expect(data.error.message).toContain("where_to_share");
+        expect(mockDrupalAuth.post).not.toHaveBeenCalled();
+        expect(mockDrupalAuth.get).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ["create_announcement", baseCreate],
+        ["update_announcement", { uuid: "u" }],
+      ])("%s empty where_to_share error is true for both tools and does not mention defaults", async (name, base) => {
+        const result = await callTool(name, { ...base, where_to_share: [] });
+        const data = JSON.parse((result.content[0] as TextContent).text);
+        expect(data.error.message).toBe(
+          "where_to_share must not be empty. List at least one option, or omit the field."
+        );
+        expect(data.error.message.toLowerCase()).not.toContain("default");
+      });
+
+      it.each([
+        ["Affinity Group page"],
+        ["Email to Affinity Group"],
+        ["affinity group page"],
+        ["on_your_affinity_group_page"],
+        ["email_to_your_affinity_group"],
+      ])("rejects %s without an affinity group, before any HTTP call", async (value) => {
+        const result = await callTool("create_announcement", {
+          ...baseCreate,
+          tags: ["ai"],
+          where_to_share: ["Announcements page", value],
+        });
+        const data = JSON.parse((result.content[0] as TextContent).text);
+        expect(data.error.message).toContain("affinity group is required");
+        expect(mockDrupalAuth.post).not.toHaveBeenCalled();
+        expect(mockDrupalAuth.get).not.toHaveBeenCalled();
+      });
+
+      it("accepts an affinity option when an affinity group is given", async () => {
+        mockDrupalAuth.get.mockResolvedValueOnce({
+          data: [{ id: "group-uuid-1", attributes: { title: "Test Group" } }],
+        });
+        const result = await callTool("create_announcement", {
+          ...baseCreate,
+          affinity_group: "123",
+          where_to_share: ["Affinity Group page"],
+        });
+        const data = JSON.parse((result.content[0] as TextContent).text);
+        expect(data.error).toBeUndefined();
+        const [, , body] = mockDrupalAuth.post.mock.calls[0];
+        expect(body.field_choose_where_to_share_this).toEqual(["on_your_affinity_group_page"]);
+      });
+
+      it("passes email-only sharing through with a group", async () => {
+        mockDrupalAuth.get.mockResolvedValueOnce({
+          data: [{ id: "group-uuid-1", attributes: { title: "Test Group" } }],
+        });
+        await callTool("create_announcement", {
+          ...baseCreate,
+          affinity_group: "123",
+          where_to_share: ["Email to Affinity Group"],
+        });
+        const [, , body] = mockDrupalAuth.post.mock.calls[0];
+        expect(body.field_choose_where_to_share_this).toEqual(["email_to_your_affinity_group"]);
+      });
+
+      it.each([[undefined], [null]])(
+        "sends the default sharing explicitly when where_to_share is %s",
+        async (value) => {
+          await callTool("create_announcement", { ...baseCreate, where_to_share: value });
+          const [, , body] = mockDrupalAuth.post.mock.calls[0];
+          expect(body.field_choose_where_to_share_this).toEqual([
+            "on_the_announcements_page",
+            "in_the_access_support_bi_weekly_digest",
+          ]);
+        }
+      );
+
+      it.each([
+        ["Announcements page", "on_the_announcements_page"],
+        ["Bi-Weekly Digest", "in_the_access_support_bi_weekly_digest"],
+        ["Affinity Group page", "on_your_affinity_group_page"],
+        ["Email to Affinity Group", "email_to_your_affinity_group"],
+      ])("maps the label %s to %s", async (label, drupalValue) => {
+        mockDrupalAuth.get.mockResolvedValueOnce({
+          data: [{ id: "group-uuid-1", attributes: { title: "Test Group" } }],
+        });
+        await callTool("create_announcement", {
+          ...baseCreate,
+          affinity_group: "123",
+          where_to_share: [label],
+        });
+        const [, , body] = mockDrupalAuth.post.mock.calls[0];
+        expect(body.field_choose_where_to_share_this).toEqual([drupalValue]);
+      });
+
+      it.each(["create_announcement", "update_announcement"])(
+        "%s rejects a non-array where_to_share before any HTTP call",
+        async (name) => {
+          const base = name === "create_announcement" ? baseCreate : { uuid: "u" };
+          for (const bad of ["Announcements page", 5, { a: 1 }]) {
+            const result = await callTool(name, { ...base, where_to_share: bad });
+            const data = JSON.parse((result.content[0] as TextContent).text);
+            expect(data.error.message).toContain("where_to_share must be an array");
+          }
+          expect(mockDrupalAuth.post).not.toHaveBeenCalled();
+          expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+          expect(mockDrupalAuth.get).not.toHaveBeenCalled();
+        }
+      );
+
+      it("update treats a null where_to_share as omitted", async () => {
+        await callTool("update_announcement", { uuid: "u", title: "New", where_to_share: null });
+        const [, , body] = mockDrupalAuth.patch.mock.calls[0];
+        expect(body).not.toHaveProperty("field_choose_where_to_share_this");
+      });
+
+      it.each(["create_announcement", "update_announcement"])(
+        "%s rejects an invalid affiliation before any HTTP call",
+        async (name) => {
+          const base = name === "create_announcement" ? baseCreate : { uuid: "u" };
+          const result = await callTool(name, { ...base, affiliation: "Nonsense" });
+          const data = JSON.parse((result.content[0] as TextContent).text);
+          expect(data.error.message).toContain("Invalid affiliation");
+          expect(data.error.message).toContain("ACCESS Collaboration");
+          expect(mockDrupalAuth.post).not.toHaveBeenCalled();
+          expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+          expect(mockDrupalAuth.get).not.toHaveBeenCalled();
+        }
+      );
+
+      it("update sends field_affiliation when given", async () => {
+        await callTool("update_announcement", { uuid: "u", affiliation: "ACCESS Collaboration" });
+        const [, , body] = mockDrupalAuth.patch.mock.calls[0];
+        expect(body.field_affiliation).toBe("ACCESS Collaboration");
+      });
+
+      it("update omits field_affiliation when not given", async () => {
+        await callTool("update_announcement", { uuid: "u", title: "New" });
+        const [, , body] = mockDrupalAuth.patch.mock.calls[0];
+        expect(body).not.toHaveProperty("field_affiliation");
+      });
+
+      it("update rejects an empty where_to_share array before any HTTP call", async () => {
+        const result = await callTool("update_announcement", {
+          uuid: "u",
+          title: "New",
+          where_to_share: [],
+        });
+        const data = JSON.parse((result.content[0] as TextContent).text);
+        expect(data.error.message).toContain("where_to_share must not be empty");
+        expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+        expect(mockDrupalAuth.get).not.toHaveBeenCalled();
+      });
+
+      it("both schemas expose an enum of exactly the four labels", () => {
+        for (const name of ["create_announcement", "update_announcement"]) {
+          const props = toolByName(name).inputSchema.properties as Record<
+            string,
+            { items: { type: string; enum: string[] } }
+          >;
+          expect(props.where_to_share.items.type).toBe("string");
+          expect(props.where_to_share.items.enum).toEqual(LABELS);
+        }
+      });
+
+      it("update schema exposes affiliation", () => {
+        const props = toolByName("update_announcement").inputSchema.properties as Record<
+          string,
+          { enum?: string[] }
+        >;
+        expect(props.affiliation.enum).toEqual(["ACCESS Collaboration", "Community"]);
+      });
+
+      it("still normalizes aliases after the schema change", async () => {
+        await callTool("create_announcement", {
+          ...baseCreate,
+          where_to_share: ["on the announcements page", "in_the_access_support_bi_weekly_digest"],
+        });
+        const [, , body] = mockDrupalAuth.post.mock.calls[0];
+        expect(body.field_choose_where_to_share_this).toEqual([
+          "on_the_announcements_page",
+          "in_the_access_support_bi_weekly_digest",
+        ]);
+      });
+
+      it("create description always shows Affiliation and Share to in the preview", () => {
+        const desc = toolByName("create_announcement").description;
+        expect(desc).toContain("**Affiliation:** [");
+        expect(desc).toContain("**Share to:**");
+        const lines = desc.split("\n");
+        const shareLine = lines.findIndex((l) => l.startsWith("**Share to:**"));
+        const gate = lines.findIndex((l) => l.includes("[If the user is a coordinator or an affinity group is chosen:]"));
+        expect(shareLine).toBeGreaterThan(-1);
+        expect(gate).toBeGreaterThan(shareLine);
+        expect(lines[gate + 1]).toContain("**Affinity Group:**");
+      });
+
+      it("create description treats a change request as not confirmation", () => {
+        const desc = toolByName("create_announcement").description;
+        expect(desc).toContain("show the updated preview and ask again");
+        expect(desc).toContain("not confirmation");
+        expect(desc).toContain("only after the user confirms the current preview");
+      });
+
+      it("create description allows one question: which group when a group option has none", () => {
+        const desc = toolByName("create_announcement").description;
+        expect(desc).toMatch(/exception[^\n]*ask which group/i);
+        expect(desc).toContain("without naming a group");
+      });
+
+      it("describes the affinity options by the group rule, not as coordinators only", async () => {
+        for (const text of [
+          toolByName("create_announcement").description,
+          toolByName("get_announcement_context").description,
+        ]) {
+          expect(text).not.toMatch(/coordinators only|limited to/i);
+        }
+        expect(toolByName("create_announcement").description).toContain(
+          "need an affinity group the user is allowed to post to"
+        );
+        mockDrupalAuth.get.mockResolvedValueOnce({ data: [] });
+        const ctx = JSON.parse(
+          ((await callTool("get_announcement_context", {})).content[0] as TextContent).text
+        );
+        expect(ctx.where_to_share_options).toHaveLength(4);
+        expect(JSON.stringify(ctx)).not.toMatch(/coordinators only|limited to/i);
+        expect(ctx.guidance).toContain("not a coordinator");
+        expect(ctx.guidance).toContain("allowed to post to");
+      });
+
+      it("tells the model that unknown where_to_share values cannot be sent back", () => {
+        const mine = toolByName("get_my_announcements").description;
+        expect(mine).not.toContain("labels as accepted by create/update");
+        expect(mine).toContain("shown as is and cannot be sent back");
+        const props = toolByName("update_announcement").inputSchema.properties as Record<
+          string,
+          { description: string }
+        >;
+        expect(props.where_to_share.description).not.toContain("start from that list");
+        expect(props.where_to_share.description).toContain("shown as is and cannot be sent back");
+      });
+    });
+
+    describe("Drupal refusals, pass-through and request hygiene", () => {
+      const callTool = (name: string, args: Record<string, unknown>) =>
+        server["handleToolCall"]({
+          method: "tools/call",
+          params: { name, arguments: args },
+        });
+      const parse = (r: { content: unknown[] }) =>
+        JSON.parse((r.content[0] as TextContent).text);
+      const toolByName = (name: string) => {
+        const tool = server["getTools"]().find((t) => t.name === name);
+        if (!tool) throw new Error(`missing tool ${name}`);
+        return tool;
+      };
+      const baseCreate = { title: "T", body: "B", summary: "S" };
+      const callFor = (name: string) =>
+        name === "create_announcement"
+          ? callTool(name, baseCreate)
+          : callTool(name, { uuid: "u", title: "New" });
+      const writeMock = (name: string) =>
+        name === "create_announcement" ? mockDrupalAuth.post : mockDrupalAuth.patch;
+
+      describe("Drupal refusal messages", () => {
+        it.each([
+          ["create_announcement", 409, "not_coordinator"],
+          ["update_announcement", 409, "not_coordinator"],
+          ["create_announcement", 422, "group_required"],
+          ["update_announcement", 404, "group_required"],
+          ["create_announcement", 400, "group_required"],
+          ["update_announcement", 400, "group_required"],
+        ])("%s shows the controller's message for %i %s", async (name, status, code) => {
+          writeMock(name).mockRejectedValue(
+            new DrupalApiError(`Drupal API error: ${status}`, status, {
+              error: code,
+              message: "You must coordinate that group.",
+            })
+          );
+          const data = parse(await callFor(name));
+          expect(data.status).toBe("error");
+          expect(data.error.code).toBe(code);
+          expect(data.error.message).toBe("You must coordinate that group.");
+        });
+
+        it.each(["create_announcement", "update_announcement"])(
+          "%s keeps today's message when the body lacks error and message strings",
+          async (name) => {
+            for (const body of [{ errors: [{ title: "x" }] }, { error: "x" }, { error: 1, message: "m" }, null, "text"]) {
+              writeMock(name).mockRejectedValue(
+                new DrupalApiError("Drupal API error: 409 Conflict", 409, body)
+              );
+              const data = parse(await callFor(name));
+              expect(data.error.message).toBe("Drupal API error: 409 Conflict");
+              expect(data.error.code).toBe("error");
+            }
+          }
+        );
+      });
+
+      it("keeps the status line when body.message is empty on a 4xx", async () => {
+        writeMock("create_announcement").mockRejectedValue(
+          new DrupalApiError("Drupal API error: 409 Conflict", 409, { error: "x", message: "" })
+        );
+        const data = parse(await callFor("create_announcement"));
+        expect(data.error.message).toBe("Drupal API error: 409 Conflict");
+      });
+
+      it.each([
+        ["create_announcement", 500, "Internal Server Error"],
+        ["update_announcement", 500, "Internal Server Error"],
+        ["create_announcement", 503, "Service Unavailable"],
+        ["update_announcement", 503, "Service Unavailable"],
+      ])(
+        "%s does not surface a %i body's text",
+        async (name, status, statusText) => {
+          writeMock(name).mockRejectedValue(
+            new DrupalApiError(`Drupal API error: ${status} ${statusText}`, status, {
+              error: "SQLSTATE[HY000]",
+              message: "internal exception text",
+            })
+          );
+          const text = (await callFor(name)).content[0] as TextContent;
+          expect(text.text).not.toContain("internal exception text");
+          expect(text.text).not.toContain("SQLSTATE");
+          expect(parse(await callFor(name)).error.message).toBe(
+            `Drupal API error: ${status} ${statusText}`
+          );
+        }
+      );
+
+      describe("update_announcement with a single field", () => {
+        const group = { id: "group-uuid-1", attributes: { title: "G", name: "gpu" } };
+        it.each([
+          ["external_link", { external_link: { uri: "https://x.org", title: "X" } }, "field_news_external_link"],
+          ["affinity_group", { affinity_group: "G" }, "field_affinity_group_node"],
+          ["tags", { tags: ["gpu"] }, "field_tags"],
+          ["published_date", { published_date: "2026-01-02" }, "field_published_date"],
+        ])("%s alone reaches PATCH", async (_label, args, key) => {
+          mockDrupalAuth.get.mockResolvedValue({ data: [group] });
+          mockDrupalAuth.patch.mockResolvedValue({ success: true });
+          await callTool("update_announcement", { uuid: "u", ...args });
+          expect(mockDrupalAuth.patch).toHaveBeenCalledTimes(1);
+          const [, , body] = mockDrupalAuth.patch.mock.calls[0];
+          expect(body).toHaveProperty(key);
+        });
+      });
+
+      it("update with only unmatched tags names them and points to suggest_tags", async () => {
+        mockDrupalAuth.get.mockResolvedValue({ data: [] });
+        const data = parse(await callTool("update_announcement", { uuid: "u", tags: ["nope", "zip"] }));
+        expect(data.status).toBe("error");
+        expect(data.error.message).not.toContain("No fields to update");
+        expect(data.error.message).toContain("nope");
+        expect(data.error.message).toContain("zip");
+        expect(data.error.message).toContain("suggest_tags");
+        expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+      });
+
+      describe("get_my_announcements optional fields", () => {
+        const item = {
+          uuid: "a-1",
+          title: "T",
+          status: "draft",
+          tags: [],
+        };
+        const run = async (extra: Record<string, unknown>) => {
+          mockDrupalAuth.get.mockResolvedValueOnce({ items: [{ ...item, ...extra }] });
+          return parse(await callTool("get_my_announcements", {})).items[0];
+        };
+
+        it("leaves the keys out when Drupal omits them", async () => {
+          const out = await run({});
+          expect(out).not.toHaveProperty("affiliation");
+          expect(out).not.toHaveProperty("where_to_share");
+          expect(out).not.toHaveProperty("affinity_groups");
+        });
+
+        it("passes affiliation through, including null", async () => {
+          expect((await run({ affiliation: "Community" })).affiliation).toBe("Community");
+          expect(await run({ affiliation: null })).toHaveProperty("affiliation", null);
+        });
+
+        it("maps where_to_share machine values to labels and passes unknown values through", async () => {
+          const out = await run({
+            where_to_share: [
+              "in_the_access_support_bi_weekly_digest",
+              "on_the_announcements_page",
+              "on_your_affinity_group_page",
+              "email_to_your_affinity_group",
+              "some_future_value",
+            ],
+          });
+          expect(out.where_to_share).toEqual([
+            "Bi-Weekly Digest",
+            "Announcements page",
+            "Affinity Group page",
+            "Email to Affinity Group",
+            "some_future_value",
+          ]);
+        });
+
+        it("passes affinity_groups through as is", async () => {
+          const groups = [{ uuid: "g-1", title: "Group One" }];
+          expect((await run({ affinity_groups: groups })).affinity_groups).toEqual(groups);
+        });
+
+        it("documents the optional fields", () => {
+          const desc = toolByName("get_my_announcements").description;
+          expect(desc).toContain("where_to_share");
+          expect(desc).toContain("affinity_groups");
+          expect(desc).toContain("when available");
+        });
+      });
+
+      it("update where_to_share description tells the model to start from the current list", () => {
+        const props = toolByName("update_announcement").inputSchema.properties as Record<
+          string,
+          { description: string }
+        >;
+        expect(props.where_to_share.description).toContain("get_my_announcements");
+        expect(props.where_to_share.description).toMatch(/full resulting list/);
+      });
+
+      it.each(["create_announcement", "update_announcement"])(
+        "%s removes duplicate where_to_share values after normalizing, keeping first-seen order",
+        async (name) => {
+          mockDrupalAuth.post.mockResolvedValue({ success: true, uuid: "u", nid: 1, title: "T" });
+          mockDrupalAuth.patch.mockResolvedValue({ success: true, uuid: "u", title: "T" });
+          const args = name === "create_announcement" ? baseCreate : { uuid: "u" };
+          await callTool(name, {
+            ...args,
+            where_to_share: [
+              "Bi-Weekly Digest",
+              "Announcements page",
+              "in_the_access_support_bi_weekly_digest",
+              "on the announcements page",
+            ],
+          });
+          const [, , body] = writeMock(name).mock.calls[0];
+          expect(body.field_choose_where_to_share_this).toEqual([
+            "in_the_access_support_bi_weekly_digest",
+            "on_the_announcements_page",
+          ]);
+        }
+      );
+
+      it("does not mention the nonexistent list_affinity_groups tool", async () => {
+        for (const name of ["create_announcement", "update_announcement"]) {
+          mockDrupalAuth.get.mockResolvedValue({ data: [] });
+          const r = parse(
+            await callTool(name, {
+              ...(name === "create_announcement" ? baseCreate : { uuid: "u" }),
+              affinity_group: "Nope",
+            })
+          );
+          expect(JSON.stringify(r)).not.toContain("list_affinity_groups");
+        }
+        const props = toolByName("create_announcement").inputSchema.properties as Record<
+          string,
+          { description: string }
+        >;
+        expect(props.affinity_group.description).toContain("get_announcement_context");
+      });
+
+      it("update with tags: [] and nothing else errors with no PATCH", async () => {
+        const data = parse(await callTool("update_announcement", { uuid: "u", tags: [] }));
+        expect(data.status).toBe("error");
+        expect(data.error.message).toContain("No fields to update");
+        expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+      });
+
+      it("update treats a null summary or null body as omitted", async () => {
+        for (const args of [
+          { uuid: "u", summary: null },
+          { uuid: "u", body: null },
+          { uuid: "u", body: null, summary: null },
+        ]) {
+          const data = parse(await callTool("update_announcement", args));
+          expect(data.error.message).toContain("No fields to update");
+        }
+        expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+      });
+
+      it("update sends only the real value next to a null one", async () => {
+        mockDrupalAuth.patch.mockResolvedValue({ data: { uuid: "u", title: "T" } });
+        await callTool("update_announcement", { uuid: "u", summary: null, body: "<p>x</p>" });
+        await callTool("update_announcement", { uuid: "u", body: null, summary: "s" });
+        const bodies = mockDrupalAuth.patch.mock.calls.map((c: unknown[]) => c[2] ?? c[1]);
+        expect(JSON.stringify(bodies[0])).toBe(JSON.stringify({ body: { value: "<p>x</p>" } }));
+        expect(JSON.stringify(bodies[1])).toBe(JSON.stringify({ body: { summary: "s" } }));
+      });
+
+      it("update description tells the user which tags were skipped", () => {
+        expect(toolByName("update_announcement").description).toContain(
+          "tell the user which tags were skipped"
+        );
+      });
+
+      it("update with nothing to change errors before any HTTP call", async () => {
+        const data = parse(await callTool("update_announcement", { uuid: "u" }));
+        expect(data.status).toBe("error");
+        expect(data.error.message).toContain("No fields to update");
+        expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+        expect(mockDrupalAuth.get).not.toHaveBeenCalled();
+      });
+    });
+
     describe("delete_announcement", () => {
       it("should delete an announcement when confirmed", async () => {
         mockDrupalAuth.delete.mockResolvedValue({
@@ -1618,6 +2181,26 @@ describe("AnnouncementsServer", () => {
         expect(responseData.items[0].status).toBe("draft");
         // tags come back as english NAMES from the controller — passed through verbatim.
         expect(responseData.items[0].tags).toEqual(["gpu", "maintenance"]);
+      });
+
+      it("leaves where_to_share out when /mine sends a non-array value, without failing the read", async () => {
+        mockDrupalAuth.get.mockResolvedValueOnce({
+          items: [
+            { uuid: "a-1", nid: 1, title: "Bad share", where_to_share: "Announcements page" },
+            { uuid: "a-2", nid: 2, title: "Good share", where_to_share: ["announcements_page"] },
+          ],
+        });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: { name: "get_my_announcements", arguments: {} },
+        });
+
+        expect(result.isError).toBeFalsy();
+        const responseData = JSON.parse((result.content[0] as TextContent).text);
+        expect(responseData.items).toHaveLength(2);
+        expect(responseData.items[0]).not.toHaveProperty("where_to_share");
+        expect(Array.isArray(responseData.items[1].where_to_share)).toBe(true);
       });
 
       // An expired Drupal session arrives as a 3xx CILogon bounce. The shared
@@ -1976,6 +2559,7 @@ describe("AnnouncementsServer", () => {
         expect(responseData.affiliations).toContain("Community");
         expect(responseData.where_to_share_options).toHaveLength(4);
         expect(responseData.guidance).toContain("coordinator");
+        expect(responseData.guidance).toContain("preview");
       });
 
       it("should indicate non-coordinator when views returns no affinity groups", async () => {
@@ -1995,6 +2579,9 @@ describe("AnnouncementsServer", () => {
         expect(responseData.is_coordinator).toBe(false);
         expect(responseData.affinity_groups).toHaveLength(0);
         expect(responseData.guidance).toContain("not a coordinator");
+        expect(responseData.guidance).toContain("preview");
+        expect(responseData.guidance).toContain("Announcements page");
+        expect(responseData.guidance).toContain("Bi-Weekly Digest");
       });
 
       it("should fail without acting user", async () => {

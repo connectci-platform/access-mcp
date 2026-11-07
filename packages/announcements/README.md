@@ -57,11 +57,10 @@ search_announcements({ query: "workshop", tags: "training", limit: 10 })
 Get user context and available options before creating an announcement. **Call this first** when creating announcements.
 
 **Returns:**
-- `tags`: Available tags for announcements
 - `affinity_groups`: Groups the user coordinates (empty if not a coordinator)
-- `is_coordinator`: Boolean - whether user can associate announcements with affinity groups
+- `is_coordinator`: Boolean - whether the user coordinates at least one affinity group
 - `affiliations`: Available affiliation options ("ACCESS Collaboration", "Community")
-- `where_to_share_options`: Available sharing options (for coordinators)
+- `where_to_share_options`: All sharing options; "Affinity Group page" and "Email to Affinity Group" need an affinity group the user is allowed to post to
 
 ### `create_announcement`
 
@@ -74,10 +73,10 @@ Create a new ACCESS announcement (saved as draft for staff review).
 | `body` | string | Yes | Full content. HTML supported (`<p>`, `<a>`, `<strong>`, `<em>`, `<ul>`, `<li>`) |
 | `summary` | string | Yes | Brief teaser (1-2 sentences) for listings |
 | `tags` | array | No | Tag names to categorize the announcement |
-| `affiliation` | string | No | "ACCESS Collaboration" or "Community" (default) |
-| `affinity_group` | string | No | Group name/UUID (coordinators only) |
+| `affiliation` | string | No | "ACCESS Collaboration" or "Community". Defaults to "Community" when omitted |
+| `affinity_group` | string | No | Group name/UUID (a group the user is allowed to post to; administrators and news managers name it directly, as `get_announcement_context` lists only coordinated groups) |
 | `external_link` | object | No | `{ uri: "https://...", title: "Link text" }` |
-| `where_to_share` | array | No | Where to publish: "Announcements page", "Bi-Weekly Digest" (all users), "Affinity Group page", "Email to Affinity Group" (coordinators only) |
+| `where_to_share` | array | No | Where to publish: "Announcements page", "Bi-Weekly Digest" (all users), "Affinity Group page", "Email to Affinity Group" (both require an `affinity_group` the user is allowed to post to). Omit (or pass null) for the defaults "Announcements page" + "Bi-Weekly Digest", which are sent explicitly; duplicates are removed (first occurrence kept); an empty array or a non-array value is rejected |
 
 **Returns:** `{ success, uuid, title, edit_url }`
 
@@ -93,9 +92,12 @@ Update an existing announcement you own.
 | `body` | string | No | New body content |
 | `summary` | string | No | New summary |
 | `tags` | array | No | New tags |
-| `affinity_group` | string | No | New affinity group |
+| `affinity_group` | string | No | New affinity group. Replaces all of the announcement's affinity groups |
 | `external_link` | object | No | New external link |
-| `where_to_share` | array | No | Where to publish (see create_announcement for options) |
+| `affiliation` | string | No | New affiliation: "ACCESS Collaboration" or "Community" (only if changing) |
+| `where_to_share` | array | No | Where to publish (see create_announcement for options). Replaces the whole set of sharing options, so list every option to keep; when `get_my_announcements` returns `where_to_share`, start from that list and show the user the full resulting list before updating. Duplicates are removed (first occurrence kept). An empty array is rejected. "Affinity Group page" and "Email to Affinity Group" only take effect if the announcement has an affinity group; the tool does not check this |
+
+Calling it with no fields to change returns an error without contacting Drupal.
 
 **Returns:** `{ success, uuid, title, edit_url }`
 
@@ -120,9 +122,11 @@ List all announcements created by the authenticated user.
 **Parameters:**
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `limit` | number | Max results (default: 50) |
+| `limit` | number | Max results (default: 25) |
 
-**Returns:** `{ total, items: [{ uuid, nid, title, status, created, published_date, summary, edit_url }] }`
+**Returns:** `{ total, items: [{ uuid, nid, title, status, created, published_date, summary, tags, edit_url }] }`
+
+When available, each item also includes `affiliation` (passed as is, including null), `where_to_share` (labels such as "Announcements page"; unknown values pass through unchanged and cannot be sent back to create or update, which reject them) and `affinity_groups` (`[{ uuid, title }]`). The keys are left out when Drupal does not provide them.
 
 ## Installation
 
