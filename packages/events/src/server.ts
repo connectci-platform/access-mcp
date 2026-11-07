@@ -1614,6 +1614,9 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
         executed: false,
         data: {
           outcome_if_confirmed: data?.outcome_if_confirmed,
+          ...(data?.seats_remaining != null && {
+            seats_remaining: data.seats_remaining,
+          }),
           ...(data?.waitlisted_count != null && {
             waitlisted_count: data.waitlisted_count,
           }),
