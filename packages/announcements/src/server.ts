@@ -22,6 +22,23 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
 
+const WHERE_TO_SHARE_LABELS = [
+  "Announcements page",
+  "Bi-Weekly Digest",
+  "Affinity Group page",
+  "Email to Affinity Group",
+] as const;
+
+const AFFILIATIONS = ["ACCESS Collaboration", "Community"] as const;
+const DEFAULT_AFFILIATION = "Community";
+const DEFAULT_WHERE_TO_SHARE: readonly (typeof WHERE_TO_SHARE_LABELS)[number][] = [
+  "Announcements page",
+  "Bi-Weekly Digest",
+];
+
+// Drupal values of the options that only make sense with an affinity group.
+const AFFINITY_ONLY_VALUES = new Set(["on_your_affinity_group_page", "email_to_your_affinity_group"]);
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -78,6 +95,7 @@ interface UpdateAnnouncementArgs {
   summary?: string;
   published_date?: string;
   tags?: string[];
+  affiliation?: string;
   affinity_group?: string;
   external_link?: { uri: string; title?: string };
   where_to_share?: string[];
@@ -218,11 +236,10 @@ BEFORE CALLING:
    - body (required): Full content with details, dates, links. HTML supported.
    - summary (required): 1-2 sentence teaser for listings
    - tags (required): Call suggest_tags with the body text, then pass the returned english tag NAMES (the "name" field) as the tags array. Never pass ids or uuids.
-   - affiliation (optional): "ACCESS Collaboration" or "Community" (default)
+   - affiliation (optional): "ACCESS Collaboration" or "Community". Defaults to "Community" when not given; the preview always shows it.
+   - where_to_share (optional): defaults to "Announcements page" + "Bi-Weekly Digest"; the preview always shows it.
    - external_link (if relevant): URL and link text for external references
-3. IF user is a coordinator (check get_announcement_context response):
-   - affinity_group: Ask which group to associate with
-   - where_to_share: Ask preferences (defaults: Announcements page + Bi-Weekly Digest)
+3. Do not ask separate questions about affiliation, where to share, or affinity group. Fill the defaults and let the user change them in the preview.
 
 WORKFLOW:
 If user pastes content (event description, draft text, etc.):
@@ -230,18 +247,16 @@ If user pastes content (event description, draft text, etc.):
 2. Parse the pasted content to extract title, body, dates, links, etc.
 3. Call suggest_tags with the body text — include returned tag names in the tags parameter
 4. Call suggest_summary with the body text if no summary provided
-5. Ask only about missing/unclear fields
-6. If coordinator: ask about affinity group and where to share
-7. Show preview (including tags) and get confirmation
-8. Create the announcement with ALL fields including tags
+5. Ask only about missing/unclear title, body or summary. Affiliation, where to share and affinity group are never missing: they have defaults the user can change in the preview. Affinity Group defaults to "None" unless the user named a group.
+6. Show preview (including tags, affiliation, and where it will be shared) and get confirmation
+7. Create the announcement with ALL fields including tags
 
 If user describes what they want conversationally:
 1. Call get_announcement_context
-2. Guide them through providing title, body, summary
+2. Guide them through providing title, body, summary (not affiliation, sharing or affinity group, which have defaults the user changes in the preview; Affinity Group defaults to "None" unless they named a group)
 3. Call suggest_tags with the body text — include returned tag names in the tags parameter
-4. If coordinator: ask about affinity group and where to share
-5. Show preview (including tags) and get confirmation
-6. Create the announcement with ALL fields including tags
+4. Show preview (including tags, affiliation, and where it will be shared) and get confirmation
+5. Create the announcement with ALL fields including tags
 
 IMPORTANT: Always pass the tags parameter when creating. Tags are english NAMES (strings) taken verbatim from the "name" field of suggest_tags — pass them as the tags array. Never pass ids or uuids; the tool resolves names internally.
 
@@ -253,15 +268,17 @@ PREVIEW FORMAT (show before creating):
 [body content, truncate if very long]
 
 **Tags:** [tag1, tag2, ...] or "None"
-**Affiliation:** [affiliation or "Community (default)"]
+**Affiliation:** [chosen affiliation, or "Community" by default]
+**Share to:** [chosen options, or "Announcements page, Bi-Weekly Digest" by default]
 **External Link:** [link text](url) or omit if none
-[If coordinator:]
+[If the user is a coordinator or an affinity group is chosen:]
 **Affinity Group:** [group name] or "None"
-**Share to:** [list of selected options]
 ---
-Ask "Does this look correct?" before creating.
+After the preview, invite the user to change the affiliation or where it is shared right there, and ask "Does this look correct?" before creating.
+Affiliation options: "ACCESS Collaboration" or "Community". Sharing options: "Announcements page" and "Bi-Weekly Digest" are open to everyone. "Affinity Group page" and "Email to Affinity Group" need an affinity group the user is allowed to post to (a coordinator of it, or an administrator or news manager, who can post to any group); the group is chosen in the preview too. get_announcement_context lists only the groups the user coordinates, so an administrator or news manager sees an empty list and names the group directly.
+Pass affiliation and where_to_share exactly as the confirmed preview showed them.
 
-Returns the write envelope {action:"create", status:"created", executed:true, data:{uuid, nid, title, edit_url, moderation_state}} (a "warning" is added when some tags could not be matched). Read "status" and "executed"; the created draft's fields are under "data".
+Returns the write envelope {action:"create", status:"created", executed:true, data:{uuid, nid, title, edit_url, moderation_state}} (a "warning" is added when some tags could not be matched; if one is returned, tell the user which tags were skipped). Read "status" and "executed"; the created draft's fields are under "data".
 ALWAYS display data.edit_url to the user so they can review their draft in Drupal.`,
         inputSchema: {
           type: "object",
@@ -291,13 +308,13 @@ ALWAYS display data.edit_url to the user so they can review their draft in Drupa
             },
             affiliation: {
               type: "string",
-              description: "Source of announcement",
-              enum: ["ACCESS Collaboration", "Community"],
+              description: `Source of announcement. Defaults to ${DEFAULT_AFFILIATION} when omitted.`,
+              enum: [...AFFILIATIONS],
             },
             affinity_group: {
               type: "string",
               description:
-                "Affinity group name or UUID. User must be coordinator of the group. Use list_affinity_groups to find valid groups.",
+                "Affinity group name or UUID. User must be allowed to post to the group (a coordinator of it, or an administrator or news manager). Use get_announcement_context to see the groups you coordinate; an administrator or news manager names the group directly.",
             },
             external_link: {
               type: "object",
@@ -310,9 +327,9 @@ ALWAYS display data.edit_url to the user so they can review their draft in Drupa
             },
             where_to_share: {
               type: "array",
-              items: { type: "string" },
+              items: { type: "string", enum: [...WHERE_TO_SHARE_LABELS] },
               description:
-                "Where to share the announcement. Defaults to 'Announcements page' + 'Bi-Weekly Digest'. Options: 'Announcements page', 'Bi-Weekly Digest', 'Affinity Group page', 'Email to Affinity Group'",
+                "Where to share the announcement. Omit for the defaults 'Announcements page' + 'Bi-Weekly Digest'; an empty array is rejected. 'Affinity Group page' and 'Email to Affinity Group' require affinity_group.",
             },
           },
           required: ["title", "body", "summary"],
@@ -330,7 +347,7 @@ BEFORE CALLING:
 3. Only include fields that are changing
 4. Show a preview of the changes and ask for confirmation before updating
 
-Returns the write envelope {action:"update", status:"updated", executed:true, data:{uuid, title, edit_url}} (a "warning" is added when some tags could not be matched). Read "status" and "executed"; the updated fields are under "data".
+Returns the write envelope {action:"update", status:"updated", executed:true, data:{uuid, title, edit_url}} (a "warning" is added when some tags could not be matched; if one is returned, tell the user which tags were skipped). Read "status" and "executed"; the updated fields are under "data".
 ALWAYS display data.edit_url to the user so they can review changes in Drupal.`,
         inputSchema: {
           type: "object",
@@ -361,9 +378,15 @@ ALWAYS display data.edit_url to the user so they can review changes in Drupal.`,
               description:
                 'New tags — replaces ALL existing tags (only if changing). English tag NAMES as strings, taken verbatim from the "name" field of suggest_tags. Never pass ids or uuids.',
             },
+            affiliation: {
+              type: "string",
+              description: "New affiliation (only if changing)",
+              enum: [...AFFILIATIONS],
+            },
             affinity_group: {
               type: "string",
-              description: "Affinity group name or UUID. User must be coordinator.",
+              description:
+                "Affinity group name or UUID. User must be allowed to post to the group (a coordinator of it, or an administrator or news manager). Replaces all of the announcement's affinity groups (only if changing). get_announcement_context lists only coordinated groups; an administrator or news manager names the group directly.",
             },
             external_link: {
               type: "object",
@@ -376,9 +399,9 @@ ALWAYS display data.edit_url to the user so they can review changes in Drupal.`,
             },
             where_to_share: {
               type: "array",
-              items: { type: "string" },
+              items: { type: "string", enum: [...WHERE_TO_SHARE_LABELS] },
               description:
-                "Where to share the announcement. Options: 'Announcements page', 'Bi-Weekly Digest', 'Affinity Group page', 'Email to Affinity Group'",
+                "Where to share the announcement (only if changing). Replaces the whole set of sharing options, so list every option to keep. When get_my_announcements returns where_to_share for this announcement, the known labels in it can be reused, but values it shows as unknown are shown as is and cannot be sent back; they are rejected here. Show the user the full resulting list before updating; an empty array is rejected. 'Affinity Group page' and 'Email to Affinity Group' only take effect if the announcement has an affinity group; this tool does not check that.",
             },
           },
           required: ["uuid"],
@@ -428,6 +451,8 @@ Returns the write envelope {action:"delete", status, executed, data}. "confirmed
 
 Returns announcements with: uuid, nid, title, status (draft/published), created date, published_date, summary, tags (english NAMES, ready to display or reuse as the tags parameter for update_announcement), edit_url
 
+Each item also carries, when available, affiliation, where_to_share (known values as labels; unknown values are shown as is and cannot be sent back to create/update) and affinity_groups ([{uuid, title}]); the keys are absent when Drupal does not provide them.
+
 Use this to:
 - Find announcement UUIDs for update/delete operations
 - Check status of submitted announcements
@@ -460,10 +485,10 @@ Use this to:
         description: `Get user context and options BEFORE creating an announcement. Call this first.
 
 Returns:
-- affinity_groups: Groups the user coordinates (empty if not a coordinator)
-- is_coordinator: Boolean - if true, ask about affinity_group and where_to_share
+- affinity_groups: Groups the user coordinates (empty if not a coordinator; administrators and news managers also get an empty list and name the group directly)
+- is_coordinator: Boolean - if true, the preview also lets the user pick an affinity_group and the two affinity-group sharing options
 - affiliations: Available affiliation options
-- where_to_share_options: Available sharing options (only relevant for coordinators)
+- where_to_share_options: All sharing options; 'Affinity Group page' and 'Email to Affinity Group' need an affinity group the user is allowed to post to. The preview shows affiliation and sharing for everyone.
 
 Does NOT return tags — use suggest_tags after the user provides content.`,
         inputSchema: {
@@ -592,11 +617,13 @@ Once you provide the content, I'll suggest relevant tags and generate a summary 
 
 5. **Affiliation** - "ACCESS Collaboration" or "Community" (default)
 
-6. **External Link** - If referencing external content
+6. **Where to share** - "Announcements page" and "Bi-Weekly Digest" by default; the preview shows the choice and you can change it there
+
+7. **External Link** - If referencing external content
 
 **For Affinity Group Coordinators:**
 - Associate with your affinity group
-- Choose where to share (Announcements page, Bi-Weekly Digest, Affinity Group page, Email to group)
+- Also share to your Affinity Group page or by email to the group (needs the group above)
 
 **Important:** Announcements are created as **drafts** requiring staff review. You'll receive an edit URL.
 
@@ -637,6 +664,9 @@ Use \`update_announcement\` with the announcement's UUID to modify:
 - Summary
 - Published date
 - Tags
+- Affiliation
+- Where to share
+- Affinity group
 
 **Delete an Announcement**
 Use \`delete_announcement\` with the UUID to remove an announcement you own.
@@ -693,6 +723,17 @@ Which would you like to do?`,
       // "Drupal API error: 307 Temporary Redirect".
       const authError = this.drupalAuthError(error);
       if (authError) return authError;
+      // The custom controller refuses with {error: <code>, message: <text>}, which
+      // the shared layer does not parse; without this users only see the status line.
+      // Only this controller's 4xx text is shown; its 5xx body can carry internal
+      // exception text. (5xx text in the JSON:API errors shape can still surface
+      // through the shared layer's message.)
+      if (error instanceof DrupalApiError && error.status >= 400 && error.status < 500) {
+        const body = error.body as { error?: unknown; message?: unknown } | null;
+        if (typeof body?.error === "string" && typeof body?.message === "string" && body.message !== "") {
+          return this.errorResponse(body.message, { code: body.error });
+        }
+      }
       const message = error instanceof Error ? error.message : String(error);
       return this.errorResponse(message);
     }
@@ -906,6 +947,20 @@ Which would you like to do?`,
     const actingUser = this.getActingUserAccessId();
     const auth = this.getDrupalAuth();
 
+    // Validate before any lookup so a rejected request does no network work.
+    const affiliation = this.parseAffiliation(args.affiliation) ?? DEFAULT_AFFILIATION;
+    const explicitShare = this.parseWhereToShare(args.where_to_share);
+    if (
+      explicitShare &&
+      !args.affinity_group &&
+      explicitShare.some((v) => AFFINITY_ONLY_VALUES.has(v))
+    ) {
+      throw new Error(
+        "An affinity group is required for 'Affinity Group page' and 'Email to Affinity Group'. Provide affinity_group or remove those options."
+      );
+    }
+    const whereToShare = explicitShare ?? this.normalizeWhereToShare([...DEFAULT_WHERE_TO_SHARE]);
+
     // Build a FLAT request body for the custom Drupal controller at
     // POST /api/2.3/announcements. The controller runs the write AS the acting
     // user (per-user permissions) and json_decodes the raw body — no JSON:API
@@ -929,9 +984,8 @@ Which would you like to do?`,
       // Default to today
       : new Date().toISOString().split("T")[0];
 
-    if (args.affiliation) {
-      requestBody.field_affiliation = args.affiliation;
-    }
+    // Drupal has no default for this field; omitting it would save blank.
+    requestBody.field_affiliation = affiliation;
 
     // Look up tag UUIDs if tags provided (controller resolves field_tags by uuid)
     const unmatchedTags: string[] = [];
@@ -951,7 +1005,7 @@ Which would you like to do?`,
         requestBody.field_affinity_group_node = [groupUuid];
       } else {
         throw new Error(
-          `Affinity group not found: ${args.affinity_group}. Use list_affinity_groups to see groups you coordinate.`
+          `Affinity group not found: ${args.affinity_group}. Use get_announcement_context to see groups you coordinate.`
         );
       }
     }
@@ -964,10 +1018,8 @@ Which would you like to do?`,
       };
     }
 
-    // Add where to share (defaults handled by Drupal if not provided)
-    if (args.where_to_share && args.where_to_share.length > 0) {
-      requestBody.field_choose_where_to_share_this = this.normalizeWhereToShare(args.where_to_share);
-    }
+    // Sent explicitly so the saved value always matches what the preview showed.
+    requestBody.field_choose_where_to_share_this = whereToShare;
 
     const result = await auth.post(actingUser, "/api/2.3/announcements", requestBody);
 
@@ -1003,6 +1055,9 @@ Which would you like to do?`,
     const actingUser = this.getActingUserAccessId();
     const auth = this.getDrupalAuth();
 
+    const affiliation = this.parseAffiliation(args.affiliation);
+    const whereToShare = this.parseWhereToShare(args.where_to_share);
+
     // Build a FLAT body of only the changed fields for the custom controller at
     // PATCH /api/2.3/announcements/{uuid}. The controller applies only the fields
     // sent (no fetch-and-preserve pre-read) and reads Drupal machine-name keys;
@@ -1015,12 +1070,12 @@ Which would you like to do?`,
       requestBody.title = args.title;
     }
 
-    if (args.body !== undefined || args.summary !== undefined) {
+    if (args.body != null || args.summary != null) {
       const bodyField: { value?: string; summary?: string } = {};
-      if (args.body !== undefined) {
+      if (args.body != null) {
         bodyField.value = args.body;
       }
-      if (args.summary !== undefined) {
+      if (args.summary != null) {
         bodyField.summary = args.summary;
       }
       requestBody.body = bodyField;
@@ -1028,6 +1083,10 @@ Which would you like to do?`,
 
     if (args.published_date) {
       requestBody.field_published_date = args.published_date;
+    }
+
+    if (affiliation) {
+      requestBody.field_affiliation = affiliation;
     }
 
     // Update tags if provided (controller resolves field_tags by uuid)
@@ -1047,7 +1106,7 @@ Which would you like to do?`,
         requestBody.field_affinity_group_node = [groupUuid];
       } else {
         throw new Error(
-          `Affinity group not found: ${args.affinity_group}. Use list_affinity_groups to see groups you coordinate.`
+          `Affinity group not found: ${args.affinity_group}. Use get_announcement_context to see groups you coordinate.`
         );
       }
     }
@@ -1061,8 +1120,19 @@ Which would you like to do?`,
     }
 
     // Update where to share if provided
-    if (args.where_to_share && args.where_to_share.length > 0) {
-      requestBody.field_choose_where_to_share_this = this.normalizeWhereToShare(args.where_to_share);
+    if (whereToShare) {
+      requestBody.field_choose_where_to_share_this = whereToShare;
+    }
+
+    if (Object.keys(requestBody).length === 0) {
+      if (unmatchedTags.length > 0) {
+        throw new Error(
+          `No matching tags found for: ${unmatchedTags.join(", ")}. Nothing to update. Use suggest_tags to find valid tag names.`
+        );
+      }
+      throw new Error(
+        "No fields to update. Provide at least one of title, body, summary, published_date, tags, affiliation, affinity_group, external_link or where_to_share."
+      );
     }
 
     const result = await auth.patch(
@@ -1222,6 +1292,9 @@ Which would you like to do?`,
         // Tags are english NAMES from the controller (never ids) — pass through.
         tags?: string[];
         edit_url?: string | null;
+        affiliation?: string | null;
+        where_to_share?: string[];
+        affinity_groups?: { uuid: string; title: string }[];
       }) => ({
         uuid: item.uuid,
         nid: item.nid,
@@ -1232,6 +1305,16 @@ Which would you like to do?`,
         summary: item.summary,
         tags: item.tags ?? [],
         edit_url: item.edit_url,
+        // Optional: keys are left out entirely when Drupal does not send them.
+        ...(item.affiliation !== undefined && { affiliation: item.affiliation }),
+        ...(Array.isArray(item.where_to_share) && {
+          where_to_share: item.where_to_share.map((v) =>
+            Object.hasOwn(AnnouncementsServer.WHERE_TO_SHARE_LABEL_BY_VALUE, v)
+              ? AnnouncementsServer.WHERE_TO_SHARE_LABEL_BY_VALUE[v]
+              : v
+          ),
+        }),
+        ...(item.affinity_groups !== undefined && { affinity_groups: item.affinity_groups }),
       })
     );
 
@@ -1305,22 +1388,22 @@ Which would you like to do?`,
           text: JSON.stringify({
             affinity_groups: affinityGroups,
             is_coordinator: isCoordinator,
-            affiliations: ["ACCESS Collaboration", "Community"],
+            affiliations: [...AFFILIATIONS],
             where_to_share_options: [
               { value: "Announcements page", description: "Public announcements listing" },
               { value: "Bi-Weekly Digest", description: "ACCESS Support bi-weekly email digest" },
               {
                 value: "Affinity Group page",
-                description: "Your affinity group's page (coordinators only)",
+                description: "Your affinity group's page (needs an affinity group you are allowed to post to)",
               },
               {
                 value: "Email to Affinity Group",
-                description: "Direct email to affinity group members (coordinators only)",
+                description: "Direct email to affinity group members (needs an affinity group you are allowed to post to)",
               },
             ],
             guidance: isCoordinator
-              ? "User is an affinity group coordinator. Ask about affinity_group association and where_to_share preferences."
-              : "User is not a coordinator. Standard announcement fields apply.",
+              ? "User is an affinity group coordinator. The preview shows affiliation and sharing with defaults filled in; they can also choose an affinity_group there and pick 'Affinity Group page' or 'Email to Affinity Group' (these need a group). Do not ask separate questions."
+              : "User is not a coordinator. The preview still shows affiliation and sharing with defaults filled in ('Announcements page' and 'Bi-Weekly Digest' are open to everyone); 'Affinity Group page' and 'Email to Affinity Group' need an affinity group the user is allowed to post to.",
           }),
         },
       ],
@@ -1445,17 +1528,56 @@ Which would you like to do?`,
     email_to_your_affinity_group: "email_to_your_affinity_group",
   };
 
-  private normalizeWhereToShare(values: string[]): string[] {
-    return values.map((v) => {
-      const normalized = AnnouncementsServer.WHERE_TO_SHARE_MAP[v.toLowerCase()];
+  // Unknown values are not in this map; callers pass them through unchanged.
+  private static WHERE_TO_SHARE_LABEL_BY_VALUE: Record<string, string> = Object.fromEntries(
+    WHERE_TO_SHARE_LABELS.map((label) => [
+      AnnouncementsServer.WHERE_TO_SHARE_MAP[label.toLowerCase()],
+      label,
+    ])
+  );
+
+  // null means omitted (MCP clients often send explicit nulls); anything else must be a non-empty array.
+  private parseWhereToShare(value: unknown): string[] | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (!Array.isArray(value)) {
+      throw new Error(
+        `where_to_share must be an array of options, got ${typeof value}. Valid options: ${WHERE_TO_SHARE_LABELS.map((l) => `'${l}'`).join(", ")}`
+      );
+    }
+    if (value.length === 0) {
+      throw new Error(
+        "where_to_share must not be empty. List at least one option, or omit the field."
+      );
+    }
+    return this.normalizeWhereToShare(value);
+  }
+
+  private parseAffiliation(value: unknown): string | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== "string" || !(AFFILIATIONS as readonly string[]).includes(value)) {
+      throw new Error(
+        `Invalid affiliation: ${JSON.stringify(value)}. Valid values: ${AFFILIATIONS.map((a) => `"${a}"`).join(", ")}`
+      );
+    }
+    return value;
+  }
+
+  private normalizeWhereToShare(values: unknown[]): string[] {
+    const mapped = values.map((v) => {
+      const key = typeof v === "string" ? v.toLowerCase() : undefined;
+      const normalized =
+        key !== undefined && Object.hasOwn(AnnouncementsServer.WHERE_TO_SHARE_MAP, key)
+          ? AnnouncementsServer.WHERE_TO_SHARE_MAP[key]
+          : undefined;
       if (!normalized) {
         throw new Error(
           `Invalid where_to_share value: "${v}". ` +
-            `Valid options: 'Announcements page', 'Bi-Weekly Digest', 'Affinity Group page', 'Email to Affinity Group'`
+            `Valid options: ${WHERE_TO_SHARE_LABELS.map((l) => `'${l}'`).join(", ")}`
         );
       }
       return normalized;
     });
+    return [...new Set(mapped)];
   }
 
   /**
