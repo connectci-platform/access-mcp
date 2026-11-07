@@ -49,3 +49,30 @@ describe("deploy invariant: ACTING_USER is unset on mixed servers", () => {
     );
   });
 });
+
+// xdmod-mcp-data is Python and has no OpenTelemetry SDK, so the settings would do nothing there.
+describe("deploy invariant: Node MCP servers can export telemetry", () => {
+  const compose = readFileSync(resolve(root, "docker-compose.prod.yml"), "utf8");
+  const services = compose
+    .split(/^(?= {2}[a-z][a-z0-9-]*:\n)/m)
+    .filter((block) => block.startsWith("  mcp-"))
+    .filter((block) => !/^ {2}mcp-(xdmod-data|usage-db|usage-backup):/.test(block));
+
+  it("finds the Node MCP servers", () => {
+    expect(services).toHaveLength(12);
+  });
+
+  it.each(services.map((block) => [block.split(":")[0].trim(), block]))(
+    "%s receives the telemetry settings",
+    (_name, block) => {
+      for (const setting of [
+        "OTEL_ENABLED=${OTEL_ENABLED:-false}",
+        "OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}",
+        "OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}",
+        "HONEYCOMB_DATASET=${HONEYCOMB_DATASET:-access-ci-mcp}",
+      ]) {
+        expect(block).toContain(setting);
+      }
+    }
+  );
+});

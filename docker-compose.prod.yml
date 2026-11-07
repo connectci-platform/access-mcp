@@ -68,6 +68,10 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - OTEL_ENABLED=${OTEL_ENABLED:-false}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
+      - HONEYCOMB_DATASET=${HONEYCOMB_DATASET:-access-ci-mcp}
       - MCP_PATH_PREFIX=/affinity-groups
       - MCP_USAGE_DB_URL=${MCP_USAGE_DB_URL:-postgresql://mcp_usage_app:mcpusage@mcp-usage-db:5432/mcp_usage}
     deploy:
@@ -83,6 +87,10 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - OTEL_ENABLED=${OTEL_ENABLED:-false}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
+      - HONEYCOMB_DATASET=${HONEYCOMB_DATASET:-access-ci-mcp}
       - MCP_PATH_PREFIX=/compute-resources
       - MCP_USAGE_DB_URL=${MCP_USAGE_DB_URL:-postgresql://mcp_usage_app:mcpusage@mcp-usage-db:5432/mcp_usage}
     deploy:
@@ -98,6 +106,10 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - OTEL_ENABLED=${OTEL_ENABLED:-false}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
+      - HONEYCOMB_DATASET=${HONEYCOMB_DATASET:-access-ci-mcp}
       - MCP_PATH_PREFIX=/system-status
       - MCP_USAGE_DB_URL=${MCP_USAGE_DB_URL:-postgresql://mcp_usage_app:mcpusage@mcp-usage-db:5432/mcp_usage}
     deploy:
@@ -113,6 +125,10 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - OTEL_ENABLED=${OTEL_ENABLED:-false}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
+      - HONEYCOMB_DATASET=${HONEYCOMB_DATASET:-access-ci-mcp}
       - SDS_API_KEY=${SDS_API_KEY}
       - MCP_PATH_PREFIX=/software-discovery
       - MCP_USAGE_DB_URL=${MCP_USAGE_DB_URL:-postgresql://mcp_usage_app:mcpusage@mcp-usage-db:5432/mcp_usage}
@@ -129,6 +145,10 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - OTEL_ENABLED=${OTEL_ENABLED:-false}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
+      - HONEYCOMB_DATASET=${HONEYCOMB_DATASET:-access-ci-mcp}
       - MCP_PATH_PREFIX=/xdmod
       - MCP_USAGE_DB_URL=${MCP_USAGE_DB_URL:-postgresql://mcp_usage_app:mcpusage@mcp-usage-db:5432/mcp_usage}
     deploy:
@@ -144,6 +164,10 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - OTEL_ENABLED=${OTEL_ENABLED:-false}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
+      - HONEYCOMB_DATASET=${HONEYCOMB_DATASET:-access-ci-mcp}
       - ACCESS_MCP_SERVICES=${ACCESS_MCP_SERVICES}
       # allocations is keyed (requireApiKey) for its user-scoped rp-account
       # reads; it needs the inter-server key to validate incoming calls.
@@ -179,6 +203,10 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - OTEL_ENABLED=${OTEL_ENABLED:-false}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
+      - HONEYCOMB_DATASET=${HONEYCOMB_DATASET:-access-ci-mcp}
       - MCP_PATH_PREFIX=/nsf-awards
       - MCP_USAGE_DB_URL=${MCP_USAGE_DB_URL:-postgresql://mcp_usage_app:mcpusage@mcp-usage-db:5432/mcp_usage}
     deploy:
@@ -194,6 +222,10 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - OTEL_ENABLED=${OTEL_ENABLED:-false}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
+      - HONEYCOMB_DATASET=${HONEYCOMB_DATASET:-access-ci-mcp}
       - DRUPAL_API_URL=${DRUPAL_API_URL:-https://support.access-ci.org}
       # The acting-user gate requires the mcp_service role, which only the
       # mcp_service account (uid 67615) holds. The generic ${DRUPAL_USERNAME}
@@ -218,6 +250,10 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - OTEL_ENABLED=${OTEL_ENABLED:-false}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
+      - HONEYCOMB_DATASET=${HONEYCOMB_DATASET:-access-ci-mcp}
       - ACCESS_AI_API_KEY=${ACCESS_AI_API_KEY}
       - MCP_PATH_PREFIX=/documentation
     deploy:
@@ -233,6 +269,10 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - OTEL_ENABLED=${OTEL_ENABLED:-false}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
+      - HONEYCOMB_DATASET=${HONEYCOMB_DATASET:-access-ci-mcp}
       - DRUPAL_API_URL=${DRUPAL_API_URL:-https://support.access-ci.org}
       # Drupal account holding the mcp_service role (required for the
       # X-Acting-User header get_event/register_for_event send — same gate as
@@ -258,6 +298,10 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - OTEL_ENABLED=${OTEL_ENABLED:-false}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
+      - HONEYCOMB_DATASET=${HONEYCOMB_DATASET:-access-ci-mcp}
       - JSM_PROXY_URL=${JSM_PROXY_URL}
       - JSM_DRY_RUN=false
       - MCP_API_KEY=${MCP_API_KEY}
