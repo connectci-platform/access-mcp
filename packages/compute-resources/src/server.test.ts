@@ -120,7 +120,7 @@ describe("ComputeResourcesServer", () => {
 
       expect(toolNames).toContain("search_resources");
       expect(toolNames).toContain("get_resource_hardware");
-      expect(tools).toHaveLength(2);
+      expect(tools).toHaveLength(4);
     });
   });
 

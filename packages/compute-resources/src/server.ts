@@ -18,6 +18,7 @@ import {
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
+import { buildComparison, ResourceDocumentation } from "./resource-documentation.js";
 
 // Interfaces for search_resources tool arguments
 interface SearchResourcesArgs {
@@ -98,6 +99,8 @@ interface ComputeResource {
 }
 
 export class ComputeResourcesServer extends BaseAccessServer {
+  private readonly documentation = new ResourceDocumentation((url) => this.httpClient.get(url));
+
   constructor() {
     super("access-mcp-compute-resources", version, "https://operations-api.access-ci.org");
   }
@@ -199,6 +202,71 @@ export class ComputeResourcesServer extends BaseAccessServer {
           required: ["id"],
         },
       },
+      {
+        name: "get_resource",
+        mutates: false,
+        description:
+          "Get a resource's documented details from " +
+          "https://support.access-ci.org/documentation/resources: login, file transfer, " +
+          "storage, queues, datasets, software and support links. This is the curated source, " +
+          "so prefer it to search_resources and get_resource_hardware for these details, and " +
+          "cite citation_url. Accepts a name or global resource ID. A name covering several " +
+          "resources, such as 'Delta', returns `matches` instead; call again with one of " +
+          "them. A null value means the documentation doesn't cover it, not that the resource " +
+          "lacks it or that anything is wrong. Resources work in different ways (batch " +
+          "clusters, VMs, containers, storage, networks), so don't assume any of them has " +
+          "queues, SSH or wait times. Describe what is documented, point to citation_url, and " +
+          "never fill a gap from general knowledge. details_available false means only the " +
+          "listing could be read. wait_times gives hours per queue and an as_of date when " +
+          "there is reliable data; never estimate one.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            resource: {
+              type: "string",
+              description:
+                "Resource name (e.g., 'ACES', 'Delta GPU') or global resource ID (e.g., 'delta-gpu.ncsa.access-ci.org')",
+            },
+            fields: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "Project the response down to only these fields. Dotted path syntax: 'name', 'citation_url', 'queues[].name', 'login.ssh_hosts'. Use to reduce payload size when you only need specific sections. Omit to receive the full response.",
+            },
+          },
+          required: ["resource"],
+        },
+        _meta: {
+          supportsFieldProjection: true,
+        },
+      },
+      {
+        name: "compare_resources",
+        mutates: false,
+        description:
+          "Compare two or three resources from their documentation: access requirements, " +
+          "login, transfer methods, queues, wait times, storage and software links, with a " +
+          "citation_url for each. Accepts names or global resource IDs. `unresolved` lists names that " +
+          "didn't settle on one resource, with `matches` to choose from when a name covers " +
+          "several, such as 'Delta'. A null value means the documentation doesn't cover it, " +
+          "not that the resource lacks it, so don't present a null next to a value as a " +
+          "difference between resources. Resources work in different ways (batch clusters, " +
+          "VMs, containers, storage, networks). Never estimate a wait time. Use get_resource " +
+          "for the full detail on one resource.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            resources: {
+              type: "array",
+              items: { type: "string" },
+              minItems: 2,
+              maxItems: 3,
+              description: "Two or three resource names or global resource IDs",
+            },
+          },
+          required: ["resources"],
+        },
+      },
     ];
   }
 
@@ -285,12 +353,65 @@ export class ComputeResourcesServer extends BaseAccessServer {
           });
         case "get_resource_hardware":
           return await this.getResourceHardware(toolArgs.id as string);
+        case "get_resource":
+          return await this.getResource(
+            toolArgs.resource as string | undefined,
+            toolArgs.fields as string[] | undefined
+          );
+        case "compare_resources":
+          return await this.compareResources(toolArgs.resources as string[] | undefined);
         default:
           return this.errorResponse(`Unknown tool: ${name}`);
       }
     } catch (error) {
       return this.errorResponse(handleApiError(error));
     }
+  }
+
+  private async getResource(input: string | undefined, fields?: string[]) {
+    if (!input?.trim()) {
+      return this.errorResponse("Provide a resource name or global resource ID");
+    }
+
+    const { resource, matches } = await this.documentation.resolve(input);
+    if (matches?.length === 0) {
+      return this.errorResponse(`Resource not found: '${input}'`, {
+        hint: "Use the name shown at https://support.access-ci.org/documentation/resources",
+      });
+    }
+
+    const result = resource
+      ? projectFields(await this.documentation.describe(resource), fields)
+      : { resource: input, matches };
+    return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+  }
+
+  private async compareResources(inputs: string[] | undefined) {
+    if (!Array.isArray(inputs) || inputs.length < 2 || inputs.length > 3) {
+      return this.errorResponse("Provide two or three resources to compare");
+    }
+
+    const resolved = await Promise.all(
+      inputs.map(async (input) => ({ input, ...(await this.documentation.resolve(input)) }))
+    );
+    const unique = new Set(resolved.flatMap(({ resource }) => resource ?? []));
+    const items = await Promise.all(
+      [...unique].map(async (resource) =>
+        buildComparison(await this.documentation.describe(resource))
+      )
+    );
+    const unresolved = resolved.flatMap(({ input, matches }) =>
+      matches ? [{ resource: input, matches }] : []
+    );
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({ total: items.length, items, unresolved }),
+        },
+      ],
+    };
   }
 
   /**
