@@ -209,7 +209,9 @@ export class EventsServer extends BaseAccessServer {
   private drupalAuth?: DrupalAuthProvider;
 
   constructor() {
-    super("access-mcp-events", version, "https://support.access-ci.org", {
+    // Reads and writes must reach the same site, or event ids from one would be
+    // registered against the other.
+    super("access-mcp-events", version, process.env.DRUPAL_API_URL || "https://support.access-ci.org", {
       requireApiKey: true,
     });
   }

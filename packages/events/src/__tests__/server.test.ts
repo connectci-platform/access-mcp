@@ -4331,3 +4331,28 @@ describe("compactDescription", () => {
     expect(compactDescription("short", 100)).toBe("short");
   });
 });
+
+describe("EventsServer read site", () => {
+  const saved = process.env.DRUPAL_API_URL;
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.DRUPAL_API_URL;
+    else process.env.DRUPAL_API_URL = saved;
+  });
+
+  it("reads from the same site it writes to", () => {
+    process.env.DRUPAL_API_URL = "https://drupal.example.test";
+
+    expect((new EventsServer() as unknown as { baseURL: string }).baseURL).toBe(
+      "https://drupal.example.test"
+    );
+  });
+
+  it("reads from the ACCESS support site by default", () => {
+    delete process.env.DRUPAL_API_URL;
+
+    expect((new EventsServer() as unknown as { baseURL: string }).baseURL).toBe(
+      "https://support.access-ci.org"
+    );
+  });
+});
