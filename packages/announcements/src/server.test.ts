@@ -9,14 +9,16 @@ vi.mock("@access-mcp/shared", async () => {
   const actual = await vi.importActual("@access-mcp/shared");
   return {
     ...actual,
-    DrupalAuthProvider: vi.fn().mockImplementation(() => ({
-      ensureAuthenticated: vi.fn().mockResolvedValue(undefined),
-      getUserUuid: vi.fn().mockReturnValue("user-uuid-123"),
-      get: vi.fn(),
-      post: vi.fn(),
-      patch: vi.fn(),
-      delete: vi.fn(),
-    })),
+    DrupalAuthProvider: vi.fn().mockImplementation(function () {
+      return {
+        ensureAuthenticated: vi.fn().mockResolvedValue(undefined),
+        getUserUuid: vi.fn().mockReturnValue("user-uuid-123"),
+        get: vi.fn(),
+        post: vi.fn(),
+        patch: vi.fn(),
+        delete: vi.fn(),
+      };
+    }),
   };
 });
 
@@ -661,7 +663,9 @@ describe("AnnouncementsServer", () => {
       };
 
       // Mock the DrupalAuthProvider constructor to return our mock
-      (DrupalAuthProvider as unknown as Mock).mockImplementation(() => mockDrupalAuth);
+      (DrupalAuthProvider as unknown as Mock).mockImplementation(function () {
+        return mockDrupalAuth;
+      });
     });
 
     afterEach(() => {
@@ -2451,7 +2455,9 @@ describe("AnnouncementsServer", () => {
         patch: vi.fn(),
         delete: vi.fn(),
       };
-      (DrupalAuthProvider as unknown as Mock).mockImplementation(() => mockDrupalAuth);
+      (DrupalAuthProvider as unknown as Mock).mockImplementation(function () {
+        return mockDrupalAuth;
+      });
     });
 
     afterEach(() => {

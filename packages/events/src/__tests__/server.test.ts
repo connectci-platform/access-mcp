@@ -14,13 +14,15 @@ vi.mock("@access-mcp/shared", async (importOriginal) => {
     // Re-export the real DrupalApiError explicitly so tests can `new` it (the
     // cancel error-branch tests throw a real DrupalApiError at auth.delete).
     DrupalApiError: actual.DrupalApiError,
-    DrupalAuthProvider: vi.fn().mockImplementation(() => ({
-      ensureAuthenticated: vi.fn().mockResolvedValue(undefined),
-      get: mockGet,
-      delete: mockDelete,
-      requestRaw: mockRequestRaw,
-      setActingUser: mockSetActingUser,
-    })),
+    DrupalAuthProvider: vi.fn().mockImplementation(function () {
+      return {
+        ensureAuthenticated: vi.fn().mockResolvedValue(undefined),
+        get: mockGet,
+        delete: mockDelete,
+        requestRaw: mockRequestRaw,
+        setActingUser: mockSetActingUser,
+      };
+    }),
   };
 });
 import { EventsServer } from "../server.js";

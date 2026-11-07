@@ -6,10 +6,12 @@ vi.mock("@access-mcp/shared", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@access-mcp/shared")>();
   return {
     ...actual,
-    DrupalAuthProvider: vi.fn().mockImplementation(() => ({
-      ensureAuthenticated: vi.fn().mockResolvedValue(undefined),
-      get: mockGet,
-    })),
+    DrupalAuthProvider: vi.fn().mockImplementation(function () {
+      return {
+        ensureAuthenticated: vi.fn().mockResolvedValue(undefined),
+        get: mockGet,
+      };
+    }),
   };
 });
 import { AllocationsServer } from "../server.js";
