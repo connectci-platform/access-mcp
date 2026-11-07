@@ -162,14 +162,13 @@ async function main() {
           await new Promise((resolve) => setTimeout(resolve, 5000));
         }
       } catch (error) {
-        console.error(`❌ Failed to publish ${packageName}:`, error.message);
-        if (error.message.includes("EOTP") || error.message.includes("one-time password")) {
-          console.error("💡 OTP may have expired. You can publish this package manually:");
-          console.error(
-            `   cd packages/${packageName} && npm publish --access public --otp=<code>`
-          );
-        }
-        console.error("Continuing with remaining packages...");
+        // Stop here: servers published after a failed shared would depend on a
+        // version that isn't on npm. A re-run skips what already went out.
+        console.error(`\n❌ Failed to publish ${packageName}: ${error.message}`);
+        console.error(`📊 Published: ${publishedCount}, Skipped: ${skippedCount}`);
+        console.error("Fix the problem and run this again to publish the rest.");
+        console.error("If npm wanted a one-time password, run this in a terminal so it can ask.");
+        process.exit(1);
       }
     }
 
