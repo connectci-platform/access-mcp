@@ -2318,6 +2318,32 @@ describe("EventsServer", () => {
       });
     });
 
+    it("register commit says the registration is pending approval", async () => {
+      const commit = (extra: object) => {
+        mockRequestRaw.mockResolvedValue({
+          status: 200,
+          data: { success: true, status: "registered", registrant_id: "u-123", ...extra },
+        });
+        return withDrupalEnv(() =>
+          server["handleToolCall"]({
+            method: "tools/call",
+            params: {
+              name: "register_for_event",
+              arguments: { eventinstance_id: "5", confirmed: true },
+            },
+          })
+        );
+      };
+      const data = (result: unknown) =>
+        JSON.parse((result as { content: { text: string }[] }).content[0].text).data;
+
+      const pending = data(await commit({}));
+      expect(pending.approval).toBe("pending");
+      expect(pending.next_step).toContain("not yet approved");
+
+      expect(data(await commit({ approval: "approved" })).approval).toBe("approved");
+    });
+
     it("register commit registered maps to executed write envelope", async () => {
       mockRequestRaw.mockResolvedValue({
         status: 200,
