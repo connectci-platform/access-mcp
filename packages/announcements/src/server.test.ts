@@ -1568,6 +1568,19 @@ describe("AnnouncementsServer", () => {
         expect(lines[gate + 1]).toContain("**Affinity Group:**");
       });
 
+      it("create description treats a change request as not confirmation", () => {
+        const desc = toolByName("create_announcement").description;
+        expect(desc).toContain("show the updated preview and ask again");
+        expect(desc).toContain("not confirmation");
+        expect(desc).toContain("only after the user confirms the current preview");
+      });
+
+      it("create description allows one question: which group when a group option has none", () => {
+        const desc = toolByName("create_announcement").description;
+        expect(desc).toMatch(/exception[^\n]*ask which group/i);
+        expect(desc).toContain("without naming a group");
+      });
+
       it("describes the affinity options by the group rule, not as coordinators only", async () => {
         for (const text of [
           toolByName("create_announcement").description,

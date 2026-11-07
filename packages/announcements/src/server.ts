@@ -239,7 +239,7 @@ BEFORE CALLING:
    - affiliation (optional): "ACCESS Collaboration" or "Community". Defaults to "Community" when not given; the preview always shows it.
    - where_to_share (optional): defaults to "Announcements page" + "Bi-Weekly Digest"; the preview always shows it.
    - external_link (if relevant): URL and link text for external references
-3. Do not ask separate questions about affiliation, where to share, or affinity group. Fill the defaults and let the user change them in the preview.
+3. Do not ask separate questions about affiliation, where to share, or affinity group. Fill the defaults and let the user change them in the preview. The one exception: if the user picks "Affinity Group page" or "Email to Affinity Group" without naming a group, ask which group.
 
 WORKFLOW:
 If user pastes content (event description, draft text, etc.):
@@ -274,7 +274,7 @@ PREVIEW FORMAT (show before creating):
 [If the user is a coordinator or an affinity group is chosen:]
 **Affinity Group:** [group name] or "None"
 ---
-After the preview, invite the user to change the affiliation or where it is shared right there, and ask "Does this look correct?" before creating.
+After the preview, invite the user to change the affiliation or where it is shared right there, and ask "Does this look correct?" before creating. If the user asks for a change, show the updated preview and ask again. A reply that requests a change is not confirmation; create only after the user confirms the current preview.
 Affiliation options: "ACCESS Collaboration" or "Community". Sharing options: "Announcements page" and "Bi-Weekly Digest" are open to everyone. "Affinity Group page" and "Email to Affinity Group" need an affinity group the user is allowed to post to (a coordinator of it, or an administrator or news manager, who can post to any group); the group is chosen in the preview too. get_announcement_context lists only the groups the user coordinates, so an administrator or news manager sees an empty list and names the group directly.
 Pass affiliation and where_to_share exactly as the confirmed preview showed them.
 
