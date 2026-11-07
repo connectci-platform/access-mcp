@@ -217,22 +217,19 @@ describe("Resource Documentation tools", () => {
       expect(data.group).toBeNull();
     });
 
-    it("names missing values as unavailable", async () => {
+    it("returns missing values as null", async () => {
       const { data } = await call("get_resource", { resource: "ACES" });
 
       expect(data.office_hours).toBeNull();
       expect(data.datasets).toBeNull();
-      expect(data.unavailable).toEqual(
-        expect.arrayContaining(["office_hours", "datasets", "storage.external"])
-      );
-      expect(data.unavailable).not.toContain("queues");
+      expect(data.storage.external).toBeNull();
+      expect(data).not.toHaveProperty("unavailable");
     });
 
     it("holds back wait times until the API reports the last date with data", async () => {
       const { result, data } = await call("get_resource", { resource: "ACES" });
 
       expect(data.wait_times).toBeNull();
-      expect(data.unavailable).toContain("wait_times");
       expect(result.content[0].text).not.toMatch(/17\.1|daily_wait|queue_metrics/);
     });
 
@@ -254,7 +251,6 @@ describe("Resource Documentation tools", () => {
           { queue: "cpu", average_wait_hours: null, job_count: 0 },
         ],
       });
-      expect(data.unavailable).not.toContain("wait_times");
       expect(result.content[0].text).not.toContain("daily_wait");
     });
 
@@ -295,19 +291,7 @@ describe("Resource Documentation tools", () => {
         description: null,
         queues: null,
       });
-      expect(data.unavailable).toContain("queues");
     });
-
-    it.each(["Delta CPU", "Fabric"])(
-      "doesn't call wait times unavailable when %s has no queues",
-      async (resource) => {
-        const { data } = await call("get_resource", { resource });
-
-        expect(data.wait_times).toBeNull();
-        expect(data.unavailable).toContain("queues");
-        expect(data.unavailable).not.toContain("wait_times");
-      }
-    );
 
     it("reads details by node ID once that route exists", async () => {
       nodeRouteLive = true;
@@ -433,14 +417,6 @@ describe("Resource Documentation tools", () => {
         details_available: false,
         queues: null,
       });
-      expect(data.items[1].unavailable).toContain("queues");
-    });
-
-    it("doesn't call wait times unavailable for a resource with no queues", async () => {
-      const { data } = await call("compare_resources", { resources: ["ACES", "Fabric"] });
-
-      expect(data.items[0].unavailable).toContain("wait_times");
-      expect(data.items[1].unavailable).not.toContain("wait_times");
     });
 
     it("lists names it couldn't settle and still compares the rest", async () => {

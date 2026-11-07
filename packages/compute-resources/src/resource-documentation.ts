@@ -82,20 +82,6 @@ function links(field: unknown): Record<string, string> | null {
   return entries.length > 0 ? (Object.fromEntries(entries) as Record<string, string>) : null;
 }
 
-function nullPaths(fields: Row, prefix = ""): string[] {
-  return Object.entries(fields).flatMap(([key, field]) => {
-    if (field === null) return [`${prefix}${key}`];
-    const nested = typeof field === "object" && !Array.isArray(field);
-    return nested ? nullPaths(field as Row, `${prefix}${key}.`) : [];
-  });
-}
-
-// Storage systems and networks have no queues, so a wait time isn't missing
-// for them. A resource that should have queues already shows up under `queues`.
-function unavailablePaths(fields: Row): string[] {
-  return nullPaths(fields).filter((path) => path !== "wait_times" || fields.queues !== null);
-}
-
 // Today's figures can't tell missing data from a real zero, so nothing is shown
 // until the API reports the last date it has data for (D8-2971).
 function waitTimes(detail: Row) {
@@ -115,7 +101,7 @@ function waitTimes(detail: Row) {
 
 function buildResource(listing: Listing, group: Group | undefined, detail: Row | null) {
   const d = detail ?? {};
-  const facts = {
+  return {
     id: listing.global_resource_id,
     name: listing.title,
     organization: listing.org_name,
@@ -187,19 +173,14 @@ function buildResource(listing: Listing, group: Group | undefined, detail: Row |
     support_links: list(d.support_links, (row) => ({ title: row.title, url: row.url })),
     documentation_links: links(d.documentation_links),
     office_hours: value(d.office_hours as string),
-  };
-
-  return {
-    ...facts,
     group: group?.title ?? null,
     citation_url: group?.url ?? listing.url,
     details_available: detail !== null,
-    unavailable: unavailablePaths(facts),
   };
 }
 
 export function buildComparison(resource: ResourceDetails) {
-  const facts = {
+  return {
     id: resource.id,
     name: resource.name,
     organization: resource.organization,
@@ -220,13 +201,8 @@ export function buildComparison(resource: ResourceDetails) {
     filesystems:
       resource.storage.filesystems?.map(({ name, summary }) => ({ name, summary })) ?? null,
     software_url: resource.software_url,
-  };
-
-  return {
-    ...facts,
     citation_url: resource.citation_url,
     details_available: resource.details_available,
-    unavailable: unavailablePaths(facts),
   };
 }
 

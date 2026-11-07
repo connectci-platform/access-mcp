@@ -212,15 +212,13 @@ export class ComputeResourcesServer extends BaseAccessServer {
           "so prefer it to search_resources and get_resource_hardware for these details, and " +
           "cite citation_url. Accepts a name or global resource ID. A name covering several " +
           "resources, such as 'Delta', returns `matches` instead; call again with one of " +
-          "them. A null value means the documentation doesn't have it, and `unavailable` " +
-          "lists those fields; never fill one from general knowledge. Not every field " +
-          "applies to every resource: storage systems and networks have no queues or wait " +
-          "times, so don't describe those as missing. " +
-          "details_available false means only the listing could be read. wait_times is null " +
-          "when a resource with queues has no reliable wait data; say so rather than " +
-          "estimating. Otherwise it " +
-          "gives hours per queue and the as_of date, and a queue's average_wait_hours can " +
-          "still be null.",
+          "them. A null value means the documentation doesn't cover it, not that the resource " +
+          "lacks it or that anything is wrong. Resources work in different ways (batch " +
+          "clusters, VMs, containers, storage, networks), so don't assume any of them has " +
+          "queues, SSH or wait times. Describe what is documented, point to citation_url, and " +
+          "never fill a gap from general knowledge. details_available false means only the " +
+          "listing could be read. wait_times gives hours per queue and an as_of date when " +
+          "there is reliable data; never estimate one.",
         inputSchema: {
           type: "object",
           properties: {
@@ -250,11 +248,11 @@ export class ComputeResourcesServer extends BaseAccessServer {
           "login, transfer methods, queues, wait times, storage and software links, with a " +
           "citation_url for each. Accepts names or global resource IDs. `unresolved` lists names that " +
           "didn't settle on one resource, with `matches` to choose from when a name covers " +
-          "several, such as 'Delta'. Null values aren't in the documentation and are listed in " +
-          "each item's `unavailable`. Not every field applies to every resource: storage " +
-          "systems and networks have no queues or wait times, so don't describe those as " +
-          "missing. Otherwise a null wait_times means no reliable wait data; say so rather " +
-          "than estimating. Use get_resource for the full detail on one resource.",
+          "several, such as 'Delta'. A null value means the documentation doesn't cover it, " +
+          "not that the resource lacks it, so don't present a null next to a value as a " +
+          "difference between resources. Resources work in different ways (batch clusters, " +
+          "VMs, containers, storage, networks). Never estimate a wait time. Use get_resource " +
+          "for the full detail on one resource.",
         inputSchema: {
           type: "object",
           properties: {

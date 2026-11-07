@@ -90,13 +90,13 @@ Get a resource's documented login, file transfer, storage, queue, dataset, softw
 support details from https://support.access-ci.org/documentation/resources. Responses
 are cached for 10 minutes.
 
-`citation_url` is the page to cite. A missing value is `null` and is named in
-`unavailable`. A name that covers several resources, such as `Delta`, returns `matches`
-to choose from. `details_available` is `false` when only the listing could be read.
-`wait_times` is `null` unless the API reports the last date it has wait data for, and
-a queue's `average_wait_hours` is `null` when that queue's data is missing. It's only
-named in `unavailable` for resources with queues, because storage systems and networks
-don't have wait times.
+`citation_url` is the page to cite. A value is `null` when the documentation doesn't
+cover it, which doesn't mean the resource lacks it, since resources range from batch
+clusters to VMs, containers, storage and networks. A name that covers several resources,
+such as `Delta`, returns `matches` to choose from. `details_available` is `false` when
+only the listing could be read. `wait_times` is `null` unless the API reports the last
+date it has wait data for, and a queue's `average_wait_hours` is `null` when that
+queue's data is missing.
 
 **Parameters:**
 | Parameter | Type | Description |
