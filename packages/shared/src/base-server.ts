@@ -173,22 +173,43 @@ export abstract class BaseAccessServer {
   /**
    * The single logging seam for tool calls. EVERY doorway (REST /tools, the
    * MCP-protocol /mcp + /sse handlers) must call this instead of handleToolCall
-   * directly, so usage logging covers all paths with no duplication. Timing +
-   * fire-and-forget record; never awaited, never throws into the caller.
+   * directly, so usage logging and tracing cover all paths with no duplication.
+   * Timing + fire-and-forget record; never awaited, never throws into the caller.
    * (If you add a new tool-invocation path, route it through here.)
    */
   private async recordAndHandle(request: CallToolRequest): Promise<CallToolResult> {
+    const { name, arguments: args } = request.params;
+    const tool = this.getTools().find((t) => t.name === name);
     const startedAt = Date.now();
     let succeeded = false;
     try {
-      const result = await this.handleToolCall(request);
-      succeeded = !result.isError;
-      return result;
+      return await traceMcpToolCall(
+        name,
+        args ?? {},
+        async (span) => {
+          span.setAttribute("mcp.server.name", this.serverName);
+          span.setAttribute("mcp.server.version", this.version);
+
+          const requestId = requestContextStorage.getStore()?.requestId;
+          if (requestId) {
+            span.setAttribute("mcp.request.id", requestId);
+          }
+
+          const result = await this.handleToolCall(request);
+          succeeded = !result.isError;
+          if (result.isError) {
+            span.setAttribute("mcp.result.is_error", true);
+          }
+          return result;
+        },
+        // Telemetry leaves our infrastructure, so only public reads record values.
+        { recordArguments: !!tool && classifyTool(tool) === "public" && !tool.mutates }
+      );
     } finally {
       void this._usageLogger.record({
         server: this.serverName,
-        tool: request.params.name,
-        args: request.params.arguments as Record<string, unknown> | undefined,
+        tool: name,
+        args: args as Record<string, unknown> | undefined,
         success: succeeded,
         durationMs: Date.now() - startedAt,
         actingUser: requestContextStorage.getStore()?.actingUser,
@@ -725,35 +746,13 @@ export abstract class BaseAccessServer {
 
       // Run the handler within the request context
       return requestContextStorage.run(context, async () => {
-        // Wrap tool execution with OpenTelemetry tracing
         try {
-          const result = await traceMcpToolCall(toolName, args, async (span) => {
-            // Add server info to span
-            span.setAttribute("mcp.server.name", this.serverName);
-            span.setAttribute("mcp.server.version", this.version);
-
-            // Add request context if available
-            if (context.requestId) {
-              span.setAttribute("mcp.request.id", context.requestId);
-            }
-
-            // Execute the tool
-            const request: CallToolRequest = {
-              method: "tools/call",
-              params: {
-                name: toolName,
-                arguments: args,
-              },
-            };
-
-            const toolResult = await this.recordAndHandle(request);
-
-            // Record result info on span
-            if (toolResult.isError) {
-              span.setAttribute("mcp.result.is_error", true);
-            }
-
-            return toolResult;
+          const result = await this.recordAndHandle({
+            method: "tools/call",
+            params: {
+              name: toolName,
+              arguments: args,
+            },
           });
 
           return c.json(result);

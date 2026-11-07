@@ -12,7 +12,6 @@
  */
 
 import { NodeSDK } from "@opentelemetry/sdk-node";
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { HttpInstrumentation } from "@opentelemetry/instrumentation-http";
 import { ExpressInstrumentation } from "@opentelemetry/instrumentation-express";
 import { resourceFromAttributes } from "@opentelemetry/resources";
@@ -23,6 +22,7 @@ import {
 } from "@opentelemetry/semantic-conventions";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { QueryFreeTraceExporter } from "./telemetry-exporter.js";
 
 interface PackageJson {
   name: string;
@@ -85,7 +85,7 @@ function bootstrap(): void {
   const dataset = process.env.HONEYCOMB_DATASET || "access-ci";
   headers["x-honeycomb-dataset"] = dataset;
 
-  const traceExporter = new OTLPTraceExporter({
+  const traceExporter = new QueryFreeTraceExporter({
     url: `${endpoint}/v1/traces`,
     headers,
   });
@@ -106,18 +106,19 @@ function bootstrap(): void {
   sdk.start();
   console.log(`[${serviceName}] OpenTelemetry initialized: exporting to ${endpoint}`);
 
-  // Graceful shutdown - flush spans before exit
+  // Listening for a signal turns off Node's default exit, and no server handles
+  // these itself, so we have to end the process once spans are flushed.
   const shutdown = (signal: string) => {
     console.log(`[${serviceName}] Received ${signal}, shutting down OpenTelemetry...`);
     sdk
       .shutdown()
       .then(() => console.log(`[${serviceName}] OpenTelemetry shutdown complete`))
-      .catch((err) => console.error(`[${serviceName}] OpenTelemetry shutdown error`, err));
-    // Don't call process.exit() - let the main process handle termination
+      .catch((err) => console.error(`[${serviceName}] OpenTelemetry shutdown error`, err))
+      .finally(() => process.exit(0));
   };
 
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
-  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  process.once("SIGINT", () => shutdown("SIGINT"));
 }
 
 // Run bootstrap immediately on import

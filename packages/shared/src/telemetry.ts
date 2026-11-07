@@ -5,7 +5,6 @@
  */
 
 import { NodeSDK } from "@opentelemetry/sdk-node";
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { HttpInstrumentation } from "@opentelemetry/instrumentation-http";
 import { ExpressInstrumentation } from "@opentelemetry/instrumentation-express";
 import { resourceFromAttributes } from "@opentelemetry/resources";
@@ -14,7 +13,14 @@ import {
   SEMRESATTRS_SERVICE_VERSION,
   SEMRESATTRS_DEPLOYMENT_ENVIRONMENT,
 } from "@opentelemetry/semantic-conventions";
-import { trace, Span, SpanStatusCode, context as otelContext } from "@opentelemetry/api";
+import {
+  trace,
+  Span,
+  SpanStatusCode,
+  context as otelContext,
+  type Attributes,
+} from "@opentelemetry/api";
+import { QueryFreeTraceExporter } from "./telemetry-exporter.js";
 
 let sdk: NodeSDK | null = null;
 
@@ -65,7 +71,7 @@ export function initTelemetry(config: TelemetryConfig): void {
   const dataset = process.env.HONEYCOMB_DATASET || "access-ci";
   headers["x-honeycomb-dataset"] = dataset;
 
-  const traceExporter = new OTLPTraceExporter({
+  const traceExporter = new QueryFreeTraceExporter({
     url: `${endpoint}/v1/traces`,
     headers,
   });
@@ -88,13 +94,18 @@ export function initTelemetry(config: TelemetryConfig): void {
   sdk.start();
   console.log(`[${config.serviceName}] OpenTelemetry initialized: exporting to ${endpoint}`);
 
-  // Graceful shutdown
-  process.on("SIGTERM", () => {
+  // Listening for a signal turns off Node's default exit, so end the process
+  // once spans are flushed.
+  const shutdown = () => {
     sdk
       ?.shutdown()
       .then(() => console.log(`[${config.serviceName}] OpenTelemetry shutdown complete`))
-      .catch((err) => console.error(`[${config.serviceName}] OpenTelemetry shutdown error`, err));
-  });
+      .catch((err) => console.error(`[${config.serviceName}] OpenTelemetry shutdown error`, err))
+      .finally(() => process.exit(0));
+  };
+
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
 }
 
 /**
@@ -189,32 +200,39 @@ export async function withSpan<T>(
  * Trace an MCP tool call following OpenTelemetry MCP semantic conventions.
  * https://opentelemetry.io/docs/specs/semconv/gen-ai/mcp/
  *
+ * Argument values and error messages can hold personal details and text people
+ * wrote, so they are recorded only with `recordArguments: true`. Otherwise the
+ * span carries the argument names and the error type.
+ *
  * @example
  * const result = await traceMcpToolCall("get_events", args, async (span) => {
  *   const events = await fetchEvents(args);
  *   span.setAttribute("mcp.result.count", events.length);
  *   return events;
- * });
+ * }, { recordArguments: true });
  */
 export async function traceMcpToolCall<T>(
   toolName: string,
   args: Record<string, unknown>,
-  fn: (span: Span) => Promise<T>
+  fn: (span: Span) => Promise<T>,
+  { recordArguments = false }: { recordArguments?: boolean } = {}
 ): Promise<T> {
   const tracer = getTracer("access-mcp.tools");
 
   // Follow MCP semantic conventions: "tools/call {tool_name}"
   const spanName = `tools/call ${toolName}`;
 
-  const attributes: Record<string, string | number | boolean> = {
+  const attributes: Attributes = {
     "mcp.method.name": "tools/call",
     "gen_ai.operation.name": "execute_tool",
     "gen_ai.tool.name": toolName,
   };
 
-  // Add safe argument attributes (redact sensitive values)
-  const safeArgs = redactSensitive(args);
-  attributes["mcp.tool.arguments"] = JSON.stringify(safeArgs);
+  if (recordArguments) {
+    attributes["mcp.tool.arguments"] = JSON.stringify(redactSensitive(args));
+  } else {
+    attributes["mcp.tool.argument_names"] = Object.keys(args);
+  }
 
   return tracer.startActiveSpan(spanName, { attributes }, async (span) => {
     try {
@@ -223,8 +241,12 @@ export async function traceMcpToolCall<T>(
       return result;
     } catch (error) {
       if (error instanceof Error) {
-        span.recordException(error);
-        span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
+        if (recordArguments) {
+          span.recordException(error);
+          span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
+        } else {
+          span.setStatus({ code: SpanStatusCode.ERROR });
+        }
         span.setAttribute("error.type", error.name || "Error");
       }
       throw error;
