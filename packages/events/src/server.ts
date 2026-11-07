@@ -209,7 +209,9 @@ export class EventsServer extends BaseAccessServer {
   private drupalAuth?: DrupalAuthProvider;
 
   constructor() {
-    super("access-mcp-events", version, "https://support.access-ci.org", {
+    // Reads and writes must reach the same site, or event ids from one would be
+    // registered against the other.
+    super("access-mcp-events", version, process.env.DRUPAL_API_URL || "https://support.access-ci.org", {
       requireApiKey: true,
     });
   }
@@ -1592,7 +1594,14 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           action: "register",
           status: data.status,
           executed: true,
-          data: { registrant_id: data.registrant_id },
+          data: {
+            registrant_id: data.registrant_id,
+            // Every registration starts unapproved. "registered" means submitted,
+            // and models repeat a status as fact, so say what it means here.
+            approval: data.approval ?? "pending",
+            next_step:
+              "Submitted, not yet approved. The organizer reviews it and the user gets an email once approved. Tell the user this. Don't say they are registered or confirmed.",
+          },
         });
       }
       // The real Drupal preview body always carries outcome_if_confirmed (see the
