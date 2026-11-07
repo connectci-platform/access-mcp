@@ -8,7 +8,7 @@ export default defineConfig({
     include: ["**/*.test.ts"],
     // Integration tests call live ACCESS, XDMoD and NSF APIs or need local
     // services, so they run through `npm run test:integration`, not CI.
-    exclude: ["node_modules", "dist", "**/*.integration.test.ts"],
+    exclude: ["**/node_modules/**", "**/dist/**", "**/.worktrees/**", "**/*.integration.test.ts"],
     coverage: {
       reporter: ["text", "json", "html"],
       exclude: ["node_modules/", "dist/", "**/*.d.ts", "**/*.config.*", "**/index.ts"],
