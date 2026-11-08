@@ -6,7 +6,7 @@
  * and gets tokens that our MCP servers can verify via CILogon's userinfo endpoint.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Response } from "express";
 import axios from "axios";
 import type {
@@ -73,6 +73,10 @@ export class CILogonOAuthProvider implements OAuthServerProvider {
   private _pendingAuthorizations = new Map<string, PendingAuthorization>();
   private _authCodes = new Map<string, StoredAuthCode>();
   private _tokenCache = new Map<string, CachedUserInfo>();
+  // Clients that keep reconnecting with an expired token would otherwise send
+  // every attempt to CILogon. Keyed by token hash, since anyone can fill it.
+  // Value is when to ask again.
+  private _rejectedTokens = new Map<string, number>();
 
   // Skip local PKCE — CILogon handles it
   skipLocalPkceValidation = true;
@@ -92,6 +96,9 @@ export class CILogonOAuthProvider implements OAuthServerProvider {
       }
       for (const [key, value] of this._tokenCache) {
         if (value.expiresAt < now) this._tokenCache.delete(key);
+      }
+      for (const [key, retryAt] of this._rejectedTokens) {
+        if (retryAt < now) this._rejectedTokens.delete(key);
       }
     }, 60_000);
   }
@@ -256,6 +263,10 @@ export class CILogonOAuthProvider implements OAuthServerProvider {
     if (cached && cached.expiresAt > Date.now()) {
       return cached.info;
     }
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+    if ((this._rejectedTokens.get(tokenHash) ?? 0) > Date.now()) {
+      throw new Error("Invalid or expired access token");
+    }
 
     // Call CILogon userinfo
     const response = await axios.get(
@@ -267,6 +278,19 @@ export class CILogonOAuthProvider implements OAuthServerProvider {
     );
 
     if (response.status !== 200) {
+      // Only CILogon's own rejection is remembered, so an outage can't lock
+      // out valid tokens.
+      if (response.status === 401 || response.status === 403) {
+        // Re-adding moves the token to the back, and the list is capped because
+        // anyone can send made-up tokens. The window matches the 60-second
+        // acceptance cache, so a mistaken rejection doesn't outlast it.
+        this._rejectedTokens.delete(tokenHash);
+        if (this._rejectedTokens.size >= 5_000) {
+          const oldest = this._rejectedTokens.keys().next().value;
+          if (oldest !== undefined) this._rejectedTokens.delete(oldest);
+        }
+        this._rejectedTokens.set(tokenHash, Date.now() + 60_000);
+      }
       throw new Error("Invalid or expired access token");
     }
 
