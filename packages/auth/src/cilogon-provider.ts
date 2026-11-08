@@ -6,7 +6,7 @@
  * and gets tokens that our MCP servers can verify via CILogon's userinfo endpoint.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Response } from "express";
 import axios from "axios";
 import type {
@@ -74,7 +74,8 @@ export class CILogonOAuthProvider implements OAuthServerProvider {
   private _authCodes = new Map<string, StoredAuthCode>();
   private _tokenCache = new Map<string, CachedUserInfo>();
   // Clients that keep reconnecting with an expired token would otherwise send
-  // every attempt to CILogon. Value is when to ask again.
+  // every attempt to CILogon. Keyed by token hash, since anyone can fill it.
+  // Value is when to ask again.
   private _rejectedTokens = new Map<string, number>();
 
   // Skip local PKCE — CILogon handles it
@@ -262,7 +263,8 @@ export class CILogonOAuthProvider implements OAuthServerProvider {
     if (cached && cached.expiresAt > Date.now()) {
       return cached.info;
     }
-    if ((this._rejectedTokens.get(token) ?? 0) > Date.now()) {
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+    if ((this._rejectedTokens.get(tokenHash) ?? 0) > Date.now()) {
       throw new Error("Invalid or expired access token");
     }
 
@@ -279,12 +281,15 @@ export class CILogonOAuthProvider implements OAuthServerProvider {
       // Only CILogon's own rejection is remembered, so an outage can't lock
       // out valid tokens.
       if (response.status === 401 || response.status === 403) {
-        // Anyone can send made-up tokens, so the list is capped.
+        // Re-adding moves the token to the back, and the list is capped because
+        // anyone can send made-up tokens. The window matches the 60-second
+        // acceptance cache, so a mistaken rejection doesn't outlast it.
+        this._rejectedTokens.delete(tokenHash);
         if (this._rejectedTokens.size >= 5_000) {
           const oldest = this._rejectedTokens.keys().next().value;
           if (oldest !== undefined) this._rejectedTokens.delete(oldest);
         }
-        this._rejectedTokens.set(token, Date.now() + 300_000);
+        this._rejectedTokens.set(tokenHash, Date.now() + 60_000);
       }
       throw new Error("Invalid or expired access token");
     }

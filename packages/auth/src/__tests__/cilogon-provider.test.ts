@@ -139,14 +139,24 @@ describe("CILogonOAuthProvider", () => {
         expect(get).toHaveBeenCalledTimes(1);
       });
 
-      it("asks CILogon again after five minutes", async () => {
+      it("remembers a rejection for one minute, like an acceptance", async () => {
         get.mockResolvedValue({ status: 401, data: {} });
 
         await expect(provider.verifyAccessToken("expired")).rejects.toThrow();
-        vi.setSystemTime(new Date("2026-11-08T12:05:01Z"));
+        vi.setSystemTime(new Date("2026-11-08T12:00:59Z"));
         await expect(provider.verifyAccessToken("expired")).rejects.toThrow();
+        expect(get).toHaveBeenCalledTimes(1);
 
+        vi.setSystemTime(new Date("2026-11-08T12:01:01Z"));
+        await expect(provider.verifyAccessToken("expired")).rejects.toThrow();
         expect(get).toHaveBeenCalledTimes(2);
+      });
+
+      it("keeps asking after a network error", async () => {
+        get.mockRejectedValueOnce(new Error("ECONNRESET")).mockResolvedValueOnce(userinfo);
+
+        await expect(provider.verifyAccessToken("valid")).rejects.toThrow();
+        await expect(provider.verifyAccessToken("valid")).resolves.toBeDefined();
       });
 
       it("keeps asking while CILogon itself is failing", async () => {
@@ -167,6 +177,7 @@ describe("CILogonOAuthProvider", () => {
         get.mockClear();
 
         await expect(provider.verifyAccessToken("fake-5000")).rejects.toThrow();
+        await expect(provider.verifyAccessToken("fake-1")).rejects.toThrow();
         expect(get).not.toHaveBeenCalled();
         await expect(provider.verifyAccessToken("fake-0")).rejects.toThrow();
         expect(get).toHaveBeenCalledTimes(1);
