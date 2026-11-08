@@ -97,6 +97,7 @@ interface UpdateAnnouncementArgs {
   summary?: string;
   published_date?: string;
   tags?: string[];
+  clear_tags?: boolean;
   affiliation?: string;
   affinity_group?: string;
   external_link?: { uri: string; title?: string };
@@ -270,7 +271,7 @@ IMPORTANT: Always pass the tags parameter when creating. Tags are english NAMES 
 PREVIEW FORMAT (show before creating):
 ---
 **Title:** [title]
-**Summary:** [summary or "None provided"]
+**Summary:** [summary]
 **Body:**
 [body content, truncate if very long]
 
@@ -355,7 +356,7 @@ ALWAYS display data.edit_url to the user so they can review their draft in Drupa
 BEFORE CALLING:
 1. Use get_my_announcements to find the announcement UUID
 2. Confirm which fields the user wants to change
-3. Only include fields that are changing
+3. Only include fields that are changing. To remove every tag, set clear_tags: true (not tags: []), only when the user asks to remove all tags, and say in the preview that all tags will be removed
 4. Show a preview of the changes and ask for confirmation before updating
 
 Returns the write envelope {action:"update", status:"updated", executed:true, data:{uuid, title, edit_url}} (a "warning" is added when some tags could not be matched; if one is returned, tell the user which tags were skipped). Read "status" and "executed"; the updated fields are under "data".
@@ -388,7 +389,12 @@ ALWAYS display data.edit_url to the user so they can review changes in Drupal.`,
               type: "array",
               items: { type: "string" },
               description:
-                'New tags — replaces ALL existing tags (only if changing). English tag NAMES as strings, taken verbatim from the "name" field of suggest_tags. Never pass ids or uuids.',
+                'New tags — replaces ALL existing tags (only if changing). English tag NAMES as strings, taken verbatim from the "name" field of suggest_tags. Never pass ids or uuids. An empty list means no change; to remove all tags use clear_tags. The web form requires at least one tag, so editing the announcement in Drupal later will ask for a tag.',
+            },
+            clear_tags: {
+              type: "boolean",
+              description:
+                "Set true to remove ALL tags from the announcement. Only when the user explicitly asks to remove every tag; never combine with tags. Omit otherwise.",
             },
             affiliation: {
               type: "string",
@@ -620,9 +626,9 @@ Once you provide the content, I'll suggest relevant tags and generate a summary 
 
 2. **Body** - The main content (HTML supported)
 
-**Recommended:**
-
 3. **Summary** - Brief teaser (1-2 sentences) for listings
+
+**Recommended:**
 
 4. **Tags** - Help users find your announcement (1-6 recommended)
 
@@ -1078,6 +1084,11 @@ Which would you like to do?`,
     const actingUser = this.getActingUserAccessId();
     const auth = this.getDrupalAuth();
 
+    if (args.clear_tags === true && args.tags && args.tags.length > 0) {
+      throw new Error(
+        "clear_tags: true removes all tags and cannot be combined with a non-empty tags list. Send either clear_tags or tags, not both."
+      );
+    }
     this.validateExternalLink(args.external_link);
     const affiliation = this.parseAffiliation(args.affiliation);
     const whereToShare = this.parseWhereToShare(args.where_to_share);
@@ -1115,7 +1126,10 @@ Which would you like to do?`,
 
     // Update tags if provided (controller resolves field_tags by uuid)
     const unmatchedTags: string[] = [];
-    if (args.tags && args.tags.length > 0) {
+    if (args.clear_tags === true) {
+      // Explicit clear: the controller replaces tags whenever field_tags is present.
+      requestBody.field_tags = [];
+    } else if (args.tags && args.tags.length > 0) {
       const { uuids: tagUuids, unmatched } = await this.resolveTagNames(actingUser, args.tags);
       unmatchedTags.push(...unmatched);
       if (tagUuids.length > 0) {
@@ -1155,7 +1169,7 @@ Which would you like to do?`,
         );
       }
       throw new Error(
-        "No fields to update. Provide at least one of title, body, summary, published_date, tags, affiliation, affinity_group, external_link or where_to_share."
+        "No fields to update. Provide at least one of title, body, summary, published_date, tags, clear_tags, affiliation, affinity_group, external_link or where_to_share."
       );
     }
 

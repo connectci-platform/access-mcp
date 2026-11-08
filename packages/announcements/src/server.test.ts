@@ -1649,6 +1649,14 @@ describe("AnnouncementsServer", () => {
         expect(desc).toContain("Bi-Weekly Digest");
       });
 
+      it("update description says how to remove all tags in the top-level steps", () => {
+        const desc = toolByName("update_announcement").description;
+        expect(desc).toContain("clear_tags: true");
+        expect(desc).toContain("not tags: []");
+        expect(desc).toContain("only when the user asks to remove all tags");
+        expect(desc).toContain("all tags will be removed");
+      });
+
       it("create description treats a change request as not confirmation", () => {
         const desc = toolByName("create_announcement").description;
         expect(desc).toContain("show the updated preview and ask again");
@@ -2022,6 +2030,63 @@ describe("AnnouncementsServer", () => {
         expect(data.status).toBe("error");
         expect(data.error.message).toContain("No fields to update");
         expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+      });
+
+      it("update with tags: [] alongside other fields does not send field_tags", async () => {
+        mockDrupalAuth.patch.mockResolvedValue({ uuid: "u", title: "T" });
+        await callTool("update_announcement", { uuid: "u", title: "New", tags: [] });
+        const [, , body] = mockDrupalAuth.patch.mock.calls[0];
+        expect(body).toEqual({ title: "New" });
+      });
+
+      it("update with clear_tags: true alone sends field_tags: []", async () => {
+        mockDrupalAuth.patch.mockResolvedValue({ uuid: "u", title: "T" });
+        const data = parse(await callTool("update_announcement", { uuid: "u", clear_tags: true }));
+        expect(data.status).toBe("updated");
+        expect(mockDrupalAuth.get).not.toHaveBeenCalled();
+        const [, , body] = mockDrupalAuth.patch.mock.calls[0];
+        expect(body).toEqual({ field_tags: [] });
+      });
+
+      it("update with clear_tags: true and tags: [] sends field_tags: []", async () => {
+        mockDrupalAuth.patch.mockResolvedValue({ uuid: "u", title: "T" });
+        await callTool("update_announcement", { uuid: "u", clear_tags: true, tags: [] });
+        const [, , body] = mockDrupalAuth.patch.mock.calls[0];
+        expect(body).toEqual({ field_tags: [] });
+      });
+
+      it("update with clear_tags: false and nothing else errors with no PATCH", async () => {
+        const data = parse(await callTool("update_announcement", { uuid: "u", clear_tags: false }));
+        expect(data.status).toBe("error");
+        expect(data.error.message).toContain("No fields to update");
+        expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+      });
+
+      it("update with clear_tags: true and non-empty tags is rejected before any network call", async () => {
+        const data = parse(
+          await callTool("update_announcement", { uuid: "u", clear_tags: true, tags: ["gpu"] })
+        );
+        expect(data.status).toBe("error");
+        expect(data.error.message).toContain("clear_tags");
+        expect(mockDrupalAuth.get).not.toHaveBeenCalled();
+        expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+      });
+
+      it("update schema has a boolean clear_tags and tags points to it", () => {
+        const props = toolByName("update_announcement").inputSchema.properties as Record<
+          string,
+          { type?: string; description: string }
+        >;
+        expect(props.clear_tags.type).toBe("boolean");
+        expect(props.tags.description).toContain("clear_tags");
+        expect(props.tags.description).toContain("at least one tag");
+      });
+
+      it("create_announcement, its guide and preview all treat summary as required", () => {
+        const tool = toolByName("create_announcement");
+        expect(tool.description).not.toContain("None provided");
+        expect(tool.description).toContain("**Summary:** [summary]");
+        expect((tool.inputSchema as { required: string[] }).required).toContain("summary");
       });
 
       it("update treats a null summary or null body as omitted", async () => {
@@ -3019,6 +3084,19 @@ describe("AnnouncementsServer", () => {
       expect(result.messages).toHaveLength(2);
       expect(result.messages[0].role).toBe("user");
       expect(result.messages[1].role).toBe("assistant");
+    });
+
+    it("create_announcement_guide lists summary under Required, not Recommended", async () => {
+      const result = await server["handleGetPrompt"]({
+        params: { name: "create_announcement_guide", arguments: {} },
+      });
+      const text = (result.messages[1].content as { text: string }).text;
+      const required = text.indexOf("**Required Information:**");
+      const summary = text.indexOf("**Summary**");
+      const recommended = text.indexOf("**Recommended:**");
+      expect(summary).toBeGreaterThan(required);
+      expect(recommended === -1 || summary < recommended).toBe(true);
+      expect(text).not.toMatch(/Recommended:\*\*\s*\n\s*\n\d+\. \*\*Summary/);
     });
 
     it("should include topic in create_announcement_guide", async () => {
