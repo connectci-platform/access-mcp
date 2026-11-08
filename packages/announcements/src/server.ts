@@ -356,7 +356,7 @@ ALWAYS display data.edit_url to the user so they can review their draft in Drupa
 BEFORE CALLING:
 1. Use get_my_announcements to find the announcement UUID
 2. Confirm which fields the user wants to change
-3. Only include fields that are changing
+3. Only include fields that are changing. To remove every tag, set clear_tags: true (not tags: []), only when the user asks to remove all tags, and say in the preview that all tags will be removed
 4. Show a preview of the changes and ask for confirmation before updating
 
 Returns the write envelope {action:"update", status:"updated", executed:true, data:{uuid, title, edit_url}} (a "warning" is added when some tags could not be matched; if one is returned, tell the user which tags were skipped). Read "status" and "executed"; the updated fields are under "data".

@@ -1649,6 +1649,14 @@ describe("AnnouncementsServer", () => {
         expect(desc).toContain("Bi-Weekly Digest");
       });
 
+      it("update description says how to remove all tags in the top-level steps", () => {
+        const desc = toolByName("update_announcement").description;
+        expect(desc).toContain("clear_tags: true");
+        expect(desc).toContain("not tags: []");
+        expect(desc).toContain("only when the user asks to remove all tags");
+        expect(desc).toContain("all tags will be removed");
+      });
+
       it("create description treats a change request as not confirmation", () => {
         const desc = toolByName("create_announcement").description;
         expect(desc).toContain("show the updated preview and ask again");
