@@ -230,3 +230,33 @@ jobs:
             fi
             echo ""
             echo "All MCP servers healthy"
+
+      - name: Refresh the agent's tool list
+        # The agent loads its tool list once at startup, so servers that were
+        # restarting at that moment stay missing until it's refreshed. Runs only
+        # after every server above passed. The catalog endpoints aren't public,
+        # so this calls the agent from inside its own container.
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.PRODUCTION_HOST }}
+          username: ${{ secrets.PRODUCTION_USER }}
+          key: ${{ secrets.PRODUCTION_SSH_KEY }}
+          script: |
+            AGENT=access-agent-access-agent-1
+            if ! docker ps --format '{{.Names}}' | grep -qx "$AGENT"; then
+              echo "Agent container $AGENT isn't running; nothing to refresh"
+              exit 0
+            fi
+            docker exec "$AGENT" python -c '
+            import json, sys, urllib.request
+            base = "http://localhost:8000/api/v1"
+            req = urllib.request.Request(base + "/catalog/refresh", method="POST")
+            print(json.load(urllib.request.urlopen(req, timeout=60)).get("message"))
+            tools = json.load(urllib.request.urlopen(base + "/health", timeout=10))["tools"]
+            missing = tools.get("unavailable_servers") or []
+            available, total = tools.get("servers_available"), tools.get("servers_total")
+            print(f"{available}/{total} servers available")
+            if missing:
+                print("Still unavailable: " + ", ".join(missing))
+                sys.exit(1)
+            '
