@@ -222,3 +222,41 @@ describe("CILogonOAuthProvider", () => {
     store.close();
   });
 });
+
+describe("CILogon token check timeout", () => {
+  let provider: CILogonOAuthProvider;
+  let store: SqliteClientStore;
+
+  beforeEach(() => {
+    store = new SqliteClientStore(":memory:");
+    provider = new CILogonOAuthProvider({
+      clientId: "test-cilogon-client-id",
+      clientSecret: "test-cilogon-secret",
+      externalBaseUrl: "https://mcp.access-ci.org/auth",
+      clientStore: store,
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    store.close();
+  });
+
+  // The MCP servers stop waiting after 5 seconds, so a request that outlives
+  // them only holds a connection open in mcp-auth.
+  it("gives CILogon the same 5 seconds the servers wait", async () => {
+    const get = vi.spyOn(axios, "get").mockResolvedValue({ status: 200, data: { sub: "u1" } });
+
+    await provider.verifyAccessToken("token");
+
+    expect(get.mock.calls[0][1]).toMatchObject({ timeout: 5000 });
+  });
+
+  it("refuses the token when CILogon doesn't answer in time", async () => {
+    vi.spyOn(axios, "get").mockRejectedValue(
+      Object.assign(new Error("timeout of 5000ms exceeded"), { code: "ECONNABORTED" })
+    );
+
+    await expect(provider.verifyAccessToken("token")).rejects.toThrow();
+  });
+});

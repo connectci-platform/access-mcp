@@ -273,6 +273,9 @@ export class CILogonOAuthProvider implements OAuthServerProvider {
       "https://cilogon.org/oauth2/userinfo",
       {
         headers: { Authorization: `Bearer ${token}` },
+        // Matches how long the MCP servers wait, so a slow CILogon can't pile
+        // up open requests here after the caller has given up.
+        timeout: 5_000,
         validateStatus: () => true,
       }
     );
