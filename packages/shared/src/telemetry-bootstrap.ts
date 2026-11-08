@@ -97,6 +97,10 @@ function bootstrap(): void {
     "service.component": serviceName,
   });
 
+  // Nothing reads the default metrics, and with no dataset header they land in
+  // Honeycomb's unknown_metrics. Setting the variable turns them back on.
+  process.env.OTEL_METRICS_EXPORTER ??= "none";
+
   const sdk = new NodeSDK({
     resource,
     traceExporter,

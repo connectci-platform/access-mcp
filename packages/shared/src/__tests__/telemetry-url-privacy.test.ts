@@ -29,12 +29,16 @@ describe("telemetry URL privacy", () => {
 
   afterEach(() => new Promise((done) => collector.close(done)));
 
+  const paths: string[] = [];
+
   async function exportedTraces(): Promise<string> {
     const received: string[] = [];
+    paths.length = 0;
     collector = createServer((req, res) => {
       const chunks: Buffer[] = [];
       req.on("data", (chunk: Buffer) => chunks.push(chunk));
       req.on("end", () => {
+        paths.push(req.url ?? "");
         if (req.url === "/v1/traces") received.push(Buffer.concat(chunks).toString());
         res.writeHead(200, { "content-type": "application/json" });
         res.end("{}");
@@ -64,5 +68,13 @@ describe("telemetry URL privacy", () => {
     expect(traces).not.toContain("Secret");
     expect(traces).not.toContain("person=");
     expect(traces).not.toContain('"url.query"');
+  }, 10000);
+
+  // Nothing reads them, and with no dataset set they land in unknown_metrics.
+  it("sends traces but no metrics", async () => {
+    await exportedTraces();
+
+    expect(paths).toContain("/v1/traces");
+    expect(paths).not.toContain("/v1/metrics");
   }, 10000);
 });
