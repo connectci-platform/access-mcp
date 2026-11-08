@@ -143,9 +143,14 @@ export class AnnouncementsServer extends BaseAccessServer {
   private static TAG_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
   constructor() {
-    super("access-announcements", version, "https://support.access-ci.org", {
-      requireApiKey: true,
-    });
+    // Reads and writes must reach the same site, or searches would return
+    // announcements from a different site than the one being drafted on.
+    super(
+      "access-announcements",
+      version,
+      process.env.DRUPAL_API_URL || "https://support.access-ci.org",
+      { requireApiKey: true }
+    );
   }
 
   /**
