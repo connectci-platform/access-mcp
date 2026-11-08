@@ -274,7 +274,7 @@ PREVIEW FORMAT (show before creating):
 [If the user is a coordinator or an affinity group is chosen:]
 **Affinity Group:** [group name] or "None"
 ---
-After the preview, invite the user to change the affiliation or where it is shared right there, and ask "Does this look correct?" before creating. If the user asks for a change, show the updated preview and ask again. A reply that requests a change is not confirmation; create only after the user confirms the current preview.
+After the preview, invite the user to change the affiliation or where it is shared right there, and ask "Does this look correct?" before creating. If the user asks for a change, show the updated preview and ask again. A bare change request still gets an updated preview and a new ask. A bare change request is not confirmation; create only after the user confirms the current preview. The exception: when one reply both requests a change and explicitly says to go ahead, create with that change applied, then tell the user what was saved. An explicit go-ahead is an explicit instruction to create in the same reply, such as "go ahead", "create it" or "post it". Approval words like "looks good" or "sounds good" next to a change are not a go-ahead; they get an updated preview.
 Affiliation options: "ACCESS Collaboration" or "Community". Sharing options: "Announcements page" and "Bi-Weekly Digest" are open to everyone. "Affinity Group page" and "Email to Affinity Group" need an affinity group the user is allowed to post to (a coordinator of it, or an administrator or news manager, who can post to any group); the group is chosen in the preview too. get_announcement_context lists only the groups the user coordinates, so an administrator or news manager sees an empty list and names the group directly.
 Pass affiliation and where_to_share exactly as the confirmed preview showed them.
 
@@ -318,7 +318,8 @@ ALWAYS display data.edit_url to the user so they can review their draft in Drupa
             },
             external_link: {
               type: "object",
-              description: "External link related to this announcement",
+              description:
+                "External link related to this announcement. An object with exactly the keys uri (required, the URL) and title (optional, the link text), not url or text.",
               properties: {
                 uri: { type: "string", description: "URL (must include https://)" },
                 title: { type: "string", description: "Link text to display" },
@@ -390,7 +391,8 @@ ALWAYS display data.edit_url to the user so they can review changes in Drupal.`,
             },
             external_link: {
               type: "object",
-              description: "External link related to this announcement",
+              description:
+                "External link related to this announcement. An object with exactly the keys uri (required, the URL) and title (optional, the link text), not url or text.",
               properties: {
                 uri: { type: "string", description: "URL (must include https://)" },
                 title: { type: "string", description: "Link text to display" },
@@ -936,6 +938,18 @@ Which would you like to do?`,
     );
   }
 
+  // A link without a string uri is silently dropped by Drupal, so reject it
+  // rather than let the preview promise a link that is never saved.
+  private validateExternalLink(link: unknown): void {
+    if (link === undefined || link === null) return;
+    const uri = (link as { uri?: unknown }).uri;
+    if (typeof link !== "object" || Array.isArray(link) || typeof uri !== "string" || !/^https?:\/\//.test(uri)) {
+      throw new Error(
+        "external_link must be an object with a non-empty string uri and an optional title: {uri, title}. Keys such as url or text are not accepted."
+      );
+    }
+  }
+
   /**
    * Create a new announcement via Drupal JSON:API
    *
@@ -948,6 +962,7 @@ Which would you like to do?`,
     const auth = this.getDrupalAuth();
 
     // Validate before any lookup so a rejected request does no network work.
+    this.validateExternalLink(args.external_link);
     const affiliation = this.parseAffiliation(args.affiliation) ?? DEFAULT_AFFILIATION;
     const explicitShare = this.parseWhereToShare(args.where_to_share);
     if (
@@ -1055,6 +1070,7 @@ Which would you like to do?`,
     const actingUser = this.getActingUserAccessId();
     const auth = this.getDrupalAuth();
 
+    this.validateExternalLink(args.external_link);
     const affiliation = this.parseAffiliation(args.affiliation);
     const whereToShare = this.parseWhereToShare(args.where_to_share);
 

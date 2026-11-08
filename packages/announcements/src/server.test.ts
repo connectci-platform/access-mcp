@@ -1378,6 +1378,64 @@ describe("AnnouncementsServer", () => {
         expect(mockDrupalAuth.get).not.toHaveBeenCalled();
       });
 
+      describe("external_link shape", () => {
+        it.each([
+          ["create_announcement", baseCreate],
+          ["update_announcement", { uuid: "u" }],
+        ])("%s rejects url/text keys, missing uri, and non-objects before any HTTP call", async (name, base) => {
+          for (const bad of [
+            { url: "https://x.org", text: "X" },
+            { title: "X" },
+            { uri: "" },
+            { uri: "   " },
+            { uri: "www.x.org" },
+            { uri: "example.com" },
+            { uri: 5 },
+            "https://x.org",
+            ["https://x.org"],
+          ]) {
+            const result = await callTool(name, { ...base, external_link: bad });
+            const data = JSON.parse((result.content[0] as TextContent).text);
+            expect(data.error.message).toContain("external_link");
+            expect(data.error.message).toContain("{uri, title}");
+          }
+          expect(mockDrupalAuth.post).not.toHaveBeenCalled();
+          expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+          expect(mockDrupalAuth.get).not.toHaveBeenCalled();
+        });
+
+        it("create sends a valid {uri, title} link to Drupal", async () => {
+          await callTool("create_announcement", {
+            ...baseCreate,
+            external_link: { uri: "https://x.org", title: "X" },
+          });
+          const [, , body] = mockDrupalAuth.post.mock.calls[0];
+          expect(body.field_news_external_link).toEqual({ uri: "https://x.org", title: "X" });
+        });
+
+        it("create sends a valid {uri} link with no title to Drupal", async () => {
+          await callTool("create_announcement", { ...baseCreate, external_link: { uri: "http://x.org" } });
+          const [, , body] = mockDrupalAuth.post.mock.calls[0];
+          expect(body.field_news_external_link).toEqual({ uri: "http://x.org", title: "" });
+        });
+
+        it("update sends a valid {uri} link to Drupal", async () => {
+          mockDrupalAuth.patch.mockResolvedValue({ success: true });
+          await callTool("update_announcement", { uuid: "u", external_link: { uri: "https://x.org" } });
+          const [, , body] = mockDrupalAuth.patch.mock.calls[0];
+          expect(body.field_news_external_link).toEqual({ uri: "https://x.org", title: "" });
+        });
+
+        it("both schemas state the uri/title keys plainly", () => {
+          for (const name of ["create_announcement", "update_announcement"]) {
+            const props = toolByName(name).inputSchema.properties as Record<string, { description: string }>;
+            expect(props.external_link.description).toContain("uri");
+            expect(props.external_link.description).toContain("title");
+            expect(props.external_link.description).toContain("not url or text");
+          }
+        });
+      });
+
       it.each([
         ["create_announcement", baseCreate],
         ["update_announcement", { uuid: "u" }],
@@ -1573,6 +1631,21 @@ describe("AnnouncementsServer", () => {
         expect(desc).toContain("show the updated preview and ask again");
         expect(desc).toContain("not confirmation");
         expect(desc).toContain("only after the user confirms the current preview");
+      });
+
+      it("create description lets a change plus an explicit go-ahead create, then report what was saved", () => {
+        const desc = toolByName("create_announcement").description;
+        expect(desc).toContain("A bare change request still gets an updated preview and a new ask");
+        expect(desc).toContain("requests a change and explicitly says to go ahead");
+        expect(desc).toContain("A bare change request is not confirmation");
+        expect(desc).not.toContain("A reply that requests a change is not confirmation");
+        expect(desc).toContain("explicit instruction to create in the same reply");
+        for (const phrase of ['"go ahead"', '"create it"', '"post it"', '"looks good"', '"sounds good"']) {
+          expect(desc).toContain(phrase);
+        }
+        expect(desc).toMatch(/Approval words[^\n]*they get an updated preview/);
+        expect(desc).toContain("with that change applied");
+        expect(desc).toContain("tell the user what was saved");
       });
 
       it("create description allows one question: which group when a group option has none", () => {
