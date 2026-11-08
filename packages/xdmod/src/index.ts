@@ -237,9 +237,14 @@ interface MenuEntry {
   [key: string]: unknown;
 }
 
+type ChartResult = { content: { type: "text"; text: string }[] };
+
 export class XDMoDMetricsServer extends BaseAccessServer {
   private menuCache: { data: MenuEntry[]; timestamp: number } | null = null;
   private static readonly MENU_CACHE_TTL = 1000 * 60 * 30; // 30 minutes
+  private chartCache = new Map<string, { result: ChartResult; expires: number }>();
+  private static readonly CHART_CACHE_TTL = 1000 * 60 * 60; // 1 hour
+  private static readonly CHART_CACHE_MAX_ENTRIES = 100;
 
   constructor() {
     super("xdmod", version, "https://xdmod.access-ci.org");
@@ -746,7 +751,13 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     offset?: number;
     log_scale?: string;
     filters?: Record<string, string>;
-  }) {
+  }): Promise<ChartResult> {
+    // Queries can take over 45 seconds. Charts are public data, so results can
+    // be shared between callers, and a range that has ended no longer moves.
+    const cacheKey = JSON.stringify(params);
+    const cached = this.chartCache.get(cacheKey);
+    if (cached && cached.expires > Date.now()) return cached.result;
+
     try {
       // Resolve text filter values to numeric IDs
       const resolvedFilters = params.filters
@@ -860,7 +871,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
         resultText += "No data available for the specified parameters.";
       }
 
-      return {
+      const result: ChartResult = {
         content: [
           {
             type: "text" as const,
@@ -868,11 +879,27 @@ export class XDMoDMetricsServer extends BaseAccessServer {
           },
         ],
       };
+      const today = new Date().toISOString().slice(0, 10);
+      if (data.data?.length > 0 && params.end_date < today) {
+        this.cacheChart(cacheKey, result);
+      }
+      return result;
     } catch (error) {
       throw new Error(
         `Failed to fetch chart data: ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+
+  private cacheChart(key: string, result: ChartResult) {
+    if (this.chartCache.size >= XDMoDMetricsServer.CHART_CACHE_MAX_ENTRIES) {
+      const oldest = this.chartCache.keys().next().value;
+      if (oldest !== undefined) this.chartCache.delete(oldest);
+    }
+    this.chartCache.set(key, {
+      result,
+      expires: Date.now() + XDMoDMetricsServer.CHART_CACHE_TTL,
+    });
   }
 
   private async getChartImage(params: {
