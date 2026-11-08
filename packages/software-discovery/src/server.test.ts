@@ -631,6 +631,157 @@ describe("SoftwareDiscoveryServer", () => {
     });
   });
 
+  describe("compare_software_availability gap meanings", () => {
+    // Shaped like the live index on 2026-11-08: GROMACS is listed on delta,
+    // deltaai and anvil, PyTorch only on anvil, and Expanse has no list.
+    const gromacs = {
+      software_name: "gromacs",
+      rps: {
+        "delta.ncsa.access-ci.org": { rp_name: "delta", rp_resource_id: [], software_versions: [] },
+        "deltaai.ncsa.access-ci.org": {
+          rp_name: "deltaai",
+          rp_resource_id: [],
+          software_versions: [],
+        },
+        "anvil.purdue.access-ci.org": {
+          rp_name: "anvil",
+          rp_resource_id: [],
+          software_versions: [],
+        },
+      },
+    };
+    const pytorch = {
+      software_name: "pytorch",
+      rps: {
+        "anvil.purdue.access-ci.org": {
+          rp_name: "anvil",
+          rp_resource_id: [],
+          software_versions: [],
+        },
+      },
+    };
+    const anyOn = (rp: string) => ({
+      software_name: "gcc",
+      rps: { [rp]: { rp_name: rp, rp_resource_id: [], software_versions: [] } },
+    });
+
+    type Params = { software: string[]; rps?: string[] };
+    function mockIndex(main: unknown[], probe: (rp: string) => MockResponse | Error): void {
+      mockSdsClient.post.mockImplementation(async (_url, data) => {
+        const params = data as Params;
+        if (params.software[0] === "*") {
+          const answer = probe(params.rps![0]);
+          if (answer instanceof Error) throw answer;
+          return answer;
+        }
+        return { status: 200, data: { data: main } };
+      });
+    }
+
+    async function compare(software_names: string[], resources?: string[]) {
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "compare_software_availability",
+          arguments: { software_names, ...(resources ? { resources } : {}) },
+        },
+      });
+      return JSON.parse((result.content[0] as TextContent).text);
+    }
+
+    it("marks a resource with no software list as not_indexed", async () => {
+      mockIndex([gromacs, pytorch], () => ({ status: 404, data: {} }));
+
+      const data = await compare(["pytorch", "gromacs"], ["delta", "expanse", "anvil"]);
+
+      expect(data.resources_not_indexed).toEqual(["expanse"]);
+      expect(data.comparison[0].resource_status).toEqual({
+        anvil: "listed",
+        delta: "not_listed",
+        deltaai: "not_listed",
+        expanse: "not_indexed",
+      });
+      expect(data.comparison[1].resource_status.expanse).toBe("not_indexed");
+      expect(data.gap_note).toMatch(/not_listed means .* not that it can't be used/);
+      expect(data.gap_note).toMatch(/not_indexed means no software list exists/);
+    });
+
+    it("keeps the existing fields unchanged", async () => {
+      mockIndex([gromacs, pytorch], () => ({ status: 404, data: {} }));
+
+      const data = await compare(["pytorch", "gromacs"], ["delta", "expanse", "anvil"]);
+
+      expect(data.all_resources_found).toEqual(["anvil", "delta", "deltaai"]);
+      expect(data.comparison[0]).toMatchObject({
+        software: "pytorch",
+        found: true,
+        available_on: ["anvil"],
+        resource_count: 1,
+      });
+      expect(data.requested_resources).toEqual(["delta", "expanse", "anvil"]);
+    });
+
+    it("marks a resource that has a list without this package as not_listed", async () => {
+      // Expanse has a software list, it just has none of these packages.
+      mockIndex([pytorch], (rp) => ({ status: 200, data: { data: [anyOn(rp)] } }));
+
+      const data = await compare(["pytorch"], ["anvil", "expanse"]);
+
+      expect(data.resources_not_indexed).toEqual([]);
+      expect(data.comparison[0].resource_status).toEqual({
+        anvil: "listed",
+        expanse: "not_listed",
+      });
+    });
+
+    it("says a lookup failed instead of calling the resource unindexed", async () => {
+      mockIndex([pytorch], () => new Error("timeout of 30000ms exceeded"));
+
+      const data = await compare(["pytorch"], ["anvil", "expanse"]);
+
+      expect(data.resources_not_indexed).toEqual([]);
+      expect(data.resources_lookup_failed).toEqual(["expanse"]);
+      expect(data.comparison[0].resource_status.expanse).toBe("lookup_failed");
+      expect(data.gap_note).toMatch(/lookup_failed/);
+    });
+
+    it("treats a server error on the coverage check as a failed lookup", async () => {
+      mockIndex([pytorch], () => ({ status: 500, data: {} }));
+
+      const data = await compare(["pytorch"], ["expanse"]);
+
+      expect(data.comparison[0].resource_status.expanse).toBe("lookup_failed");
+    });
+
+    it("matches requested names and ids to the resources the index returned", async () => {
+      mockIndex([gromacs], () => ({ status: 404, data: {} }));
+
+      const data = await compare(["gromacs"], ["Delta", "anvil.purdue.access-ci.org"]);
+
+      expect(mockSdsClient.post).toHaveBeenCalledTimes(1);
+      expect(data.resources_not_indexed).toEqual([]);
+      expect(Object.keys(data.comparison[0].resource_status)).toEqual([
+        "anvil",
+        "delta",
+        "deltaai",
+      ]);
+    });
+
+    it("only checks coverage when resources are named", async () => {
+      mockIndex([gromacs, pytorch], () => ({ status: 404, data: {} }));
+
+      const data = await compare(["pytorch"]);
+
+      expect(mockSdsClient.post).toHaveBeenCalledTimes(1);
+      expect(data.resources_not_indexed).toEqual([]);
+      expect(data.comparison[0].resource_status).toEqual({
+        anvil: "listed",
+        delta: "not_listed",
+        deltaai: "not_listed",
+      });
+    });
+  });
+
   describe("Result Ordering (API pre-sorted)", () => {
     // Mock data simulating API's pre-sorted response: exact > starts-with > contains > other (alphabetically)
     const mockSortedResults = {
@@ -1017,11 +1168,17 @@ describe("SoftwareDiscoveryServer", () => {
 
       const searchTool = tools.find((t) => t.name === "search_software");
       expect(searchTool?.inputSchema.properties?.fields).toBeDefined();
-      expect((searchTool as { _meta?: { supportsFieldProjection?: boolean } })._meta?.supportsFieldProjection).toBe(true);
+      expect(
+        (searchTool as { _meta?: { supportsFieldProjection?: boolean } })._meta
+          ?.supportsFieldProjection
+      ).toBe(true);
 
       const listTool = tools.find((t) => t.name === "list_all_software");
       expect(listTool?.inputSchema.properties?.fields).toBeDefined();
-      expect((listTool as { _meta?: { supportsFieldProjection?: boolean } })._meta?.supportsFieldProjection).toBe(true);
+      expect(
+        (listTool as { _meta?: { supportsFieldProjection?: boolean } })._meta
+          ?.supportsFieldProjection
+      ).toBe(true);
     });
   });
 
