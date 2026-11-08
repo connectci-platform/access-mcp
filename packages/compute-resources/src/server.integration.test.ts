@@ -8,6 +8,30 @@ interface ComputeResource {
 describe("ComputeResourcesServer Integration Tests", () => {
   const server = new ComputeResourcesServer();
 
+  it("should read a resource from the live documentation", async () => {
+    const result = await server["handleToolCall"]({
+      params: { name: "get_resource", arguments: { resource: "Stampede3" } },
+    });
+
+    const responseData = JSON.parse(result.content[0].text);
+
+    expect(responseData.name).toBe("Stampede3");
+    expect(responseData.details_available).toBe(true);
+    expect(responseData.citation_url).toContain("/documentation/resources/");
+    expect(responseData.queues.length).toBeGreaterThan(0);
+  }, 10000);
+
+  it("should compare resources from the live documentation", async () => {
+    const result = await server["handleToolCall"]({
+      params: { name: "compare_resources", arguments: { resources: ["Stampede3", "ACES"] } },
+    });
+
+    const responseData = JSON.parse(result.content[0].text);
+
+    expect(responseData.total).toBe(2);
+    expect(responseData.unresolved).toEqual([]);
+  }, 10000);
+
   it("should fetch real compute resources from ACCESS-CI API", async () => {
     const result = await server["handleToolCall"]({
       params: {

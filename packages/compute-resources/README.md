@@ -21,8 +21,9 @@ treat what it returns as incomplete rather than authoritative. Verified 2026-09-
 
 **For hardware specifications, prefer the curated per-resource pages under
 https://support.access-ci.org/documentation/resources**, which are maintained against
-the resource providers' own documentation. Use this server to enumerate and filter the
-catalog, and to resolve resource IDs for other ACCESS services.
+the resource providers' own documentation. `get_resource` and `compare_resources` read
+those pages. Use `search_resources` to enumerate and filter the catalog, and to resolve
+resource IDs for other ACCESS services.
 
 ## Usage Examples
 
@@ -81,6 +82,47 @@ Get detailed hardware specs (CPU, GPU, memory, storage) for a resource.
 **Example:**
 ```javascript
 get_resource_hardware({ id: "delta.ncsa.access-ci.org" })
+```
+
+### `get_resource`
+
+Get a resource's documented login, file transfer, storage, queue, dataset, software and
+support details from https://support.access-ci.org/documentation/resources. Responses
+are cached for 10 minutes.
+
+`citation_url` is the page to cite. A value is `null` when the documentation doesn't
+cover it, which doesn't mean the resource lacks it, since resources range from batch
+clusters to VMs, containers, storage and networks. A name that covers several resources,
+such as `Delta`, returns `matches` to choose from. `details_available` is `false` when
+only the listing could be read. `wait_times` is `null` unless the API reports the last
+date it has wait data for, and a queue's `average_wait_hours` is `null` when that
+queue's data is missing.
+
+**Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `resource` | string | Resource name or global resource ID (required) |
+| `fields` | string[] | Limit the response to these fields, such as `queues[].name` |
+
+**Example:**
+```javascript
+get_resource({ resource: "Delta GPU", fields: ["name", "citation_url", "queues"] })
+```
+
+### `compare_resources`
+
+Compare two or three resources from the same documentation: access requirements, login,
+transfer methods, queues, wait times, storage and software links. `unresolved` lists any name that
+didn't settle on one resource.
+
+**Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `resources` | string[] | Two or three resource names or global resource IDs (required) |
+
+**Example:**
+```javascript
+compare_resources({ resources: ["ACES", "Delta GPU", "Stampede3"] })
 ```
 
 ## Prompts
