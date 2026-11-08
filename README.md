@@ -37,12 +37,13 @@ npm install -g @access-mcp/events
 npm install -g @access-mcp/compute-resources
 npm install -g @access-mcp/system-status
 npm install -g @access-mcp/software-discovery
-npm install -g @access-mcp/xdmod-metrics
+npm install -g @access-mcp/xdmod
+npm install -g @access-mcp/nsf-awards
 npm install -g @access-mcp/allocations
 npm install -g @access-mcp/affinity-groups
 
 # Or install all at once
-npm install -g @access-mcp/announcements @access-mcp/events @access-mcp/compute-resources @access-mcp/system-status @access-mcp/software-discovery @access-mcp/xdmod-metrics @access-mcp/allocations @access-mcp/affinity-groups
+npm install -g @access-mcp/announcements @access-mcp/events @access-mcp/compute-resources @access-mcp/system-status @access-mcp/software-discovery @access-mcp/xdmod @access-mcp/nsf-awards @access-mcp/allocations @access-mcp/affinity-groups
 ```
 
 ### For Developers
@@ -74,7 +75,8 @@ access_mcp/
 │   ├── system-status/       # System Status API server
 │   ├── software-discovery/  # Software Discovery API server
 │   ├── events/              # Events API server (workshops, training)
-│   ├── xdmod-metrics/       # XDMoD Usage Analytics and NSF integration
+│   ├── xdmod/               # XDMoD usage analytics
+│   ├── nsf-awards/          # NSF awards search
 │   ├── allocations/         # Research Allocations API server
 │   ├── affinity-groups/     # Affinity Groups API server
 │   └── documentation/       # Documentation RAG retrieval server
@@ -107,7 +109,7 @@ Use the MCP Inspector for interactive testing:
 # Test any server
 npx @modelcontextprotocol/inspector packages/announcements/dist/index.js
 npx @modelcontextprotocol/inspector packages/events/dist/index.js
-npx @modelcontextprotocol/inspector packages/xdmod-metrics/dist/index.js
+npx @modelcontextprotocol/inspector packages/xdmod/dist/index.js
 npx @modelcontextprotocol/inspector packages/allocations/dist/index.js
 npx @modelcontextprotocol/inspector packages/affinity-groups/dist/index.js
 ```
