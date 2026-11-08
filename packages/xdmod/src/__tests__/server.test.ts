@@ -12,7 +12,12 @@ vi.stubGlobal("fetch", mockFetch);
 vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
 
 // Mock the base server — include start() so main() doesn't crash
-vi.mock("@access-mcp/shared", () => ({
+vi.mock("@access-mcp/shared", async (importOriginal) => {
+  // The real helpers, so the tests exercise the actual 4xx-only rule and log shape.
+  const actual = await importOriginal<typeof import("@access-mcp/shared")>();
+  return {
+  callerSafeUpstreamError: actual.callerSafeUpstreamError,
+  logUpstreamFailure: actual.logUpstreamFailure,
   BaseAccessServer: class MockBaseAccessServer {
     constructor(
       public serverName: string,
@@ -20,12 +25,14 @@ vi.mock("@access-mcp/shared", () => ({
       public baseURL?: string
     ) {}
     httpClient = { get: vi.fn() };
+    logger = actual.createLogger("test-xdmod");
     async start() {}
   },
   handleApiError: vi.fn((error: unknown) =>
     error instanceof Error ? error.message : "Unknown error"
   ),
-}));
+  };
+});
 
 // Sample menu data matching XDMoD API response format
 const SAMPLE_MENU_DATA = [
@@ -365,6 +372,23 @@ describe("XDMoDMetricsServer", () => {
       expect(body.get("realm")).toBe("Jobs");
       expect(body.get("dimension_id")).toBe("resource");
       expect(body.get("limit")).toBe("200");
+    });
+
+    test("does not show a non-JSON 200 body's parse error", async () => {
+      const res = mockResponse(null);
+      res.json = async () => {
+        throw new SyntaxError("Unexpected token '<', \"<html>SELECT * FROM x\" is not valid JSON");
+      };
+      mockFetch.mockResolvedValueOnce(res);
+      const msg = await server["handleToolCall"]({
+        method: "tools/call",
+        params: { name: "get_dimension_values", arguments: { realm: "Jobs", dimension: "resource" } },
+      }).then(
+        (r) => (r.content[0] as { text: string }).text,
+        (e: Error) => e.message
+      );
+      expect(msg).toContain("XDMoD returned an unreadable response");
+      expect(msg).not.toContain("SELECT");
     });
 
     test("should format dimension values in response", async () => {
@@ -771,6 +795,99 @@ describe("XDMoDMetricsServer", () => {
 
       const text = getText(result);
       expect(text).toContain("No data available");
+    });
+  });
+
+  describe("upstream error text", () => {
+    const chartArgs = {
+      realm: "Jobs",
+      group_by: "none",
+      statistic: "total_cpu_hours",
+      start_date: "2024-01-01",
+      end_date: "2024-12-31",
+    };
+    const run = (name: string, extra: Record<string, unknown> = {}) =>
+      server["handleToolCall"]({
+        method: "tools/call",
+        params: { name, arguments: { ...chartArgs, ...extra } },
+      }).then(
+        () => "",
+        (e: Error) => e.message
+      );
+    const sql = "SQLSTATE[42S02]: Base table or view not found: 1146 Table 'moddb.x'";
+
+    test.each(["get_chart_data", "get_chart_image"])(
+      "%s does not show a 500 body's message",
+      async (name) => {
+        mockFetch.mockResolvedValueOnce(mockResponse({ success: false, message: sql }, false, 500));
+        const msg = await run(name);
+        expect(msg).toContain("HTTP 500");
+        expect(msg).not.toContain("SQLSTATE");
+      }
+    );
+
+    test("logs a 500 as status and upstream without the body text", async () => {
+      const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+      mockFetch.mockResolvedValueOnce(mockResponse({ success: false, message: sql }, false, 500));
+      await run("get_chart_data");
+      const lines = spy.mock.calls.map((c) => c.join(" ")).join("\n");
+      spy.mockRestore();
+      expect(lines).toContain('"upstream":"xdmod"');
+      expect(lines).toContain('"status":500');
+      expect(lines).not.toContain("SQLSTATE");
+      expect(lines).not.toContain("moddb");
+    });
+
+    test.each(["get_chart_data", "get_chart_image"])(
+      "%s shows a 4xx body's message",
+      async (name) => {
+        mockFetch.mockResolvedValueOnce(
+          mockResponse({ success: false, message: "Invalid date range" }, false, 400)
+        );
+        expect(await run(name)).toContain("XDMoD error: Invalid date range");
+      }
+    );
+
+    test.each(["get_chart_data", "get_chart_image"])(
+      "%s does not show a non-JSON 500 body's parse error",
+      async (name) => {
+        const res = mockResponse(null, false, 500);
+        res.json = async () => {
+          throw new SyntaxError("Unexpected token '<', \"<html>SELECT * FROM x\" is not valid JSON");
+        };
+        mockFetch.mockResolvedValueOnce(res);
+        const msg = await run(name);
+        expect(msg).toContain("HTTP 500");
+        expect(msg).not.toContain("SELECT");
+      }
+    );
+
+    test("get_chart_data does not show a non-JSON 200 body's parse error", async () => {
+      const res = mockResponse(null);
+      res.json = async () => {
+        throw new SyntaxError("Unexpected token '<', \"<html>SELECT * FROM x\" is not valid JSON");
+      };
+      mockFetch.mockResolvedValueOnce(res);
+      const msg = await run("get_chart_data");
+      expect(msg).toContain("XDMoD returned an unreadable response");
+      expect(msg).not.toContain("SELECT");
+    });
+
+    test("get_chart_data does not show a 200 success:false message", async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ success: false, message: sql }));
+      const msg = await run("get_chart_data");
+      expect(msg).not.toContain("SQLSTATE");
+      expect(msg).toContain("XDMoD could not run this query");
+    });
+
+    test("get_chart_data keeps the valid-statistics hint for a 200 No Statistic found", async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: false, message: "No Statistic found for foo in Jobs: SQL here" })
+      );
+      const msg = await run("get_chart_data", { statistic: "foo" });
+      expect(msg).toContain("No Statistic found");
+      expect(msg).toContain("Valid statistics for Jobs");
+      expect(msg).not.toContain("SQL here");
     });
   });
 

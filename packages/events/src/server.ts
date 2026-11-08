@@ -1,6 +1,7 @@
 import {
   BaseAccessServer,
   handleApiError,
+  callerSafeUpstreamError,
   projectFields,
   Resource,
   CallToolResult,
@@ -1637,7 +1638,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
         });
       }
       return this.errorResponse(
-        data?.message ?? "Registration refused.",
+        callerSafeUpstreamError(status, data)?.message ?? "Registration refused.",
         { hint: "See the event's registration state via get_event.", code: data?.error }
       );
     }
@@ -1804,9 +1805,11 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
    * code-specific hint is more useful.
    */
   private eventWriteError(status: number, data: unknown, fallbackMessage: string): CallToolResult {
-    const body = (data ?? {}) as { error?: string; message?: string };
-    const code = body.error ?? "upstream_error";
-    const message = body.message ?? fallbackMessage;
+    // Code and message both come from a 4xx body only; a 5xx body can carry
+    // internal exception text.
+    const safe = callerSafeUpstreamError(status, data);
+    const code = safe?.code ?? "upstream_error";
+    const message = safe?.message ?? fallbackMessage;
     const hints: Record<string, string> = {
       not_found: "Check the id via search_events/get_event/get_my_events.",
       not_coordinator: "Only a coordinator of this event's affinity group(s) may manage it.",

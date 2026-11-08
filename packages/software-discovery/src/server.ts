@@ -610,7 +610,7 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
         ],
       };
     } catch (error) {
-      return this.errorResponse(error instanceof Error ? error.message : String(error));
+      return this.errorResponse(handleApiError(error));
     }
   }
 
@@ -678,7 +678,7 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
         ],
       };
     } catch (error) {
-      return this.errorResponse(error instanceof Error ? error.message : String(error));
+      return this.errorResponse(handleApiError(error));
     }
   }
 
@@ -749,7 +749,7 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
         ],
       };
     } catch (error) {
-      return this.errorResponse(error instanceof Error ? error.message : String(error));
+      return this.errorResponse(handleApiError(error));
     }
   }
 
@@ -840,7 +840,7 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
         ],
       };
     } catch (error) {
-      return this.errorResponse(error instanceof Error ? error.message : String(error));
+      return this.errorResponse(handleApiError(error));
     }
   }
 
@@ -918,7 +918,7 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
         ],
       };
     } catch (error) {
-      return this.errorResponse(error instanceof Error ? error.message : String(error));
+      return this.errorResponse(handleApiError(error));
     }
   }
 }

@@ -75,6 +75,74 @@ describe("BaseAccessServer.callRemoteServer", () => {
     expect(calls[0].headers["X-Acting-User"]).toBe("alice@access-ci.org");
   });
 
+  it("shows a peer's 4xx error text", async () => {
+    vi.spyOn(axios, "post").mockResolvedValue({
+      status: 404,
+      statusText: "Not Found",
+      data: { error: "Tool 'x' not found" },
+    });
+    await expect(server.callPeer("events", "x", {})).rejects.toThrow(
+      "Remote server call failed: 404 Tool 'x' not found"
+    );
+  });
+
+  it("does not show a peer's 5xx error text", async () => {
+    vi.spyOn(axios, "post").mockResolvedValue({
+      status: 500,
+      statusText: "Internal Server Error",
+      data: { error: "connect ECONNREFUSED 10.0.3.4:5432" },
+    });
+    const err = await server.callPeer("events", "x", {}).catch((e: Error) => e);
+    expect((err as Error).message).toBe("Remote server call failed: 500 Internal Server Error");
+  });
+
+  it("logs a peer's 5xx as status, peer name and path without the body", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(axios, "post").mockResolvedValue({
+      status: 500,
+      statusText: "Internal Server Error",
+      data: { error: "connect ECONNREFUSED 10.0.3.4:5432" },
+    });
+    await server.callPeer("events", "search_events", {}).catch(() => undefined);
+    const lines = spy.mock.calls.map((c) => c.join(" ")).join("\n");
+    spy.mockRestore();
+    expect(lines).toContain('"upstream":"events"');
+    expect(lines).toContain('"status":500');
+    expect(lines).toContain('"path":"/tools/search_events"');
+    expect(lines).not.toContain("ECONNREFUSED");
+    expect(lines).not.toContain("10.0.3.4");
+  });
+
+  it("rethrows a transport failure as a plain Error without headers or acting user", async () => {
+    process.env.MCP_API_KEY = "secret-key-123";
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const axiosErr = Object.assign(new Error("connect ECONNREFUSED 10.0.3.4:3000"), {
+      isAxiosError: true,
+      code: "ECONNREFUSED",
+      config: {
+        method: "post",
+        url: "http://mcp-events:3000/tools/search_events",
+        headers: { "X-Api-Key": "secret-key-123", "X-Acting-User": "alice@access-ci.org" },
+      },
+      request: { _header: "X-Api-Key: secret-key-123" },
+    });
+    vi.spyOn(axios, "post").mockRejectedValue(axiosErr);
+    const err = (await requestContextStorage
+      .run({ actingUser: "alice@access-ci.org" }, () => server.callPeer("events", "search_events", {}))
+      .catch((e: Error) => e)) as Error;
+    const logged = spy.mock.calls.map((c) => c.join(" ")).join("\n");
+    spy.mockRestore();
+    expect(err).toBeInstanceOf(Error);
+    expect(err.cause).toBeUndefined();
+    expect(Object.keys(err)).toEqual([]);
+    const dump = JSON.stringify(err, Object.getOwnPropertyNames(err)) + String(err.stack) + logged;
+    expect(dump).not.toContain("secret-key-123");
+    expect(dump).not.toContain("alice@access-ci.org");
+    expect(dump).not.toContain("10.0.3.4");
+    expect(logged).toContain('"upstream":"events"');
+    expect(logged).toContain('"code":"ECONNREFUSED"');
+  });
+
   it("throws when the service name isn't registered in ACCESS_MCP_SERVICES", async () => {
     await expect(server.callPeer("missing-service", "any_tool", {})).rejects.toThrow(
       /Service 'missing-service' not found/

@@ -4,6 +4,7 @@ Test suite for XDMoD Python MCP Server
 """
 
 import pytest
+import requests
 import asyncio
 import os
 import sys
@@ -245,3 +246,125 @@ class TestXDMoDPythonIntegration:
         assert len(result) > 0
         content = result[0].text
         assert "Framework" in content
+
+class TestNsfServerErrorText:
+    """The peer's 5xx text can carry internal detail, so only a 4xx shows it."""
+
+    def setup_method(self):
+        self.server_instance = XDMoDPythonServer()
+
+    def _call(self, status, body, content_type="application/json"):
+        response = Mock()
+        response.status_code = status
+        response.headers = {"content-type": content_type}
+        response.json.return_value = body
+        response.text = body if isinstance(body, str) else ""
+        with patch.object(
+            self.server_instance, "_get_service_endpoint", return_value="http://nsf:3007"
+        ), patch("xdmod_mcp_data.server.requests.post", return_value=response):
+            return asyncio.run(self.server_instance._call_nsf_server("search", {}))
+
+    def test_4xx_shows_the_peers_error(self):
+        result = self._call(404, {"error": "Award not found"})
+        assert "Award not found" in result
+        assert "404" in result
+
+    def test_5xx_json_error_is_not_shown(self):
+        result = self._call(500, {"error": "connect ECONNREFUSED 10.0.3.4:5432"})
+        assert "10.0.3.4" not in result
+        assert "500" in result
+
+    def test_5xx_raw_text_is_not_shown(self):
+        result = self._call(502, "<html>upstream host internal.example</html>", "text/html")
+        assert "internal.example" not in result
+        assert "502" in result
+
+    def test_4xx_raw_text_is_not_shown(self):
+        result = self._call(400, "<html>nginx internal.example</html>", "text/html")
+        assert "internal.example" not in result
+
+
+class TestCallerSafeUpstreamText:
+    """xdmod-data raises RuntimeError("Error <status>: <message>") and a 500's message can carry SQL."""
+
+    def setup_method(self):
+        self.server_instance = XDMoDPythonServer()
+        self.server_instance._env_api_token = "t"
+
+    def _realms_text(self, exc):
+        dw = Mock()
+        dw.describe_realms.side_effect = exc
+        dw.__enter__ = Mock(return_value=dw)
+        dw.__exit__ = Mock(return_value=False)
+        with patch("xdmod_data.warehouse.DataWarehouse", return_value=dw):
+            result = asyncio.run(self.server_instance._describe_raw_realms({}))
+        return result[0].text
+
+    def test_5xx_message_is_not_shown(self):
+        text = self._realms_text(RuntimeError("Error 500: SQLSTATE[42S02]: Base table not found"))
+        assert "SQLSTATE" not in text
+
+    def test_4xx_message_is_shown(self):
+        text = self._realms_text(RuntimeError("Error 403: You are not authorized for this realm"))
+        assert "You are not authorized for this realm" in text
+
+    def test_transport_error_is_not_shown(self):
+        text = self._realms_text(
+            requests.exceptions.ConnectionError("HTTPSConnectionPool(host='10.1.2.3', port=443)")
+        )
+        assert "10.1.2.3" not in text
+
+    def test_nsf_connection_error_omits_the_service_url(self):
+        with patch.object(
+            self.server_instance, "_get_service_endpoint", return_value="http://nsf-internal:3007"
+        ), patch(
+            "xdmod_mcp_data.server.requests.post",
+            side_effect=requests.exceptions.ConnectionError("refused"),
+        ):
+            result = asyncio.run(self.server_instance._call_nsf_server("search", {}))
+        assert "nsf-internal" not in result
+        assert "Connection Error" in result
+
+
+class TestUpstreamFailureLogging:
+    """A failure line carries status or code, never the body or exception text."""
+
+    def setup_method(self):
+        self.server_instance = XDMoDPythonServer()
+
+    def test_5xx_runtime_error_logs_status_without_message(self, caplog):
+        from xdmod_mcp_data.server import caller_safe_error
+        with caplog.at_level("WARNING"):
+            caller_safe_error(RuntimeError("Error 500: SQLSTATE[42S02] for alice@example.org"))
+        assert '"status": 500' in caplog.text
+        assert '"upstream": "xdmod"' in caplog.text
+        assert "SQLSTATE" not in caplog.text
+        assert "alice@example.org" not in caplog.text
+
+    def test_4xx_is_not_logged(self, caplog):
+        from xdmod_mcp_data.server import caller_safe_error
+        with caplog.at_level("WARNING"):
+            caller_safe_error(RuntimeError("Error 403: not authorized"))
+        assert caplog.text == ""
+
+    def test_transport_error_logs_code_without_message(self, caplog):
+        from xdmod_mcp_data.server import caller_safe_error
+        with caplog.at_level("WARNING"):
+            caller_safe_error(
+                requests.exceptions.ConnectionError("HTTPSConnectionPool(host='10.1.2.3', port=443)")
+            )
+        assert '"code": "ConnectionError"' in caplog.text
+        assert "10.1.2.3" not in caplog.text
+
+    def test_nsf_5xx_logs_status_without_peer_body(self, caplog):
+        response = Mock()
+        response.status_code = 500
+        response.headers = {"content-type": "application/json"}
+        response.json.return_value = {"error": "connect ECONNREFUSED 10.0.3.4:5432"}
+        with patch.object(
+            self.server_instance, "_get_service_endpoint", return_value="http://nsf:3007"
+        ), patch("xdmod_mcp_data.server.requests.post", return_value=response), caplog.at_level("WARNING"):
+            asyncio.run(self.server_instance._call_nsf_server("search", {}))
+        assert '"status": 500' in caplog.text
+        assert '"path": "/tools/search"' in caplog.text
+        assert "10.0.3.4" not in caplog.text

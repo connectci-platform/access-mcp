@@ -27,6 +27,7 @@ import { IncomingMessage, Server as HttpServer, ServerResponse } from "node:http
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createLogger, Logger } from "./logger.js";
+import { callerSafeUpstreamError, describeAxiosFailure, logUpstreamFailure } from "./utils.js";
 // Safe direction: drupal-auth depends only on logger, never on base-server.
 import { DrupalApiError } from "./drupal-auth.js";
 import { traceMcpToolCall } from "./telemetry.js";
@@ -888,21 +889,41 @@ export abstract class BaseAccessServer {
       headers["X-Api-Key"] = apiKey;
     }
 
-    const response = await axios.post(
-      `${serviceUrl}/tools/${toolName}`,
-      {
-        arguments: args,
-      },
-      {
-        timeout: options?.timeoutMs ?? 30000,
-        validateStatus: () => true,
-        headers,
-      }
-    );
+    let response;
+    try {
+      response = await axios.post(
+        `${serviceUrl}/tools/${toolName}`,
+        {
+          arguments: args,
+        },
+        {
+          timeout: options?.timeoutMs ?? 30000,
+          validateStatus: () => true,
+          headers,
+        }
+      );
+    } catch (error) {
+      // The axios error carries config.headers (API key, acting user); log a
+      // summary and throw a fresh Error so none of it travels with the throw.
+      logUpstreamFailure(this.logger, {
+        ...describeAxiosFailure(error, serviceName),
+        method: "POST",
+        path: `/tools/${toolName}`,
+      });
+      throw new Error("Remote server call failed: upstream unreachable");
+    }
 
     if (response.status !== 200) {
+      const safe = callerSafeUpstreamError(response.status, response.data);
+      if (!safe) {
+        logUpstreamFailure(this.logger, {
+          ...describeAxiosFailure(response, serviceName),
+          method: "POST",
+          path: `/tools/${toolName}`,
+        });
+      }
       throw new Error(
-        `Remote server call failed: ${response.status} ${response.data?.error || response.statusText}`
+        `Remote server call failed: ${response.status} ${safe?.message ?? response.statusText}`
       );
     }
 

@@ -1,3 +1,4 @@
+import { inspect } from "node:util";
 import { describe, it, expect, vi } from "vitest";
 import { AllocationsServer } from "../server.js";
 
@@ -171,5 +172,39 @@ describe("analyzeProjectFunding service-unavailable (I1) — positive control (g
     // no-match response.
     expect(text).not.toContain(UNAVAILABLE_STRING);
     expect(text).not.toContain(UNKNOWN_STRING);
+  });
+});
+
+describe("analyzeProjectFunding NSF peer failure logging", () => {
+  it("logs no header values or error object when the peer call throws", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const server = new AllocationsServer();
+    const axiosLike = Object.assign(new Error("connect ECONNREFUSED"), {
+      config: {
+        headers: { "X-Api-Key": "secret-key-123", "X-Acting-User": "alice@access-ci.org" },
+      },
+    });
+    vi.spyOn(
+      server as unknown as {
+        callRemoteServer: (s: string, t: string, a: unknown) => Promise<unknown>;
+      },
+      "callRemoteServer",
+    ).mockRejectedValue(axiosLike);
+    mockFindProjectById(server, rec("Long, Matthew", "Logged Project", "Example University"));
+
+    await analyzeProjectFunding(server, 1);
+
+    const inspected = warn.mock.calls
+      .flat()
+      .map((a) => (typeof a === "string" ? a : inspect(a, { depth: 6 })))
+      .join("\n");
+    const warnedWithError = warn.mock.calls.flat().some((a) => a instanceof Error);
+    const warnCount = warn.mock.calls.length;
+    warn.mockRestore();
+    expect(warnCount).toBeGreaterThan(0);
+    expect(inspected).toContain("ECONNREFUSED");
+    expect(inspected).not.toContain("secret-key-123");
+    expect(inspected).not.toContain("alice@access-ci.org");
+    expect(warnedWithError).toBe(false);
   });
 });

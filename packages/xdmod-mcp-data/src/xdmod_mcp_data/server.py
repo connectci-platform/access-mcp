@@ -7,9 +7,12 @@ Uses the XDMoD data analytics framework for better user-specific data access.
 
 import asyncio
 import json
+import logging
 import os
+import re
 import sys
 import time
+from urllib.parse import urlparse
 from typing import Any, Callable, Dict, List, Optional
 from datetime import timedelta
 
@@ -31,6 +34,61 @@ XDMOD_CALL_TIMEOUT_SECONDS = float(os.getenv("XDMOD_CALL_TIMEOUT_SECONDS", "60")
 
 class XDMoDUnavailableError(Exception):
     pass
+
+
+logger = logging.getLogger(__name__)
+
+_XDMOD_REFUSAL = re.compile(r"Error 4\d\d: ")
+_XDMOD_STATUS = re.compile(r"Error (\d{3}): ")
+
+
+def log_upstream_failure(
+    upstream: str,
+    *,
+    method: Optional[str] = None,
+    path: Optional[str] = None,
+    status: Optional[int] = None,
+    code: Optional[str] = None,
+    host: Optional[str] = None,
+) -> None:
+    """Write one stderr line saying an upstream call failed and its text was withheld.
+
+    Metadata only: there is no parameter for a body, an exception message, a
+    query string, headers, a token, or the acting user. Python's last-resort
+    handler writes WARNING and above to stderr when nothing else is configured.
+    """
+    fields = {"upstream": upstream, "method": method, "path": path.split("?")[0] if path else None,
+              "status": status, "code": code, "host": host}
+    context = {k: v for k, v in fields.items() if v is not None}
+    logger.warning("Upstream call failed; details withheld from caller %s", json.dumps(context))
+
+
+def caller_safe_error(e: Exception) -> str:
+    """The text of a failed XDMoD or NSF call that may be shown to a caller.
+
+    xdmod-data raises RuntimeError("Error <status>: <XDMoD message>") for any
+    non-200, and a 500's message can carry SQL, so only a 4xx message is kept.
+    Anything else, including requests transport errors that name internal
+    hosts, becomes a fixed line. XDMoDUnavailableError is our own text.
+    """
+    if isinstance(e, XDMoDUnavailableError):
+        return str(e)
+    if isinstance(e, RuntimeError) and _XDMOD_REFUSAL.match(str(e)):
+        return str(e)
+    # The exception class stands in for a transport error code; its message
+    # is never logged. xdmod-data's RuntimeError carries the upstream status.
+    status_match = _XDMOD_STATUS.match(str(e)) if isinstance(e, RuntimeError) else None
+    request = getattr(e, "request", None)
+    request_url = getattr(request, "url", None)
+    log_upstream_failure(
+        "xdmod",
+        method=getattr(request, "method", None),
+        path=urlparse(request_url).path if request_url else None,
+        status=int(status_match.group(1)) if status_match else None,
+        code=None if status_match else type(e).__name__,
+        host=urlparse(request_url).netloc if request_url and not status_match else None,
+    )
+    return "The upstream service could not complete the request"
 
 
 class XDMoDPythonServer(BaseAccessServer):
@@ -504,7 +562,7 @@ class XDMoDPythonServer(BaseAccessServer):
                     return None, error_msg
                     
         except Exception as e:
-            return None, f"❌ **User lookup failed:** {str(e)}"
+            return None, f"❌ **User lookup failed:** {caller_safe_error(e)}"
 
     async def _get_user_data_python(self, args: Dict[str, Any]) -> List[TextContent]:
         """Get user-specific usage data by finding the right user first"""
@@ -760,12 +818,12 @@ class XDMoDPythonServer(BaseAccessServer):
                         result += f"• Access restrictions\n"
                         
                 except Exception as data_error:
-                    result += f"❌ **Chart data retrieval failed:** {str(data_error)}\n"
+                    result += f"❌ **Chart data retrieval failed:** {caller_safe_error(data_error)}\n"
         
         except ImportError:
             return [TextContent(type="text", text="❌ xdmod-data framework not available")]
         except Exception as e:
-            return [TextContent(type="text", text=f"❌ Framework error: {str(e)}")]
+            return [TextContent(type="text", text=f"❌ Framework error: {caller_safe_error(e)}")]
             
         return [TextContent(type="text", text=result)]
     
@@ -808,7 +866,7 @@ class XDMoDPythonServer(BaseAccessServer):
             result += f"• Consider institutional usage patterns at researcher's institution\n"
             
         except Exception as e:
-            result += f"❌ **Integration error:** {str(e)}\n"
+            result += f"❌ **Integration error:** {caller_safe_error(e)}\n"
             result += f"**Note:** Requires both NSF and XDMoD servers to be available\n"
         
         return [TextContent(type="text", text=result)]
@@ -852,7 +910,7 @@ class XDMoDPythonServer(BaseAccessServer):
             result += f"• Use institutional analysis to see broader impact\n"
             
         except Exception as e:
-            result += f"❌ **Analysis error:** {str(e)}\n"
+            result += f"❌ **Analysis error:** {caller_safe_error(e)}\n"
             result += f"**Note:** Requires both NSF and XDMoD servers to be available\n"
         
         return [TextContent(type="text", text=result)]
@@ -898,7 +956,7 @@ class XDMoDPythonServer(BaseAccessServer):
             result += f"• Track computational ROI relative to funding investment\n"
             
         except Exception as e:
-            result += f"❌ **Profile generation error:** {str(e)}\n"
+            result += f"❌ **Profile generation error:** {caller_safe_error(e)}\n"
             result += f"**Note:** Requires both NSF and XDMoD servers to be available\n"
         
         return [TextContent(type="text", text=result)]
@@ -935,16 +993,31 @@ class XDMoDPythonServer(BaseAccessServer):
                             return content[0]["text"]
                 return str(data)
             else:
-                error_msg = response.json().get("error", "Unknown error") if response.headers.get("content-type", "").startswith("application/json") else response.text
+                # Only a 4xx is a deliberate refusal; any other status, or a
+                # body that is not the peer's {error} JSON, can carry internal text.
+                error_msg = "The NSF server could not complete the request"
+                if not 400 <= response.status_code < 500:
+                    log_upstream_failure(
+                        "nsf-mcp", method="POST", path=f"/tools/{method}",
+                        status=response.status_code,
+                    )
+                if 400 <= response.status_code < 500 and response.headers.get("content-type", "").startswith("application/json"):
+                    peer_error = response.json().get("error")
+                    if isinstance(peer_error, str) and peer_error:
+                        error_msg = peer_error
                 return f"❌ **NSF Server Error ({response.status_code})**: {error_msg}"
                 
-        except requests.exceptions.Timeout:
+        except requests.exceptions.Timeout as e:
+            log_upstream_failure("nsf-mcp", method="POST", path=f"/tools/{method}",
+                                 code=type(e).__name__, host=urlparse(nsf_service_url).netloc)
             return f"⏰ **NSF Server Timeout**: Request took longer than 30 seconds"
-        except requests.exceptions.ConnectionError:
-            return f"🔌 **NSF Server Connection Error**: Could not connect to {nsf_service_url}\n" \
+        except requests.exceptions.ConnectionError as e:
+            log_upstream_failure("nsf-mcp", method="POST", path=f"/tools/{method}",
+                                 code=type(e).__name__, host=urlparse(nsf_service_url).netloc)
+            return f"🔌 **NSF Server Connection Error**: Could not connect to the NSF server\n" \
                    f"Ensure NSF server is running with HTTP service enabled"
         except Exception as e:
-            return f"❌ **NSF Server Integration Error**: {str(e)}"
+            return f"❌ **NSF Server Integration Error**: {caller_safe_error(e)}"
     
     def _get_service_endpoint(self, service_name: str) -> str:
         """Get service endpoint from environment configuration"""
@@ -992,7 +1065,7 @@ class XDMoDPythonServer(BaseAccessServer):
                     return "⚠️ Limited system usage data for the specified period"
                     
         except Exception as e:
-            return f"❌ XDMoD data access error: {str(e)}"
+            return f"❌ XDMoD data access error: {caller_safe_error(e)}"
 
     async def _validate_filters_with_smart_matching(self, dw, filters: dict, realm: str, show_progress: bool = False) -> tuple:
         """
@@ -1083,7 +1156,7 @@ class XDMoDPythonServer(BaseAccessServer):
                     processed_filters[key] = value
                 else:
                     processed_filters[key] = [value] if not isinstance(value, list) else value
-                filter_warnings.append(f"⚠️ Could not validate filter {key}: {str(e)}")
+                filter_warnings.append(f"⚠️ Could not validate filter {key}: {caller_safe_error(e)}")
         
         return processed_filters, filter_warnings
 
@@ -1285,7 +1358,7 @@ class XDMoDPythonServer(BaseAccessServer):
                                 processed_filters[key] = value
                             else:
                                 processed_filters[key] = [value] if not isinstance(value, list) else value
-                            filter_warnings.append(f"⚠️ Could not validate filter {key}: {str(e)}")
+                            filter_warnings.append(f"⚠️ Could not validate filter {key}: {caller_safe_error(e)}")
                 
                 # Display filter warnings with cross-realm suggestions
                 if filter_warnings:
@@ -1516,7 +1589,7 @@ class XDMoDPythonServer(BaseAccessServer):
         except ImportError:
             result = "❌ XDMoD data framework not installed. Please install: pip install xdmod-data"
         except Exception as e:
-            result = f"❌ Error: {str(e)}"
+            result = f"❌ Error: {caller_safe_error(e)}"
             
         return [TextContent(type="text", text=result)]
 
@@ -1653,7 +1726,7 @@ class XDMoDPythonServer(BaseAccessServer):
         except ImportError:
             result = "❌ XDMoD data framework not installed. Please install: pip install xdmod-data"
         except Exception as e:
-            result = f"❌ Error: {str(e)}"
+            result = f"❌ Error: {caller_safe_error(e)}"
             
         return [TextContent(type="text", text=result)]
 
@@ -1720,13 +1793,13 @@ class XDMoDPythonServer(BaseAccessServer):
                         result += "• Network connectivity problems\n"
                         
                 except Exception as realm_error:
-                    result += f"❌ Error discovering realms: {str(realm_error)}\n"
+                    result += f"❌ Error discovering realms: {caller_safe_error(realm_error)}\n"
                     result += "\n**Note:** Some XDMoD instances may not expose all realms via the API.\n"
                 
         except ImportError:
             result = "❌ XDMoD data framework not installed. Please install: pip install xdmod-data"
         except Exception as e:
-            result = f"❌ Error: {str(e)}"
+            result = f"❌ Error: {caller_safe_error(e)}"
             
         return [TextContent(type="text", text=result)]
 
@@ -1832,7 +1905,7 @@ class XDMoDPythonServer(BaseAccessServer):
                 result += f"• Use category='gpu|cpu|memory|storage' for specific types\n"
                 
         except Exception as e:
-            result += f"❌ **Error getting smart filters**: {str(e)}\n"
+            result += f"❌ **Error getting smart filters**: {caller_safe_error(e)}\n"
         
         return [TextContent(type="text", text=result)]
     

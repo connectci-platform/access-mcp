@@ -1,6 +1,10 @@
 import {
   BaseAccessServer,
   handleApiError,
+  silentLogger,
+  callerSafeUpstreamError,
+  describeAxiosFailure,
+  logUpstreamFailure,
   projectFields,
   Resource,
   CallToolResult,
@@ -155,11 +159,27 @@ export class DocumentationServer extends BaseAccessServer {
     let response;
     try {
       response = await this.httpClient.post(this.retrieveUrl, body, config);
-    } catch {
+    } catch (error) {
+      // Only the error code and target host are logged, never its message.
+      logUpstreamFailure(this.logger, {
+        ...describeAxiosFailure(error, "uky"),
+        method: "POST",
+        path: this.retrieveUrl,
+        host: hostOf(this.retrieveUrl),
+      });
       return this.errorResponse(
         "Documentation search failed; try another approach.",
         { hint: "The documentation backend did not respond (network or timeout error)." }
       );
+    }
+
+    if (response.status < 200 || response.status >= 300) {
+      logUpstreamFailure(this.logger, {
+        upstream: "uky",
+        method: "POST",
+        path: this.retrieveUrl,
+        status: response.status,
+      });
     }
 
     if (response.status === 401) {
@@ -175,13 +195,19 @@ export class DocumentationServer extends BaseAccessServer {
       );
     }
     if (response.status < 200 || response.status >= 300) {
-      // UKY surfaces failures as {"error": "..."} (not {"message"}), which
-      // handleApiError doesn't read — so prefer the error body, then fall
-      // back to handleApiError. handleApiError also expects a thrown axios
-      // error (reads err.response.*), so wrap the response to match.
-      const ukyError =
-        (response.data as { error?: string } | undefined)?.error;
-      return this.errorResponse(ukyError || handleApiError({ response }));
+      // The response is passed without its body so handleApiError cannot read
+      // a 5xx body's text either.
+      const safe = callerSafeUpstreamError(response.status, response.data);
+      return this.errorResponse(
+        safe?.message ??
+          handleApiError(
+            {
+              response: { status: response.status, statusText: response.statusText },
+            },
+            // Already logged above, with the path.
+            { logger: silentLogger }
+          )
+      );
     }
 
     const data = (response.data ?? {}) as {
@@ -231,5 +257,13 @@ export class DocumentationServer extends BaseAccessServer {
         },
       ],
     };
+  }
+}
+
+function hostOf(url: string): string | undefined {
+  try {
+    return new URL(url).host;
+  } catch {
+    return undefined;
   }
 }

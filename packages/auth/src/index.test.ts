@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
 
@@ -70,5 +70,21 @@ describe("OAuth protected-resource metadata discovery", () => {
     // The bug would be the protected-resource handler over-matching and
     // returning its doc (identified by `resource: https://mcp.access-ci.org/`).
     expect(res.body?.resource).not.toBe("https://mcp.access-ci.org/");
+  });
+});
+
+describe("OAuth callback failure", () => {
+  it("returns a fixed 500 message and logs no error text", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await request(app).get("/callback?code=abc-secret&state=unknown-state");
+    const lines = spy.mock.calls.map((c) => c.join(" ")).join("\n");
+    spy.mockRestore();
+    expect(res.status).toBe(500);
+    expect(res.text).toBe("Authentication failed. Please try again.");
+    expect(lines).toContain('"upstream":"cilogon"');
+    expect(lines).toContain('"path":"/callback"');
+    expect(lines).not.toContain("Invalid or expired");
+    expect(lines).not.toContain("abc-secret");
+    expect(lines).not.toContain("unknown-state");
   });
 });

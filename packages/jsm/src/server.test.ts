@@ -168,6 +168,80 @@ describe("JsmServer", () => {
       expect(responseData.error.message).toContain("Failed to create ticket");
     });
 
+    it("does not show a 5xx proxy error text", async () => {
+      mockProxyClient.post.mockResolvedValue({
+        status: 502,
+        data: { error: "connect ECONNREFUSED jira.internal:443" },
+      });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "create_support_ticket",
+          arguments: {
+            summary: "Test",
+            description: "Test description",
+            user_email: "test@test.com",
+            user_name: "Test User",
+          },
+        },
+      });
+
+      const text = (result.content[0] as TextContent).text;
+      expect(text).not.toContain("jira.internal");
+      expect(JSON.parse(text).error.message).toBe("Failed to create ticket: HTTP 502");
+    });
+
+    it("logs a 5xx proxy failure as status and path without its text", async () => {
+      const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+      mockProxyClient.post.mockResolvedValue({
+        status: 502,
+        data: { error: "connect ECONNREFUSED jira.internal:443" },
+      });
+      await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "create_support_ticket",
+          arguments: {
+            summary: "Test",
+            description: "Test description",
+            user_email: "test@test.com",
+            user_name: "Test User",
+          },
+        },
+      });
+      const lines = spy.mock.calls.map((c) => c.join(" ")).join("\n");
+      spy.mockRestore();
+      expect(lines).toContain('"upstream":"jsm-proxy"');
+      expect(lines).toContain('"status":502');
+      expect(lines).toContain('"path":"/api/v1/tickets"');
+      expect(lines).not.toContain("jira.internal");
+      expect(lines).not.toContain("test@test.com");
+    });
+
+    it("shows a 4xx proxy error text", async () => {
+      mockProxyClient.post.mockResolvedValue({
+        status: 400,
+        data: { error: "Invalid field values" },
+      });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "create_support_ticket",
+          arguments: {
+            summary: "Test",
+            description: "Test description",
+            user_email: "test@test.com",
+            user_name: "Test User",
+          },
+        },
+      });
+
+      const responseData = JSON.parse((result.content[0] as TextContent).text);
+      expect(responseData.error.message).toBe("Failed to create ticket: Invalid field values");
+    });
+
     it("should handle proxy returning success:false", async () => {
       mockProxyClient.post.mockResolvedValue({
         status: 200,
@@ -191,7 +265,32 @@ describe("JsmServer", () => {
       });
 
       const responseData = JSON.parse((result.content[0] as TextContent).text);
-      expect(responseData.error.message).toContain("Invalid field values");
+      expect(responseData.error.message).toBe("Failed to create ticket: The ticket could not be created");
+      expect(responseData.error.message).not.toContain("Invalid field values");
+    });
+
+    it("should not pass a proxy success:false error string through", async () => {
+      mockProxyClient.post.mockResolvedValue({
+        status: 200,
+        data: { success: false, error: "JIRA_TOKEN=abc at jira.internal:8080" },
+      });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "create_support_ticket",
+          arguments: {
+            summary: "Test",
+            description: "Test description",
+            user_email: "test@test.com",
+            user_name: "Test User",
+          },
+        },
+      });
+
+      const text = (result.content[0] as TextContent).text;
+      expect(text).not.toContain("JIRA_TOKEN");
+      expect(text).not.toContain("jira.internal");
     });
   });
 

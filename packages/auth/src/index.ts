@@ -7,6 +7,7 @@
  */
 
 import express from "express";
+import { createLogger, describeAxiosFailure, logUpstreamFailure } from "@access-mcp/shared";
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { CILogonOAuthProvider } from "./cilogon-provider.js";
 import { SqliteClientStore, resolveClientStorePath } from "./sqlite-client-store.js";
@@ -33,6 +34,7 @@ const provider = new CILogonOAuthProvider({
   clientStore,
 });
 
+const logger = createLogger("access-mcp-auth");
 const app = express();
 app.set("trust proxy", 1); // Behind Caddy reverse proxy
 app.use(express.json());
@@ -115,10 +117,11 @@ app.get("/callback", async (req, res) => {
 <script>setTimeout(function(){window.location.href = ${JSON.stringify(redirectUri)};}, 1500);</script>
 </body></html>`);
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Unknown error";
-    console.error("OAuth callback error:", message);
-    res.status(500).send(`Authentication error: ${message}`);
+    // The error text can come from CILogon or the network and name internal
+    // hosts, so the caller gets a fixed message and the log gets metadata only.
+    const failure = describeAxiosFailure(error, "cilogon");
+    logUpstreamFailure(logger, { ...failure, path: failure.path ?? "/callback" });
+    res.status(500).send("Authentication failed. Please try again.");
   }
 });
 
