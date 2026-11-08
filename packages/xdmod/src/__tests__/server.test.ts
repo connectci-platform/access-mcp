@@ -453,6 +453,62 @@ describe("XDMoDMetricsServer", () => {
   });
 
   describe("get_chart_data tool", () => {
+    describe("filter matches", () => {
+      const dimension = (names: string[]) => ({
+        ok: true,
+        json: () =>
+          Promise.resolve({ data: names.map((name, i) => ({ id: String(i + 1), name })) }),
+      });
+      const chart = {
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            success: true,
+            data: [{ hc_jsonstore: { data: [{ name: "ACCESS", x: ["ACCESS"], y: [5] }] } }],
+          }),
+      };
+      const call = (resource: string) =>
+        server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "get_chart_data",
+            arguments: {
+              realm: "Jobs",
+              group_by: "none",
+              statistic: "total_cpu_hours",
+              start_date: "2026-01-01",
+              end_date: "2026-01-31",
+              dataset_type: "aggregate",
+              filters: { resource },
+            },
+          },
+        });
+
+      beforeEach(() => {
+        mockFetch.mockReset();
+      });
+
+      test("should say which resources a partial name included", async () => {
+        mockFetch
+          .mockResolvedValueOnce(dimension(["NCSA DELTA CPU", "NCSA DELTA GPU", "NCSA DeltaAI", "Expanse"]))
+          .mockResolvedValueOnce(chart);
+
+        const result = await call("Delta");
+        const text = (result.content[0] as { text: string }).text;
+
+        expect(text).toContain('resource "Delta" included NCSA DELTA CPU, NCSA DELTA GPU, NCSA DeltaAI');
+        expect(mockFetch.mock.calls[1][1].body.get("resource_filter")).toBe("1,2,3");
+      });
+
+      test("should not call out an exact match", async () => {
+        mockFetch.mockResolvedValueOnce(dimension(["Expanse", "Expanse GPU"])).mockResolvedValueOnce(chart);
+
+        const result = await call("Expanse");
+
+        expect((result.content[0] as { text: string }).text).not.toContain("included");
+      });
+    });
+
     describe("caching", () => {
       const chartResponse = {
         ok: true,
