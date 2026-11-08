@@ -1626,6 +1626,29 @@ describe("AnnouncementsServer", () => {
         expect(lines[gate + 1]).toContain("**Affinity Group:**");
       });
 
+      it("published_date schema says it is the digest date, not the event date, and to leave it out by default", () => {
+        for (const name of ["create_announcement", "update_announcement"]) {
+          const props = toolByName(name).inputSchema.properties as Record<string, { description: string }>;
+          const d = props.published_date.description;
+          expect(d.toLowerCase()).toContain("digest");
+          expect(d).toContain("never the date of an event");
+          expect(d).toContain("unless the user asks for a specific publish date");
+        }
+        const create = toolByName("create_announcement").inputSchema.properties as Record<string, { description: string }>;
+        expect(create.published_date.description).toContain("default today");
+      });
+
+      it("create description shows Publish date only when it is not today and explains the digest effect", () => {
+        const desc = toolByName("create_announcement").description;
+        expect(desc).toContain("**Publish date:**");
+        expect(desc).toContain("only when it is not today");
+        expect(desc).toContain("future publish date");
+        expect(desc).toContain("past publish date");
+        expect(desc).toContain("before the current digest window");
+        expect(desc).toContain("any date other than today");
+        expect(desc).toContain("Bi-Weekly Digest");
+      });
+
       it("create description treats a change request as not confirmation", () => {
         const desc = toolByName("create_announcement").description;
         expect(desc).toContain("show the updated preview and ask again");

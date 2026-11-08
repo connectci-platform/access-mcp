@@ -273,6 +273,7 @@ PREVIEW FORMAT (show before creating):
 [body content, truncate if very long]
 
 **Tags:** [tag1, tag2, ...] or "None"
+**Publish date:** [YYYY-MM-DD] (only when it is not today; omit this line otherwise)
 **Affiliation:** [chosen affiliation, or "Community" by default]
 **Share to:** [chosen options, or "Announcements page, Bi-Weekly Digest" by default]
 **External Link:** [link text](url) or omit if none
@@ -280,6 +281,7 @@ PREVIEW FORMAT (show before creating):
 **Affinity Group:** [group name] or "None"
 ---
 After the preview, invite the user to change the affiliation or where it is shared right there, and ask "Does this look correct?" before creating. If the user asks for a change, show the updated preview and ask again. A bare change request still gets an updated preview and a new ask. A bare change request is not confirmation; create only after the user confirms the current preview. The exception: when one reply both requests a change and explicitly says to go ahead, create with that change applied, then tell the user what was saved. An explicit go-ahead is an explicit instruction to create in the same reply, such as "go ahead", "create it" or "post it". Approval words like "looks good" or "sounds good" next to a change are not a go-ahead; they get an updated preview.
+Publish date: leave published_date out unless the user asks for a specific publish date; it defaults to today. It is the date the announcement is dated, listed by (newest first) and picked up by the Bi-Weekly Digest, never the date of an event the announcement describes. A future publish date keeps the announcement out of the Bi-Weekly Digest until that date and pins it to the top of listings. A past publish date, before the current digest window, also keeps it out of the digest. When the preview shows any date other than today, tell the user this.
 Affiliation options: "ACCESS Collaboration" or "Community". Sharing options: "Announcements page" and "Bi-Weekly Digest" are open to everyone. "Affinity Group page" and "Email to Affinity Group" need an affinity group the user is allowed to post to (a coordinator of it, or an administrator or news manager, who can post to any group); the group is chosen in the preview too. get_announcement_context lists only the groups the user coordinates, so an administrator or news manager sees an empty list and names the group directly.
 Pass affiliation and where_to_share exactly as the confirmed preview showed them.
 
@@ -303,7 +305,8 @@ ALWAYS display data.edit_url to the user so they can review their draft in Drupa
             },
             published_date: {
               type: "string",
-              description: "When to display (YYYY-MM-DD). Defaults to today.",
+              description:
+                "The date the announcement is dated (YYYY-MM-DD) and picked up by the Bi-Weekly Digest, never the date of an event it describes. Leave it out unless the user asks for a specific publish date (default today).",
             },
             tags: {
               type: "array",
@@ -376,7 +379,8 @@ ALWAYS display data.edit_url to the user so they can review changes in Drupal.`,
             },
             published_date: {
               type: "string",
-              description: "New publication date YYYY-MM-DD (only if changing)",
+              description:
+                "New publish date (YYYY-MM-DD): the date the announcement is dated and picked up by the digest, never the date of an event it describes. Leave it out unless the user asks for a specific publish date.",
             },
             tags: {
               type: "array",
