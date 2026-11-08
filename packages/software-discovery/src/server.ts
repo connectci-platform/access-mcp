@@ -85,6 +85,36 @@ interface SoftwareComparison {
   found: boolean;
   available_on: string[];
   resource_count: number;
+  resource_status: Record<string, ResourceStatus>;
+}
+
+type ResourceStatus = "listed" | "not_listed" | "not_indexed" | "lookup_failed";
+type Coverage = "indexed" | "not_indexed" | "lookup_failed";
+
+const GAP_NOTE =
+  "not_listed means the package isn't in that resource's software list, not that it can't be used. " +
+  "not_indexed means no software list exists for that resource, so nothing is known about its software. " +
+  "lookup_failed means the check for that resource's list failed. " +
+  "None of these mean the software is unavailable; point the user to the resource's documentation or support.";
+
+/** "anvil.purdue.access-ci.org" and "Bridges2" read as "anvil" and "bridges2". */
+function resourceKey(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .split(".")[0]
+    .replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * Whether a requested resource is one the index returned. Fuzzy resource
+ * matching means "delta" brings back "deltaai" too, so a prefix either way
+ * counts. The fullscreen client's grid uses the same rule.
+ */
+function sameResource(requested: string, found: string): boolean {
+  const r = resourceKey(requested);
+  const f = resourceKey(found);
+  return r !== "" && (f === r || f.startsWith(r) || r.startsWith(f));
 }
 
 // Argument types for tool methods
@@ -337,7 +367,7 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
         name: "compare_software_availability",
         mutates: false,
         description:
-          "Compare availability of multiple software packages across resources. Returns {comparison, summary}.",
+          "Compare availability of multiple software packages across resources. Returns {comparison, summary, gap_note}. Each comparison row has resource_status per resource: listed, not_listed, not_indexed or lookup_failed. Only listed says the software is there; a gap never means it is unavailable.",
         inputSchema: {
           type: "object",
           properties: {
@@ -531,8 +561,15 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
   }
 
   private async searchSoftware(args: SearchSoftwareArgs): Promise<CallToolResult> {
-    const { query, resource, fuzzy = true, include_ai_metadata = true, limit, offset, fields } =
-      args;
+    const {
+      query,
+      resource,
+      fuzzy = true,
+      include_ai_metadata = true,
+      limit,
+      offset,
+      fields,
+    } = args;
 
     // Build query params
     const params: SoftwareQueryParams = {};
@@ -795,6 +832,22 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
         }
       }
 
+      // A requested resource that none of the results came from either has no
+      // software list at all or just lists none of these packages. Ask the
+      // index which, so a gap is never read as "not available".
+      const foundResources = Array.from(allResources).sort();
+      const unmatched = (resources ?? []).filter(
+        (r, i, all) =>
+          !foundResources.some((f) => sameResource(r, f)) &&
+          all.findIndex((o) => resourceKey(o) === resourceKey(r)) === i
+      );
+      const coverage = new Map<string, Coverage>(
+        await Promise.all(
+          unmatched.map(async (r): Promise<[string, Coverage]> => [r, await this.coverageOf(r)])
+        )
+      );
+      const statusColumns = [...foundResources, ...unmatched];
+
       // Create comparison table
       const comparison: SoftwareComparison[] = [];
 
@@ -813,11 +866,23 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
           foundKey = Object.keys(availabilityMap).find((k) => softwareLower.includes(k));
         }
 
+        const listedOn = foundKey ? availabilityMap[foundKey] : new Set<string>();
+        const resourceStatus: Record<string, ResourceStatus> = {};
+        for (const column of statusColumns) {
+          const checked = coverage.get(column);
+          resourceStatus[column] = listedOn.has(column)
+            ? "listed"
+            : checked === undefined || checked === "indexed"
+              ? "not_listed"
+              : checked;
+        }
+
         comparison.push({
           software: softwareName,
           found: !!foundKey,
-          available_on: foundKey ? Array.from(availabilityMap[foundKey]) : [],
-          resource_count: foundKey ? availabilityMap[foundKey].size : 0,
+          available_on: Array.from(listedOn),
+          resource_count: listedOn.size,
+          resource_status: resourceStatus,
         });
       }
 
@@ -828,8 +893,11 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
             text: JSON.stringify({
               requested_software: software_names,
               requested_resources: resources || "all",
-              all_resources_found: Array.from(allResources).sort(),
+              all_resources_found: foundResources,
               comparison,
+              resources_not_indexed: unmatched.filter((r) => coverage.get(r) === "not_indexed"),
+              resources_lookup_failed: unmatched.filter((r) => coverage.get(r) === "lookup_failed"),
+              gap_note: GAP_NOTE,
               summary: {
                 total_software_requested: software_names.length,
                 software_found: comparison.filter((c) => c.found).length,
@@ -841,6 +909,20 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
       };
     } catch (error) {
       return this.errorResponse(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /** Whether the index holds any software list for a resource. */
+  private async coverageOf(resource: string): Promise<Coverage> {
+    try {
+      const items = await this.queryApi({
+        software: ["*"],
+        rps: [normalizeGlobalResourceId(resource)],
+        fuzz_rp: true,
+      });
+      return items.length > 0 ? "indexed" : "not_indexed";
+    } catch {
+      return "lookup_failed";
     }
   }
 
