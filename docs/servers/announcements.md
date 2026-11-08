@@ -91,7 +91,8 @@ Update an existing announcement you own.
 | `title` | string | No | New title |
 | `body` | string | No | New body content |
 | `summary` | string | No | New summary |
-| `tags` | array | No | New tags |
+| `tags` | array | No | New tags, replacing all existing ones. An empty array means no change; use `clear_tags` to remove all tags. The web form requires at least one tag, so editing the announcement in Drupal later will ask for one |
+| `clear_tags` | boolean | No | `true` removes all tags. Only set when the user explicitly asks; cannot be combined with a non-empty `tags` list (rejected without contacting Drupal) |
 | `affinity_group` | string | No | New affinity group. Replaces all of the announcement's affinity groups |
 | `external_link` | object | No | New external link |
 | `affiliation` | string | No | New affiliation: "ACCESS Collaboration" or "Community" (only if changing) |
