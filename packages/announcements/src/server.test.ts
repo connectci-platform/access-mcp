@@ -1177,6 +1177,124 @@ describe("AnnouncementsServer", () => {
         expect(responseData.data).not.toHaveProperty("nid");
       });
 
+      describe("adding or removing one affinity group", () => {
+        const R_HPC = "11111111-1111-4111-8111-111111111111";
+        const RMACC = "22222222-2222-4222-8222-222222222222";
+        const HIDDEN = "33333333-3333-4333-8333-333333333333";
+        const SSRCG = "44444444-4444-4444-8444-444444444444";
+        const mine = {
+          items: [
+            { uuid: "other-uuid", title: "Other", affinity_groups: [] },
+            {
+              uuid: "announcement-uuid",
+              title: "Workshop",
+              affinity_groups: [
+                { uuid: R_HPC, title: "R for HPC" },
+                { uuid: RMACC, title: "RMACC" },
+                { uuid: HIDDEN, title: null },
+              ],
+            },
+          ],
+        };
+        const call = (args: Record<string, unknown>) =>
+          server["handleToolCall"]({
+            method: "tools/call",
+            params: { name: "update_announcement", arguments: { uuid: "announcement-uuid", ...args } },
+          });
+        const sentGroups = () => mockDrupalAuth.patch.mock.calls[0][2].field_affinity_group_node;
+
+        beforeEach(() => {
+          mockDrupalAuth.patch.mockResolvedValue({ success: true, uuid: "announcement-uuid", title: "Workshop" });
+        });
+
+        it("keeps every current group, hidden ones included, when adding one", async () => {
+          mockDrupalAuth.get.mockImplementation(async (_u: string, url: string) => {
+            if (url.startsWith("/api/2.3/announcements/mine")) return mine;
+            if (url.includes("field_group_id")) return { data: [] };
+            return { data: [{ id: SSRCG }] };
+          });
+
+          await call({ add_affinity_group: "Small Scale Research Computing Groups" });
+
+          expect(sentGroups()).toEqual([R_HPC, RMACC, HIDDEN, SSRCG]);
+        });
+
+        it("does not send a group twice when it is already on the announcement", async () => {
+          mockDrupalAuth.get.mockResolvedValue(mine);
+
+          await call({ add_affinity_group: RMACC });
+
+          expect(sentGroups()).toEqual([R_HPC, RMACC, HIDDEN]);
+        });
+
+        it("removes one group by its title and keeps the hidden group", async () => {
+          mockDrupalAuth.get.mockResolvedValue(mine);
+
+          await call({ remove_affinity_group: "rmacc" });
+
+          expect(sentGroups()).toEqual([R_HPC, HIDDEN]);
+        });
+
+        it("removes one group by its uuid", async () => {
+          mockDrupalAuth.get.mockResolvedValue(mine);
+
+          await call({ remove_affinity_group: R_HPC });
+
+          expect(sentGroups()).toEqual([RMACC, HIDDEN]);
+        });
+
+        it("refuses to remove a group the announcement does not have", async () => {
+          mockDrupalAuth.get.mockImplementation(async (_u: string, url: string) =>
+            url.startsWith("/api/2.3/announcements/mine") ? mine : { data: [] }
+          );
+
+          const result = await call({ remove_affinity_group: "Not A Group" });
+
+          expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+          expect((result.content[0] as TextContent).text).toContain("is not on this announcement");
+        });
+
+        it("refuses when the announcement is not the user's", async () => {
+          mockDrupalAuth.get.mockResolvedValue({ items: [] });
+
+          const result = await call({ remove_affinity_group: "RMACC" });
+
+          expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+          const data = JSON.parse((result.content[0] as TextContent).text);
+          expect(data.error.code).toBe("not_found");
+        });
+
+        it("sends an empty list only for clear_affinity_groups", async () => {
+          await call({ clear_affinity_groups: true });
+
+          expect(mockDrupalAuth.get).not.toHaveBeenCalled();
+          expect(sentGroups()).toEqual([]);
+        });
+
+        it("rejects more than one group change in one call", async () => {
+          const result = await call({ affinity_group: "RMACC", remove_affinity_group: "R for HPC" });
+
+          expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+          expect((result.content[0] as TextContent).text).toMatch(/only one of/);
+        });
+
+        it("shows Drupal's not_coordinator refusal as is", async () => {
+          mockDrupalAuth.get.mockResolvedValue(mine);
+          mockDrupalAuth.patch.mockRejectedValue(
+            new DrupalApiError("Drupal API error: 409 Conflict", 409, {
+              error: "not_coordinator",
+              message: "You are not a coordinator of every group on this announcement.",
+            })
+          );
+
+          const result = await call({ remove_affinity_group: "RMACC" });
+
+          const data = JSON.parse((result.content[0] as TextContent).text);
+          expect(data.error.code).toBe("not_coordinator");
+          expect(JSON.stringify(data)).toContain("You are not a coordinator of every group on this announcement.");
+        });
+      });
+
       it("should tell the user when the edit is waiting for review (D8-3000)", async () => {
         mockDrupalAuth.patch.mockResolvedValue({
           success: true,
