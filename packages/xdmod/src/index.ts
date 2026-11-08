@@ -292,7 +292,8 @@ export class XDMoDMetricsServer extends BaseAccessServer {
   private async resolveFilterId(
     realm: string,
     dimension: string,
-    value: string
+    value: string,
+    matchNotes?: string[]
   ): Promise<string> {
     // Already numeric — use as-is
     if (/^\d+$/.test(value)) return value;
@@ -344,6 +345,13 @@ export class XDMoDMetricsServer extends BaseAccessServer {
         );
       }
     );
+    // A partial name can include more than was asked for, such as DeltaAI for
+    // Delta, so callers can report what it matched.
+    if (matches.length > 0) {
+      matchNotes?.push(
+        `${dimension} "${value}" included ${matches.map((m) => m.name).join(", ")}`
+      );
+    }
     if (matches.length === 1) return matches[0].id ?? value;
     if (matches.length > 1) {
       // Multiple matches — return all IDs so XDMoD includes all
@@ -359,7 +367,8 @@ export class XDMoDMetricsServer extends BaseAccessServer {
    */
   private async resolveFilters(
     realm: string,
-    filters: Record<string, unknown>
+    filters: Record<string, unknown>,
+    matchNotes?: string[]
   ): Promise<Record<string, string>> {
     const resolved: Record<string, string> = {};
     for (const [dimension, value] of Object.entries(filters)) {
@@ -367,7 +376,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
         // Multi-value filter: resolve each and join with commas
         const ids = await Promise.all(
           value.map((v: unknown) =>
-            this.resolveFilterId(realm, dimension, String(v))
+            this.resolveFilterId(realm, dimension, String(v), matchNotes)
           )
         );
         resolved[dimension] = ids.join(",");
@@ -375,7 +384,8 @@ export class XDMoDMetricsServer extends BaseAccessServer {
         resolved[dimension] = await this.resolveFilterId(
           realm,
           dimension,
-          String(value)
+          String(value),
+          matchNotes
         );
       }
     }
@@ -760,8 +770,9 @@ export class XDMoDMetricsServer extends BaseAccessServer {
 
     try {
       // Resolve text filter values to numeric IDs
+      const matchNotes: string[] = [];
       const resolvedFilters = params.filters
-        ? await this.resolveFilters(params.realm, params.filters)
+        ? await this.resolveFilters(params.realm, params.filters, matchNotes)
         : undefined;
 
       const urlParams = new URLSearchParams({
@@ -812,6 +823,9 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       }
 
       let resultText = `Chart Data for ${params.statistic} (${params.realm}):\n\n`;
+      if (matchNotes.length > 0) {
+        resultText += `**Filters matched:** ${matchNotes.join("; ")}\n\n`;
+      }
 
       if (data.data && data.data.length > 0) {
         const chartInfo = data.data[0];
