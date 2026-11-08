@@ -1,3 +1,5 @@
+import { createLogger, Logger } from "./logger.js";
+
 export function sanitizeGroupId(groupId: string): string {
   if (!groupId) {
     throw new Error("groupId parameter is required and cannot be null or undefined");
@@ -11,35 +13,176 @@ export function formatApiUrl(version: string, endpoint: string): string {
 
 interface AxiosErrorLike {
   response?: {
-    data?: { message?: string };
+    data?: unknown;
     status?: number;
     statusText?: string;
   };
   message?: string;
+  isAxiosError?: boolean;
   // DrupalApiError carries these directly instead of on `response`.
   status?: number;
-  body?: { message?: unknown };
+  body?: unknown;
 }
 
-export function handleApiError(error: unknown): string {
+/**
+ * The one gate for showing upstream text to a caller. A 4xx is a deliberate
+ * refusal written for the user; any other status can carry internal text.
+ */
+export function isCallerSafeStatus(status: number | undefined): status is number {
+  return status !== undefined && status >= 400 && status < 500;
+}
+
+/**
+ * The text of an upstream error that is safe to show a caller, or undefined
+ * when there is none. Only a 4xx qualifies (see isCallerSafeStatus); callers
+ * fall back to a fixed status line otherwise.
+ *
+ * Accepted body shapes, in order:
+ *  - {message, error?}: message is shown, error becomes the code.
+ *  - {error}: a flat error string (UKY, peer MCP servers) is shown as the
+ *    message, with no code.
+ *  - {errors: [{detail}]}: JSON:API details, joined.
+ */
+export function callerSafeUpstreamError(
+  status: number | undefined,
+  body: unknown
+): { message: string; code?: string } | undefined {
+  if (!isCallerSafeStatus(status)) return undefined;
+  if (typeof body !== "object" || body === null) return undefined;
+  const { message, error, errors } = body as {
+    message?: unknown;
+    error?: unknown;
+    errors?: unknown;
+  };
+  if (typeof message === "string" && message !== "") {
+    return { message, code: typeof error === "string" && error !== "" ? error : undefined };
+  }
+  if (typeof error === "string" && error !== "") {
+    return { message: error, code: undefined };
+  }
+  if (Array.isArray(errors)) {
+    const details = errors
+      .map((e) => (e as { detail?: unknown } | null)?.detail)
+      .filter((d): d is string => typeof d === "string" && d !== "");
+    if (details.length > 0) return { message: details.join("; ") };
+  }
+  return undefined;
+}
+
+/**
+ * What an operator may learn about a failed upstream call. Every field is
+ * metadata; there is deliberately no place for a body, an exception message,
+ * a query string, headers, a token, or the acting user.
+ */
+export interface UpstreamFailure {
+  /** drupal, xdmod, uky, jsm-proxy, cilogon, or a peer server name. */
+  upstream: string;
+  method?: string;
+  /** Request path. Any query string or fragment is dropped here. */
+  path?: string;
+  status?: number;
+  /** Transport error code such as ECONNREFUSED, for failures with no response. */
+  code?: string;
+  /** Target host, for failures with no response. */
+  host?: string;
+}
+
+const SCHEME_HOST = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i;
+
+function pathOnly(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  const scheme = SCHEME_HOST.exec(url);
+  const path = scheme ? url.slice(scheme[0].length) : url;
+  return path.split(/[?#]/)[0] || "/";
+}
+
+function hostOnly(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    return new URL(url).host;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Write one stderr line saying an upstream call failed and its text was
+ * withheld from the caller. Fields are copied one by one so nothing else
+ * can ride along in the context object.
+ */
+export function logUpstreamFailure(logger: Logger, failure: UpstreamFailure): void {
+  const context: Record<string, unknown> = { upstream: failure.upstream };
+  if (failure.method) context.method = failure.method.toUpperCase();
+  const path = pathOnly(failure.path);
+  if (path) context.path = path;
+  if (failure.status !== undefined) context.status = failure.status;
+  if (failure.code) context.code = failure.code;
+  if (failure.host) context.host = failure.host;
+  logger.error("Upstream call failed; details withheld from caller", context);
+}
+
+interface AxiosConfigLike {
+  method?: string;
+  url?: string;
+  baseURL?: string;
+}
+
+/**
+ * Build an UpstreamFailure from an axios-style error or a raw axios response
+ * (both carry `config`). Reads only status, code, method, and url.
+ */
+export function describeAxiosFailure(error: unknown, upstream: string): UpstreamFailure {
+  const e = error as {
+    code?: unknown;
+    status?: unknown;
+    response?: { status?: number; config?: AxiosConfigLike };
+    config?: AxiosConfigLike;
+  };
+  const config = e.config ?? e.response?.config;
+  const status = e.response?.status ?? (typeof e.status === "number" ? e.status : undefined);
+  const failure: UpstreamFailure = {
+    upstream,
+    method: config?.method,
+    path: config?.url,
+    status,
+  };
+  if (status === undefined) {
+    if (typeof e.code === "string") failure.code = e.code;
+    const url = config?.url;
+    failure.host = hostOnly(url && SCHEME_HOST.test(url) ? url : config?.baseURL);
+  }
+  return failure;
+}
+
+const sharedLogger = createLogger("access-mcp-shared");
+
+export interface HandleApiErrorOptions {
+  /** Which upstream this call went to, for the failure log line. */
+  upstream?: string;
+  logger?: Logger;
+}
+
+export function handleApiError(error: unknown, options: HandleApiErrorOptions = {}): string {
   const axiosError = error as AxiosErrorLike;
-  if (axiosError.response?.data?.message) {
-    return axiosError.response.data.message;
-  }
-  // Drupal's message on a 4xx is written for the user, like "You are already
-  // registered." A 5xx body can carry internal exception text, so it stays out.
-  const { status, body } = axiosError;
-  if (
-    status &&
-    status >= 400 &&
-    status < 500 &&
-    body?.message &&
-    typeof body.message === "string"
-  ) {
-    return body.message;
-  }
+  const status = axiosError.status ?? axiosError.response?.status;
+  const safe = callerSafeUpstreamError(status, axiosError.body ?? axiosError.response?.data);
+  if (safe) return safe.message;
+  // A DrupalApiError was already logged where it was raised.
+  const log = () => {
+    if (error instanceof Error && error.name === "DrupalApiError") return;
+    logUpstreamFailure(
+      options.logger ?? sharedLogger,
+      describeAxiosFailure(error, options.upstream ?? "unspecified")
+    );
+  };
   if (axiosError.response?.status) {
+    log();
     return `API error: ${axiosError.response.status} ${axiosError.response.statusText}`;
+  }
+  // A transport failure's text names internal hosts and ports.
+  if (axiosError.isAxiosError) {
+    log();
+    return "Could not reach the upstream service";
   }
   if (error instanceof Error) {
     return error.message;

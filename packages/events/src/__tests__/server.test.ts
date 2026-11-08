@@ -2455,6 +2455,22 @@ describe("EventsServer", () => {
       expect(JSON.parse(result.content[0].text)).toMatchObject({ error: { code: "event_full" } });
     });
 
+    it("register 500 does not show the body's text", async () => {
+      mockRequestRaw.mockResolvedValue({
+        status: 500,
+        data: { error: "boom", message: "SQLSTATE[42S02] Base table not found" },
+      });
+      const result = await withDrupalEnv(() =>
+        server["handleToolCall"]({
+          method: "tools/call",
+          params: { name: "register_for_event", arguments: { eventinstance_id: "5", confirmed: true } },
+        })
+      );
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).not.toContain("SQLSTATE");
+      expect(JSON.parse(result.content[0].text).error.message).toMatch(/Events service error \(500\)/);
+    });
+
     it("register 409 registration_closed is an error carrying the Drupal code", async () => {
       mockRequestRaw.mockResolvedValue({
         status: 409,
@@ -3505,6 +3521,36 @@ describe("EventsServer", () => {
         });
         expect(result.isError).toBe(true);
         expect(JSON.parse(result.content[0].text)).toMatchObject({ error: { code: "not_coordinator" } });
+      });
+
+      it("does not show a 500 body's message or code on an organizer write", async () => {
+        mockRequestRaw.mockResolvedValue({
+          status: 500,
+          data: { error: "db_down", message: "SQLSTATE[HY000] [2002] Connection refused" },
+        });
+        const result = await call("create_event", {
+          title: "X",
+          recur_type: "custom",
+          field_affinity_group_node: ["uuid-1"],
+        });
+        expect(result.isError).toBe(true);
+        expect(result.content[0].text).not.toContain("SQLSTATE");
+        expect(result.content[0].text).not.toContain("db_down");
+        expect(JSON.parse(result.content[0].text).error.code).toBe("upstream_error");
+      });
+
+      it("does not show a 5xx JSON:API-shaped detail on an organizer write", async () => {
+        mockRequestRaw.mockResolvedValue({
+          status: 502,
+          data: { errors: [{ detail: "cURL error 6: could not resolve host internal.example" }] },
+        });
+        const result = await call("create_event", {
+          title: "X",
+          recur_type: "custom",
+          field_affinity_group_node: ["uuid-1"],
+        });
+        expect(result.content[0].text).not.toContain("cURL");
+        expect(JSON.parse(result.content[0].text).error.code).toBe("upstream_error");
       });
 
       it("passes field_event_type and field_location through to the POST body", async () => {

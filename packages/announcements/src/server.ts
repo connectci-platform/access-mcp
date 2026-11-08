@@ -9,6 +9,8 @@ import {
   MAX_LIMIT,
   coerceOffset,
   coerceLimit,
+  callerSafeUpstreamError,
+  handleApiError,
   type ToolWithAccess,
 } from "@access-mcp/shared";
 import {
@@ -736,17 +738,14 @@ Which would you like to do?`,
       if (authError) return authError;
       // The custom controller refuses with {error: <code>, message: <text>}, which
       // the shared layer does not parse; without this users only see the status line.
-      // Only this controller's 4xx text is shown; its 5xx body can carry internal
-      // exception text. (5xx text in the JSON:API errors shape can still surface
-      // through the shared layer's message.)
-      if (error instanceof DrupalApiError && error.status >= 400 && error.status < 500) {
-        const body = error.body as { error?: unknown; message?: unknown } | null;
-        if (typeof body?.error === "string" && typeof body?.message === "string" && body.message !== "") {
-          return this.errorResponse(body.message, { code: body.error });
-        }
+      // Only a 4xx is shown; see callerSafeUpstreamError.
+      if (error instanceof DrupalApiError) {
+        const safe = callerSafeUpstreamError(error.status, error.body);
+        if (safe?.code) return this.errorResponse(safe.message, { code: safe.code });
+        // DrupalAuthProvider already wrote this message to be caller-safe.
+        return this.errorResponse(error.message);
       }
-      const message = error instanceof Error ? error.message : String(error);
-      return this.errorResponse(message);
+      return this.errorResponse(handleApiError(error));
     }
   }
 
@@ -766,7 +765,7 @@ Which would you like to do?`,
           ],
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = handleApiError(error);
         return {
           contents: [
             {

@@ -166,6 +166,50 @@ describe("DocumentationServer", () => {
       expect(data.error.hint).toContain("rp_name");
     });
 
+    it("does not show a 5xx body's error text", async () => {
+      mockHttpClient.post.mockResolvedValue({
+        status: 500,
+        statusText: "Internal Server Error",
+        data: { error: "psycopg2.OperationalError: could not connect to host 10.1.2.3" },
+      });
+
+      const result = await server["handleToolCall"]({
+        params: { name: "search_docs", arguments: { query: "x" } },
+      } as never);
+
+      expect((result as { isError?: boolean }).isError).toBe(true);
+      expect(textOf(result)).not.toContain("10.1.2.3");
+      expect(JSON.parse(textOf(result)).error.message).toBe("API error: 500 Internal Server Error");
+    });
+
+    it("shows a 4xx body's error text", async () => {
+      mockHttpClient.post.mockResolvedValue({
+        status: 422,
+        statusText: "Unprocessable Entity",
+        data: { error: "query is too long" },
+      });
+
+      const result = await server["handleToolCall"]({
+        params: { name: "search_docs", arguments: { query: "x" } },
+      } as never);
+
+      expect(JSON.parse(textOf(result)).error.message).toBe("query is too long");
+    });
+
+    it("shows a 4xx body's message text", async () => {
+      mockHttpClient.post.mockResolvedValue({
+        status: 422,
+        statusText: "Unprocessable Entity",
+        data: { message: "query is too long" },
+      });
+
+      const result = await server["handleToolCall"]({
+        params: { name: "search_docs", arguments: { query: "x" } },
+      } as never);
+
+      expect(JSON.parse(textOf(result)).error.message).toBe("query is too long");
+    });
+
     it("rejects a missing query", async () => {
       const result = await server["handleToolCall"]({
         params: { name: "search_docs", arguments: {} },
@@ -207,6 +251,24 @@ describe("DocumentationServer", () => {
       const data = JSON.parse(textOf(result));
       // Spec-aligned wording, not the raw axios error string.
       expect(data.error.message).toContain("try another approach");
+    });
+
+    it("logs a transport failure as its code and host, not its message", async () => {
+      const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+      mockHttpClient.post.mockRejectedValue(
+        Object.assign(new Error("connect ECONNREFUSED 10.5.5.5:443 secret-body"), {
+          code: "ECONNREFUSED",
+        })
+      );
+      await server["handleToolCall"]({
+        params: { name: "search_docs", arguments: { query: "x" } },
+      } as never);
+      const lines = spy.mock.calls.map((c) => c.join(" ")).join("\n");
+      spy.mockRestore();
+      expect(lines).toContain('"upstream":"uky"');
+      expect(lines).toContain('"code":"ECONNREFUSED"');
+      expect(lines).not.toContain("secret-body");
+      expect(lines).not.toContain("10.5.5.5");
     });
 
     it("prefers an explicit empty documents over a stale top_documents", async () => {

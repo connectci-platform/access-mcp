@@ -1798,6 +1798,91 @@ describe("AnnouncementsServer", () => {
         }
       );
 
+      describe("through a real DrupalAuthProvider", () => {
+        const LOGIN = {
+          status: 200,
+          headers: { "set-cookie": ["SESS=abc; path=/"] },
+          data: { csrf_token: "c", logout_token: "l", current_user: { uuid: "u-1" } },
+        };
+        const withRealAuth = async (verbResponse: unknown) => {
+          const { DrupalAuthProvider: Real } = await vi.importActual<
+            typeof import("@access-mcp/shared")
+          >("@access-mcp/shared");
+          const real = new Real("https://test.drupal.site", "u", "p");
+          const httpPost = vi.fn(async (url: string) =>
+            url.startsWith("/user/login") ? LOGIN : verbResponse
+          );
+          (real as unknown as { httpClient: unknown }).httpClient = { post: httpPost };
+          (server as unknown as { drupalAuth: unknown }).drupalAuth = real;
+        };
+
+        it("shows a 4xx refusal message to the caller", async () => {
+          await withRealAuth({
+            status: 409,
+            statusText: "Conflict",
+            data: { error: "not_coordinator", message: "You must coordinate that group." },
+          });
+          const data = parse(await callTool("create_announcement", baseCreate));
+          expect(data.error.message).toBe("You must coordinate that group.");
+          expect(data.error.code).toBe("not_coordinator");
+        });
+
+        it("does not show transport error text to the caller", async () => {
+          const { DrupalAuthProvider: Real } = await vi.importActual<
+            typeof import("@access-mcp/shared")
+          >("@access-mcp/shared");
+          const real = new Real("https://test.drupal.site", "u", "p");
+          const transport = Object.assign(new Error("connect ECONNREFUSED 10.1.2.3:443"), {
+            isAxiosError: true,
+            code: "ECONNREFUSED",
+          });
+          (real as unknown as { httpClient: unknown }).httpClient = {
+            post: vi.fn().mockRejectedValue(transport),
+          };
+          (server as unknown as { drupalAuth: unknown }).drupalAuth = real;
+          const result = await callTool("create_announcement", baseCreate);
+          const text = (result.content[0] as TextContent).text;
+          expect(text).not.toContain("10.1.2.3");
+          expect(text).toContain("Could not reach the upstream service");
+        });
+
+        it("does not retry a 403 refusal", async () => {
+          const posts: string[] = [];
+          const { DrupalAuthProvider: Real } = await vi.importActual<
+            typeof import("@access-mcp/shared")
+          >("@access-mcp/shared");
+          const real = new Real("https://test.drupal.site", "u", "p");
+          const httpPost = vi.fn(async (url: string) => {
+            posts.push(url);
+            return url.startsWith("/user/login")
+              ? LOGIN
+              : {
+                  status: 403,
+                  statusText: "Forbidden",
+                  data: { error: "not_coordinator", message: "You must coordinate that group." },
+                };
+          });
+          (real as unknown as { httpClient: unknown }).httpClient = { post: httpPost };
+          (server as unknown as { drupalAuth: unknown }).drupalAuth = real;
+          const data = parse(await callTool("create_announcement", baseCreate));
+          expect(data.error.message).toBe("You must coordinate that group.");
+          expect(posts.filter((u) => !u.startsWith("/user/login"))).toHaveLength(1);
+          expect(posts.filter((u) => u.startsWith("/user/login"))).toHaveLength(1);
+        });
+
+        it("does not show a 5xx JSON:API detail to the caller", async () => {
+          await withRealAuth({
+            status: 500,
+            statusText: "Internal Server Error",
+            data: { errors: [{ detail: "SQLSTATE[42S02]: Base table not found" }] },
+          });
+          const result = await callTool("create_announcement", baseCreate);
+          const text = (result.content[0] as TextContent).text;
+          expect(text).not.toContain("SQLSTATE");
+          expect(parse(result).error.message).toBe("Drupal API error (500)");
+        });
+      });
+
       describe("update_announcement with a single field", () => {
         const group = { id: "group-uuid-1", attributes: { title: "G", name: "gpu" } };
         it.each([

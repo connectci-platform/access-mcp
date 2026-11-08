@@ -2,6 +2,9 @@ import {
   BaseAccessServer,
   Resource,
   CallToolResult,
+  callerSafeUpstreamError,
+  handleApiError,
+  logUpstreamFailure,
   type ToolWithAccess,
 } from "@access-mcp/shared";
 import { CallToolRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -378,9 +381,13 @@ export class JsmServer extends BaseAccessServer {
           return this.errorResponse(`Unknown tool: ${name}`);
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.error("Tool call failed", { tool: name, error: message });
-      return this.errorResponse(message);
+      // The exception message is never logged; handleApiError logs a transport
+      // failure's code and host, and the error type covers everything else.
+      this.logger.error("Tool call failed", {
+        tool: name,
+        errorType: error instanceof Error ? error.name : typeof error,
+      });
+      return this.errorResponse(handleApiError(error, { upstream: "jsm-proxy", logger: this.logger }));
     }
   }
 
@@ -530,16 +537,27 @@ export class JsmServer extends BaseAccessServer {
     const response = await this.proxyClient.post<ProxyResponse>(endpoint, body);
 
     if (response.status !== 200) {
-      const errorMsg = response.data?.error || `HTTP ${response.status}`;
-      this.logger.error("Ticket creation failed", { status: response.status, error: errorMsg });
+      const errorMsg =
+        callerSafeUpstreamError(response.status, response.data)?.message ??
+        `HTTP ${response.status}`;
+      logUpstreamFailure(this.logger, {
+        upstream: "jsm-proxy",
+        method: "POST",
+        path: endpoint,
+        status: response.status,
+      });
       return this.errorResponse(`Failed to create ticket: ${errorMsg}`);
     }
 
     const data = response.data;
     if (!data.success || !data.data) {
-      const errorMsg = data.error || "Unknown error";
-      this.logger.error("Ticket creation failed", { error: errorMsg });
-      return this.errorResponse(`Failed to create ticket: ${errorMsg}`);
+      logUpstreamFailure(this.logger, {
+        upstream: "jsm-proxy",
+        method: "POST",
+        path: endpoint,
+        status: response.status,
+      });
+      return this.errorResponse("Failed to create ticket: The ticket could not be created");
     }
 
     this.logger.info("Ticket created successfully", {

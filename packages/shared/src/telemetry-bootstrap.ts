@@ -117,7 +117,7 @@ function bootstrap(): void {
     sdk
       .shutdown()
       .then(() => console.log(`[${serviceName}] OpenTelemetry shutdown complete`))
-      .catch((err) => console.error(`[${serviceName}] OpenTelemetry shutdown error`, err))
+      .catch((err) => console.error(`[${serviceName}] OpenTelemetry shutdown error`, err instanceof Error ? err.message : String(err)))
       .finally(() => process.exit(0));
   };
 

@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 
-import { BaseAccessServer, Resource, CallToolResult, type ToolWithAccess } from "@access-mcp/shared";
+import {
+  BaseAccessServer,
+  Resource,
+  CallToolResult,
+  callerSafeUpstreamError,
+  logUpstreamFailure,
+  type ToolWithAccess,
+} from "@access-mcp/shared";
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -278,7 +285,11 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       throw new Error(`Failed to fetch XDMoD menus: HTTP ${response.status}`);
     }
 
-    const json = await response.json();
+    // The parser's error quotes the body, so never let it reach the caller.
+    const json = await response.json().catch(() => null);
+    if (json === null) {
+      throw new Error("XDMoD returned an unreadable response");
+    }
     const data: MenuEntry[] = json.data ?? json ?? [];
     this.menuCache = { data, timestamp: Date.now() };
     return data;
@@ -316,7 +327,8 @@ export class XDMoDMetricsServer extends BaseAccessServer {
 
     if (!response.ok) return value; // fallback to original
 
-    const json = await response.json();
+    const json = await response.json().catch(() => null);
+    if (json === null) return value; // unreadable body: fall back to original
     const items: { id?: string; name?: string; short_name?: string }[] =
       json.data ?? [];
 
@@ -807,19 +819,14 @@ export class XDMoDMetricsServer extends BaseAccessServer {
         body: urlParams,
       });
 
-      const data = await response.json();
+      // Any response may not be JSON, and the parser's error quotes the body.
+      const data = await response.json().catch(() => null);
+      if (response.ok && data === null) {
+        throw new Error("XDMoD returned an unreadable response");
+      }
 
-      // Check for XDMoD error responses (e.g., invalid statistic name)
-      if (!response.ok || data.success === false) {
-        const xdmodMsg = data.message || `HTTP ${response.status}`;
-        // Provide actionable guidance
-        const ref = REALM_STATISTICS[params.realm];
-        let hint = "";
-        if (xdmodMsg.includes("No Statistic found") && ref) {
-          const validStats = Object.keys(ref.statistics).join(", ");
-          hint = `\n\nValid statistics for ${params.realm}: ${validStats}`;
-        }
-        throw new Error(`XDMoD error: ${xdmodMsg}${hint}`);
+      if (!response.ok || data?.success === false) {
+        throw new Error(this.xdmodErrorText(response, data, params.realm));
       }
 
       let resultText = `Chart Data for ${params.statistic} (${params.realm}):\n\n`;
@@ -905,6 +912,42 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     }
   }
 
+  /**
+   * XDMoD's exception handler answers HTTP 500 {success:false, message} with
+   * the exception's text, which can include SQL, so only a 4xx message is shown.
+   * A 200 success:false carries no caller-safe text either; the one case
+   * callers act on, an unknown statistic, is matched explicitly.
+   */
+  private xdmodErrorText(response: Response, data: unknown, realm: string): string {
+    const safe = callerSafeUpstreamError(response.status, data);
+    const upstream = (data as { message?: unknown } | null)?.message;
+    if (!safe) {
+      // Metadata only: XDMoD's own text can carry SQL.
+      logUpstreamFailure(this.logger, {
+        upstream: "xdmod",
+        method: "POST",
+        path: response.url,
+        status: response.status,
+      });
+    }
+    let msg: string;
+    if (safe) {
+      msg = safe.message;
+    } else if (typeof upstream === "string" && upstream.includes("No Statistic found")) {
+      msg = "No Statistic found";
+    } else if (!response.ok) {
+      msg = `HTTP ${response.status}`;
+    } else {
+      msg = "XDMoD could not run this query";
+    }
+    const ref = REALM_STATISTICS[realm];
+    const hint =
+      msg.includes("No Statistic found") && ref
+        ? `\n\nValid statistics for ${realm}: ${Object.keys(ref.statistics).join(", ")}`
+        : "";
+    return `XDMoD error: ${msg}${hint}`;
+  }
+
   private cacheChart(key: string, result: ChartResult) {
     if (this.chartCache.size >= XDMoDMetricsServer.CHART_CACHE_MAX_ENTRIES) {
       const oldest = this.chartCache.keys().next().value;
@@ -972,19 +1015,8 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       });
 
       if (!response.ok) {
-        // Try to parse error message from XDMoD
-        try {
-          const errorData = await response.json();
-          const ref = REALM_STATISTICS[params.realm];
-          let hint = "";
-          if (errorData.message?.includes("No Statistic found") && ref) {
-            hint = `\n\nValid statistics for ${params.realm}: ${Object.keys(ref.statistics).join(", ")}`;
-          }
-          throw new Error(`XDMoD error: ${errorData.message || response.statusText}${hint}`);
-        } catch (parseErr) {
-          if (parseErr instanceof Error && parseErr.message.startsWith("XDMoD error")) throw parseErr;
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
+        const errorData = await response.json().catch(() => null);
+        throw new Error(this.xdmodErrorText(response, errorData, params.realm));
       }
 
       if (params.format === "png") {
@@ -1234,7 +1266,10 @@ export class XDMoDMetricsServer extends BaseAccessServer {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
-      const json = await response.json();
+      const json = await response.json().catch(() => null);
+      if (json === null) {
+        throw new Error("XDMoD returned an unreadable response");
+      }
       const totalCount = json.totalCount ?? 0;
       const data: { id?: string; name?: string; short_name?: string }[] = json.data ?? [];
 

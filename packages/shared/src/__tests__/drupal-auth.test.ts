@@ -203,6 +203,155 @@ describe("DrupalAuthProvider per-call acting user", () => {
     expect(err.message).toBe("Drupal API error (403): Access denied.");
   });
 
+  it("hides the JSON:API detail of a 5xx from the error message but keeps it on .body", async () => {
+    const p = newProvider();
+    get.mockResolvedValue({
+      status: 500,
+      statusText: "Internal Server Error",
+      data: { errors: [{ detail: "SQLSTATE[42S02]: Base table or view not found: 1146 Table 'drupal.x'" }] },
+    });
+    let caught: unknown;
+    try {
+      await p.get("actor@access-ci.org", "/api/2.3/thing");
+    } catch (e) {
+      caught = e;
+    }
+    const err = caught as DrupalApiError;
+    expect(err.status).toBe(500);
+    expect(err.message).toBe("Drupal API error (500)");
+    expect(JSON.stringify(err.body)).toContain("SQLSTATE");
+  });
+
+  it("logs a 5xx as status, method and path only, never the body", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const p = newProvider();
+      get.mockResolvedValue({
+        status: 500,
+        statusText: "Internal Server Error",
+        config: { method: "get", url: "/api/2.3/thing?mail=alice@example.org" },
+        data: { errors: [{ detail: "SQLSTATE[42S02]: Table 'drupal.x' for alice@example.org" }] },
+      });
+      await expect(p.get("actor@access-ci.org", "/api/2.3/thing")).rejects.toThrow();
+      const lines = spy.mock.calls.map((c) => c.join(" ")).join("\n");
+      expect(lines).toContain('"upstream":"drupal"');
+      expect(lines).toContain('"status":500');
+      expect(lines).toContain('"method":"GET"');
+      expect(lines).toContain('"path":"/api/2.3/thing"');
+      expect(lines).not.toContain("SQLSTATE");
+      expect(lines).not.toContain("alice@example.org");
+      expect(lines).not.toContain("actor@access-ci.org");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("does not re-login or retry a 403 that carries a controller refusal body", async () => {
+    const p = newProvider();
+    await p.ensureAuthenticated();
+    post.mockClear();
+    post.mockResolvedValueOnce({
+      status: 403,
+      statusText: "Forbidden",
+      data: { error: "forbidden", message: "You may not archive this event." },
+    });
+    let caught: unknown;
+    try {
+      await p.post("actor@access-ci.org", "/api/1.0/events/5/archive", {});
+    } catch (e) {
+      caught = e;
+    }
+    // One verb POST, no login POST, no retry.
+    expect(post.mock.calls.length).toBe(1);
+    const err = caught as DrupalApiError;
+    expect(err.status).toBe(403);
+    expect(err.body).toEqual({ error: "forbidden", message: "You may not archive this event." });
+  });
+
+  it("hides the JSON:API detail of a 3xx from the error message", async () => {
+    const p = newProvider();
+    get.mockResolvedValue({
+      status: 301,
+      statusText: "Moved Permanently",
+      headers: {},
+      data: { errors: [{ detail: "internal path /var/www/x" }] },
+    });
+    const err = (await p.get("a@access-ci.org", "/api/x").catch((e) => e)) as DrupalApiError;
+    expect(err.status).toBe(301);
+    expect(err.message).toBe("Drupal API error (301)");
+  });
+
+  describe("403 refusal shape", () => {
+    const verbs = [
+      ["post", (p: DrupalAuthProvider) => p.post("a@access-ci.org", "/x", {}), () => post],
+      ["patch", (p: DrupalAuthProvider) => p.patch("a@access-ci.org", "/x", {}), () => patch],
+      ["delete", (p: DrupalAuthProvider) => p.delete("a@access-ci.org", "/x"), () => del],
+    ] as const;
+
+    it.each(verbs)("%s does not retry a 403 with {error, message}", async (name, run, mock) => {
+      const p = newProvider();
+      await p.ensureAuthenticated();
+      post.mockClear();
+      mock().mockResolvedValueOnce({
+        status: 403,
+        statusText: "Forbidden",
+        data: { error: "forbidden", message: "Nope." },
+      });
+      const err = (await run(p).catch((e: unknown) => e)) as DrupalApiError;
+      expect(err.status).toBe(403);
+      expect(mock().mock.calls.length).toBe(1);
+      // For post the verb call is itself the one post; no login post follows.
+      expect(post.mock.calls.length).toBe(name === "post" ? 1 : 0);
+    });
+
+    it.each([
+      ["message only", { message: "Access denied." }],
+      ["error only", { error: "forbidden" }],
+      ["an HTML string", "<html>Forbidden</html>"],
+      ["null", null],
+      ["JSON:API errors", { errors: [{ detail: "Forbidden" }] }],
+    ])("retries a 403 whose body is %s", async (_n, data) => {
+      const p = newProvider();
+      await p.ensureAuthenticated();
+      post.mockClear();
+      post
+        .mockResolvedValueOnce({ status: 403, statusText: "Forbidden", data })
+        .mockResolvedValueOnce(LOGIN_OK)
+        .mockResolvedValueOnce({ status: 200, data: { ok: true } });
+      expect(await p.post("a@access-ci.org", "/x", {})).toEqual({ ok: true });
+      expect(post.mock.calls.length).toBe(3);
+    });
+
+    it("retries a 401 even with a refusal-shaped body", async () => {
+      const p = newProvider();
+      await p.ensureAuthenticated();
+      post.mockClear();
+      post
+        .mockResolvedValueOnce({
+          status: 401,
+          statusText: "Unauthorized",
+          data: { error: "x", message: "y" },
+        })
+        .mockResolvedValueOnce(LOGIN_OK)
+        .mockResolvedValueOnce({ status: 200, data: { ok: true } });
+      expect(await p.post("a@access-ci.org", "/x", {})).toEqual({ ok: true });
+      expect(post.mock.calls.length).toBe(3);
+    });
+  });
+
+  it("still re-logs in once for a 403 with no refusal body", async () => {
+    const p = newProvider();
+    await p.ensureAuthenticated();
+    post.mockClear();
+    post
+      .mockResolvedValueOnce({ status: 403, statusText: "Forbidden", data: {} })
+      .mockResolvedValueOnce(LOGIN_OK)
+      .mockResolvedValueOnce({ status: 200, data: { ok: true } });
+    const res = await p.post("actor@access-ci.org", "/api/1.0/events/5/archive", {});
+    expect(res).toEqual({ ok: true });
+    expect(post.mock.calls.length).toBe(3); // verb, login, retried verb
+  });
+
   it("post throws a DrupalApiError carrying a flat (non-JSON:API-errors) body on 409", async () => {
     const p = newProvider();
     // Login is the default post mock; make the NEXT post (the verb call) a 409
@@ -483,7 +632,19 @@ describe("DrupalAuthProvider per-call acting user", () => {
       const err = caught as DrupalApiError;
       expect(err.code).toBe("reauth_failed");
       expect(err.message).toMatch(/re-authenticat/i);
-      expect(err.message).toContain("503"); // the underlying login failure detail
+      expect(err.message).toMatch(/operator/i);
+      expect(err.message).not.toContain("503"); // the login failure text stays out of the caller message
+    });
+
+    it("re-login transport failure does not put the host in the reauth_failed message", async () => {
+      const p = newProvider();
+      await p.ensureAuthenticated();
+      get.mockResolvedValue({ status: 307, statusText: "Temporary Redirect", data: "" });
+      post.mockRejectedValue(new Error("connect ECONNREFUSED 10.1.2.3:443"));
+      const err = (await p.get("dave@access-ci.org", "/api/1.0/registrations").catch((e) => e)) as DrupalApiError;
+      expect(err.code).toBe("reauth_failed");
+      expect(err.message).not.toContain("10.1.2.3");
+      expect(err.message).toMatch(/operator/i);
     });
 
     it("logs one warning per recovery so session churn is visible in logs", async () => {

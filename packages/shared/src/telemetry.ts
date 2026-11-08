@@ -104,7 +104,7 @@ export function initTelemetry(config: TelemetryConfig): void {
     sdk
       ?.shutdown()
       .then(() => console.log(`[${config.serviceName}] OpenTelemetry shutdown complete`))
-      .catch((err) => console.error(`[${config.serviceName}] OpenTelemetry shutdown error`, err))
+      .catch((err) => console.error(`[${config.serviceName}] OpenTelemetry shutdown error`, err instanceof Error ? err.message : String(err)))
       .finally(() => process.exit(0));
   };
 

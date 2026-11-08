@@ -2308,7 +2308,10 @@ sort_by: "date_desc"
           // above) took longer than PER_CALL_TIMEOUT_MS. usableResponseCount
           // is not incremented, so a total wipeout renders "unavailable",
           // never a confident "no funding".
-          console.warn(`Error searching NSF for name variation "${nameVariation}":`, error);
+          console.warn(
+            `Error searching NSF for name variation "${nameVariation}":`,
+            error instanceof Error ? error.message : "unknown error"
+          );
         }
       };
 
@@ -3058,7 +3061,10 @@ sort_by: "date_desc"
         // Cause A: the NSF peer is unreachable, threw, or (via the axios
         // timeout option above) took longer than PER_CALL_TIMEOUT_MS. Same
         // "unknown, not unfunded" treatment as Cause B.
-        console.warn(`Error checking NSF funding for ${project.pi}:`, error);
+        console.warn(
+          `Error checking NSF funding for ${project.pi}:`,
+          error instanceof Error ? error.message : "unknown error"
+        );
         unavailableCount++;
       }
     };
@@ -3279,7 +3285,10 @@ sort_by: "date_desc"
           // Peer unreachable, threw, or (via the axios timeout option
           // above) took longer than NSF_VARIANT_TIMEOUT_MS. Same "unknown,
           // not a confirmed zero" treatment as the error-shaped-body branch.
-          console.warn(`Error fetching NSF data for variant "${variant}":`, error);
+          console.warn(
+            `Error fetching NSF data for variant "${variant}":`,
+            error instanceof Error ? error.message : "unknown error"
+          );
           nsfVariantUnavailableCount++;
         }
       };
@@ -3494,7 +3503,10 @@ sort_by: "date_desc"
         // Peer unreachable, threw, or (via the axios timeout option above)
         // took longer than PER_CALL_TIMEOUT_MS. Same "unknown" treatment as
         // the error-shaped-body branch above.
-        console.warn(`Error cross-referencing ${project.pi}:`, error);
+        console.warn(
+          `Error cross-referencing ${project.pi}:`,
+          error instanceof Error ? error.message : "unknown error"
+        );
         unavailableCount++;
       }
     };

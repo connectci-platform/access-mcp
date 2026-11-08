@@ -3,6 +3,7 @@ import axios, { AxiosInstance } from "axios";
 import { randomUUID } from "crypto";
 import https from "https";
 import { createLogger, Logger } from "./logger.js";
+import { describeAxiosFailure, isCallerSafeStatus, logUpstreamFailure } from "./utils.js";
 
 /**
  * Error thrown by the throwing request methods (get/post/patch/delete) on a
@@ -42,8 +43,9 @@ export class DrupalApiError extends Error {
  * Sessions expire, so the self-healing re-login below is load-bearing, not a
  * nicety: on an expired session the request methods invalidate, log in again,
  * and retry ONCE. Expiry arrives in two shapes and both must be handled — a
- * 401/403, and (on this CILogon-fronted Drupal) a 3xx redirect to the login
- * page, which maxRedirects:0 preserves as a raw 3xx rather than following it.
+ * 401/403 (except a route's own {error, message} refusal), and (on this
+ * CILogon-fronted Drupal) a 3xx redirect to the login page, which
+ * maxRedirects:0 preserves as a raw 3xx rather than following it.
  *
  * @see ../../../access-qa-planning/06-mcp-authentication.md
  */
@@ -203,7 +205,8 @@ export class DrupalAuthProvider {
    * Does this response mean the Drupal session was rejected and we should try a
    * fresh login? Two shapes, both session expiry:
    *
-   *  - 401 / 403 — Drupal refusing the session outright.
+   *  - 401 / 403 — Drupal refusing the session outright. A 403 whose body is a
+   *    route's own {error, message} refusal is not this; see isControllerRefusal.
    *  - An AUTH 3xx — this Drupal sits behind CILogon and bounces an expired
    *    session to the login page. maxRedirects:0 (see the constructor) keeps
    *    that as a raw 3xx instead of following it and returning login HTML as a
@@ -215,7 +218,21 @@ export class DrupalAuthProvider {
    */
   private isSessionExpiry(response: any): boolean {
     const status = response.status;
+    if (status === 403 && this.isControllerRefusal(response)) return false;
     return status === 401 || status === 403 || this.isAuthRedirect(response);
+  }
+
+  /**
+   * A 403 that Drupal's own routes return as {error, message}, such as "You may
+   * not archive this event." The auth gate's 403 never has that shape: the
+   * custom routes check `_user_is_logged_in` and `_custom_access` before the
+   * controller runs, and core's 403 body is {message} only. So this is a
+   * refusal the caller must see, not an expired session; re-sending it would
+   * repeat a request the route already ran.
+   */
+  private isControllerRefusal(response: any): boolean {
+    const data = response.data;
+    return typeof data?.error === "string" && typeof data?.message === "string";
   }
 
   /**
@@ -258,7 +275,7 @@ export class DrupalAuthProvider {
    *
    * A failure here is NOT ordinary expiry — the credentials or Drupal itself are
    * broken and no restart will help — so it surfaces as a DrupalApiError with
-   * code "reauth_failed" carrying the login failure detail, rather than the bare
+   * code "reauth_failed" with a fixed message, rather than the bare
    * login Error that would otherwise escape and read like an unrelated fault.
    */
   private async recoverSession(): Promise<void> {
@@ -269,9 +286,11 @@ export class DrupalAuthProvider {
     try {
       await this.ensureAuthenticated();
     } catch (e) {
-      const detail = e instanceof Error ? e.message : String(e);
+      // The login error can be raw transport text naming an internal host, so
+      // only its code and status are logged.
+      logUpstreamFailure(this.logger, describeAxiosFailure(e, "drupal"));
       throw new DrupalApiError(
-        `Drupal session expired and re-authentication failed: ${detail}`,
+        "Drupal session expired and re-authentication failed; the service needs an operator",
         401,
         undefined,
         "reauth_failed"
@@ -325,10 +344,11 @@ export class DrupalAuthProvider {
     });
 
     // Retrying a WRITE is safe here, and must stay that way: a session-expiry
-    // 401/403/auth-3xx is produced at Drupal's authentication gate BEFORE the
-    // route runs, so the original request was never processed and the retry
-    // cannot double-write. Do not "fix" this retry away as a duplicate-POST
-    // hazard — it isn't one.
+    // 401/auth-3xx, or a 403 without a {error, message} body, is produced at
+    // Drupal's authentication gate BEFORE the route runs, so the original
+    // request was never processed and the retry cannot double-write. A route's
+    // own 403 refusal does carry that body and is excluded by isSessionExpiry.
+    // Do not "fix" this retry away as a duplicate-POST hazard — it isn't one.
     if (this.isSessionExpiry(response)) {
       await this.recoverSession();
 
@@ -471,6 +491,12 @@ export class DrupalAuthProvider {
       return response.data;
     }
 
+    // A non-4xx failure is reported to callers without Drupal's text, so the
+    // operator gets a metadata-only line here, never the body.
+    if (!isCallerSafeStatus(response.status)) {
+      logUpstreamFailure(this.logger, describeAxiosFailure(response, "drupal"));
+    }
+
     // JSON:API error format. Preserve the status + full body on the thrown
     // DrupalApiError (bug #30) while keeping the message text identical to the
     // old plain Error, so callers can branch on e.status/e.body AND existing
@@ -479,8 +505,14 @@ export class DrupalAuthProvider {
       const errors = response.data.errors
         .map((e: any) => e.detail || e.title || "Unknown error")
         .join("; ");
+      // Core JSON:API puts an uncaught exception's getMessage() in `detail` on
+      // a 500, so only a 4xx detail goes into the message. The body stays on
+      // the error object for callers in code; it is never logged.
+      const message = isCallerSafeStatus(response.status)
+        ? `Drupal API error (${response.status}): ${errors}`
+        : `Drupal API error (${response.status})`;
       throw new DrupalApiError(
-        `Drupal API error (${response.status}): ${errors}`,
+        message,
         response.status,
         response.data
       );

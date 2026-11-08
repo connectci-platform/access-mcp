@@ -9,6 +9,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error("Server error:", error);
+  console.error("Server error:", error instanceof Error ? error.message : String(error));
   process.exit(1);
 });
