@@ -1,4 +1,4 @@
-import { describe, test, expect, vi, beforeEach } from "vitest";
+import { describe, test, expect, vi, beforeEach, afterEach } from "vitest";
 import { createRequire } from "module";
 
 const require = createRequire(import.meta.url);
@@ -453,6 +453,113 @@ describe("XDMoDMetricsServer", () => {
   });
 
   describe("get_chart_data tool", () => {
+    describe("caching", () => {
+      const chartResponse = {
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            success: true,
+            data: [
+              {
+                hc_jsonstore: { data: [{ name: "Delta", x: ["Delta"], y: [5] }] },
+              },
+            ],
+          }),
+      };
+      const emptyResponse = {
+        ok: true,
+        json: () => Promise.resolve({ success: true, data: [] }),
+      };
+      const chart = (args: Record<string, unknown> = {}) =>
+        server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "get_chart_data",
+            arguments: {
+              realm: "Jobs",
+              group_by: "resource",
+              statistic: "job_count",
+              start_date: "2026-01-01",
+              end_date: "2026-01-31",
+              dataset_type: "aggregate",
+              ...args,
+            },
+          },
+        });
+
+      beforeEach(() => {
+        vi.useFakeTimers({ now: new Date("2026-03-15T12:00:00Z"), toFake: ["Date"] });
+        mockFetch.mockReset();
+        mockFetch.mockResolvedValue(chartResponse);
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      test("should reuse a finished date range", async () => {
+        const first = await chart();
+        const second = await chart();
+
+        expect(second).toEqual(first);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+      });
+
+      test("should query again for different arguments", async () => {
+        await chart();
+        await chart({ statistic: "total_cpu_hours" });
+
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+      });
+
+      test("should query again after an hour", async () => {
+        await chart();
+        vi.setSystemTime(new Date("2026-03-15T13:00:01Z"));
+        await chart();
+
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+      });
+
+      test.each(["2026-03-15", "2026-03-16"])(
+        "should not reuse a range ending %s, which is still changing",
+        async (end_date) => {
+          await chart({ end_date });
+          await chart({ end_date });
+
+          expect(mockFetch).toHaveBeenCalledTimes(2);
+        }
+      );
+
+      test("should not keep an empty result", async () => {
+        mockFetch.mockResolvedValue(emptyResponse);
+
+        await chart();
+        await chart();
+
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+      });
+
+      test("should not keep a failed result", async () => {
+        mockFetch.mockRejectedValueOnce(new Error("XDMoD down"));
+
+        await expect(chart()).rejects.toThrow();
+        await chart();
+
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+      });
+
+      test("should drop the oldest result when full", async () => {
+        for (let i = 1; i <= 101; i++) await chart({ limit: i });
+        mockFetch.mockClear();
+
+        await chart({ limit: 101 });
+        expect(mockFetch).not.toHaveBeenCalled();
+
+        await chart({ limit: 1 });
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+      });
+    });
+
     test("should call user_interface API with correct chart parameters", async () => {
       mockFetch.mockResolvedValueOnce(mockResponse(SAMPLE_CHART_DATA));
 
