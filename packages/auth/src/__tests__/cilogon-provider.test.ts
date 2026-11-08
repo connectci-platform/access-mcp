@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import axios from "axios";
 import type { OAuthClientInformationFull, OAuthTokenRevocationRequest } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { CILogonOAuthProvider, InMemoryClientStore } from "../cilogon-provider.js";
 import { SqliteClientStore } from "../sqlite-client-store.js";
@@ -110,6 +111,77 @@ describe("CILogonOAuthProvider", () => {
       await expect(
         provider.verifyAccessToken("invalid-token")
       ).rejects.toThrow("Invalid or expired access token");
+    });
+
+    describe("with CILogon stubbed", () => {
+      const userinfo = {
+        status: 200,
+        data: { sub: "http://cilogon.org/u1", eppn: "u1@access-ci.org" },
+      };
+      let get: ReturnType<typeof vi.spyOn>;
+
+      beforeEach(() => {
+        vi.useFakeTimers({ now: new Date("2026-11-08T12:00:00Z"), toFake: ["Date"] });
+        get = vi.spyOn(axios, "get");
+      });
+
+      afterEach(() => {
+        get.mockRestore();
+        vi.useRealTimers();
+      });
+
+      it.each([401, 403])("asks CILogon once about a token it rejected with %i", async (status) => {
+        get.mockResolvedValue({ status, data: {} });
+
+        await expect(provider.verifyAccessToken("expired")).rejects.toThrow();
+        await expect(provider.verifyAccessToken("expired")).rejects.toThrow();
+
+        expect(get).toHaveBeenCalledTimes(1);
+      });
+
+      it("asks CILogon again after five minutes", async () => {
+        get.mockResolvedValue({ status: 401, data: {} });
+
+        await expect(provider.verifyAccessToken("expired")).rejects.toThrow();
+        vi.setSystemTime(new Date("2026-11-08T12:05:01Z"));
+        await expect(provider.verifyAccessToken("expired")).rejects.toThrow();
+
+        expect(get).toHaveBeenCalledTimes(2);
+      });
+
+      it("keeps asking while CILogon itself is failing", async () => {
+        get.mockResolvedValueOnce({ status: 503, data: {} }).mockResolvedValueOnce(userinfo);
+
+        await expect(provider.verifyAccessToken("valid")).rejects.toThrow();
+        await expect(provider.verifyAccessToken("valid")).resolves.toMatchObject({
+          extra: { eppn: "u1@access-ci.org" },
+        });
+      });
+
+      it("forgets the oldest rejection once it holds 5,000", async () => {
+        get.mockResolvedValue({ status: 401, data: {} });
+
+        for (let i = 0; i <= 5000; i++) {
+          await expect(provider.verifyAccessToken(`fake-${i}`)).rejects.toThrow();
+        }
+        get.mockClear();
+
+        await expect(provider.verifyAccessToken("fake-5000")).rejects.toThrow();
+        expect(get).not.toHaveBeenCalled();
+        await expect(provider.verifyAccessToken("fake-0")).rejects.toThrow();
+        expect(get).toHaveBeenCalledTimes(1);
+      });
+
+      it("keeps rejections for one token separate from another", async () => {
+        get.mockImplementation(async (_url, options) =>
+          (options?.headers as Record<string, string>).Authorization === "Bearer valid"
+            ? userinfo
+            : { status: 401, data: {} }
+        );
+
+        await expect(provider.verifyAccessToken("expired")).rejects.toThrow();
+        await expect(provider.verifyAccessToken("valid")).resolves.toBeDefined();
+      });
     });
   });
 

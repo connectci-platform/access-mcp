@@ -73,6 +73,9 @@ export class CILogonOAuthProvider implements OAuthServerProvider {
   private _pendingAuthorizations = new Map<string, PendingAuthorization>();
   private _authCodes = new Map<string, StoredAuthCode>();
   private _tokenCache = new Map<string, CachedUserInfo>();
+  // Clients that keep reconnecting with an expired token would otherwise send
+  // every attempt to CILogon. Value is when to ask again.
+  private _rejectedTokens = new Map<string, number>();
 
   // Skip local PKCE — CILogon handles it
   skipLocalPkceValidation = true;
@@ -92,6 +95,9 @@ export class CILogonOAuthProvider implements OAuthServerProvider {
       }
       for (const [key, value] of this._tokenCache) {
         if (value.expiresAt < now) this._tokenCache.delete(key);
+      }
+      for (const [key, retryAt] of this._rejectedTokens) {
+        if (retryAt < now) this._rejectedTokens.delete(key);
       }
     }, 60_000);
   }
@@ -256,6 +262,9 @@ export class CILogonOAuthProvider implements OAuthServerProvider {
     if (cached && cached.expiresAt > Date.now()) {
       return cached.info;
     }
+    if ((this._rejectedTokens.get(token) ?? 0) > Date.now()) {
+      throw new Error("Invalid or expired access token");
+    }
 
     // Call CILogon userinfo
     const response = await axios.get(
@@ -267,6 +276,16 @@ export class CILogonOAuthProvider implements OAuthServerProvider {
     );
 
     if (response.status !== 200) {
+      // Only CILogon's own rejection is remembered, so an outage can't lock
+      // out valid tokens.
+      if (response.status === 401 || response.status === 403) {
+        // Anyone can send made-up tokens, so the list is capped.
+        if (this._rejectedTokens.size >= 5_000) {
+          const oldest = this._rejectedTokens.keys().next().value;
+          if (oldest !== undefined) this._rejectedTokens.delete(oldest);
+        }
+        this._rejectedTokens.set(token, Date.now() + 300_000);
+      }
       throw new Error("Invalid or expired access token");
     }
 
