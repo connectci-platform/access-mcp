@@ -2318,6 +2318,26 @@ describe("EventsServer", () => {
       });
     });
 
+    it("register preview passes seats remaining through when there is a limit", async () => {
+      const previewData = async (extra: object) => {
+        mockRequestRaw.mockResolvedValue({
+          status: 200,
+          data: { preview: true, outcome_if_confirmed: "seat", ...extra },
+        });
+        const result = await withDrupalEnv(() =>
+          server["handleToolCall"]({
+            method: "tools/call",
+            params: { name: "register_for_event", arguments: { eventinstance_id: "5" } },
+          })
+        );
+        return JSON.parse((result as { content: { text: string }[] }).content[0].text).data;
+      };
+
+      expect((await previewData({ seats_remaining: 39 })).seats_remaining).toBe(39);
+      expect((await previewData({ seats_remaining: 0 })).seats_remaining).toBe(0);
+      expect(await previewData({ seats_remaining: null })).not.toHaveProperty("seats_remaining");
+    });
+
     it("register commit says the registration is pending approval", async () => {
       const commit = (extra: object) => {
         mockRequestRaw.mockResolvedValue({
