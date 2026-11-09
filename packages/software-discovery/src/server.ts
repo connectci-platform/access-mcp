@@ -93,11 +93,14 @@ interface SoftwareComparison {
 type ResourceStatus = "listed" | "not_listed" | "not_indexed" | "lookup_failed";
 type Coverage = "indexed" | "not_indexed" | "lookup_failed";
 
+// The model repeats this note to people, so it names each gap the way the
+// assistant's software grid does and says not to show the status codes.
 const GAP_NOTE =
-  "not_listed means the package isn't in that resource's software list, not that it can't be used. " +
-  "not_indexed means no software list exists for that resource, so nothing is known about its software. " +
-  "lookup_failed means the check for that resource's list failed. " +
-  "None of these mean the software is unavailable; point the user to the resource's documentation or support.";
+  "not_listed is \"Not listed\": the package isn't in that resource's software list, not that it can't be used. " +
+  'not_indexed is "Not indexed": no software list exists for that resource, so nothing is known about its software. ' +
+  "lookup_failed is \"Couldn't check\": the check for that resource's list failed. " +
+  "None of these mean the software is unavailable; point the user to the resource's documentation or support. " +
+  "Say Not listed, Not indexed or Couldn't check to the user, never the status codes.";
 
 /** "anvil.purdue.access-ci.org" and "Bridges2" read as "anvil" and "bridges2". */
 function resourceKey(value: string): string {
