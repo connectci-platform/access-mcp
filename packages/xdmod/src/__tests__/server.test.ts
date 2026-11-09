@@ -889,7 +889,7 @@ describe("XDMoDMetricsServer", () => {
         mockFetch.mockResolvedValueOnce(mockResponse({ data: [{ hc_jsonstore: { data: series } }] }));
         const text = getText(await chartData({ aggregation_unit: "Day", limit: 6 }));
 
-        expect(text.match(/^  - /gm)).toHaveLength(300);
+        expect(text.match(/^ {2}- /gm)).toHaveLength(300);
         expect(text).toContain("- R5: avg 1.0000 (60 data points)");
         expect(text).toContain("300 in all, are listed");
       });
