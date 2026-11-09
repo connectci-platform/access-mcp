@@ -359,14 +359,14 @@ describe("partial last data period and label stripping", () => {
   it("words the note for Month and Day", () => {
     const month = build({ chartInfo: info("m"), params: { end_date: "2026-11-08" } });
     expect(partialPeriodNote(month)).toBe(
-      "XDMoD has data only through October 1, 2026, so the Oct 2026 value may cover only part of that period, and later periods have no data yet. Don't read it as a change."
+      "XDMoD has data only through Oct 1, 2026, so the Oct 2026 value may cover only part of that period, and later periods have no data yet. Don't read it as a change."
     );
     const day = build({
       chartInfo: info("d"),
       params: { aggregation_unit: "Day", start_date: "2026-09-29", end_date: "2026-10-03" },
     });
     expect(partialPeriodNote(day)).toBe(
-      "XDMoD has data only through October 1, 2026, so the Oct 1, 2026 value may cover only part of that period, and later periods have no data yet. Don't read it as a change."
+      "XDMoD has data only through Oct 1, 2026, so the Oct 1, 2026 value may cover only part of that period, and later periods have no data yet. Don't read it as a change."
     );
   });
 
@@ -382,5 +382,35 @@ describe("partial last data period and label stripping", () => {
     expect(p.measure.description).toBe(
       "The average time, in hours, a job waited. Wait Time: Wait time is defined as the time between submission & start."
     );
+  });
+});
+
+describe("latestDataDay", () => {
+  const info = {
+    hc_jsonstore: {
+      data: [{ name: "A", x: [ms("2026-08-01"), ms("2026-09-01"), ms("2026-10-01")], y: [12, 11, 0.05] }],
+    },
+  };
+  const range = { end_date: "2026-10-31" };
+
+  it("marks the last period partial when the probe day falls inside it", () => {
+    const p = build({ chartInfo: info, params: range, latestDataDay: "2026-10-01" });
+    expect(p.data_through).toBe("2026-10-01");
+    expect(p.last_data_period_partial).toBe(true);
+    expect(partialPeriodNote(p)).toBe(
+      "XDMoD has data only through Oct 1, 2026, so the Oct 2026 value may cover only part of that period. Don't read it as a change."
+    );
+  });
+
+  it("keeps the series rule when the probe day is after the range", () => {
+    const p = build({ chartInfo: info, params: range, latestDataDay: "2026-11-05" });
+    expect(p.data_through).toBe("2026-10-01");
+    expect(p.last_data_period_partial).toBe(false);
+  });
+
+  it("is not partial when the probe day is the last day of the period", () => {
+    const p = build({ chartInfo: info, params: range, latestDataDay: "2026-10-31" });
+    expect(p.data_through).toBe("2026-10-31");
+    expect(p.last_data_period_partial).toBe(false);
   });
 });

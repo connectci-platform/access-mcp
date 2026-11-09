@@ -181,17 +181,6 @@ function stripLabel(text: string, label: string): string {
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const LONG_MONTHS = [
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
-];
-
-/** "October 1, 2026" */
-export function longDate(date: string): string {
-  const { y, m, d } = parseDate(date);
-  return `${LONG_MONTHS[m - 1]} ${d}, ${y}`;
-}
-
 /** A period's name as people say it: Oct 1, 2026 / Oct 2026 / Q4 2026 / 2026. */
 export function periodLabel(unit: Unit, start: string): string {
   const { y, m, d } = parseDate(start);
@@ -204,10 +193,12 @@ export function periodLabel(unit: Unit, start: string): string {
 /** The line that keeps a reader from taking a half-empty last period for a drop. */
 export function partialPeriodNote(payload: ChartPayload): string | undefined {
   if (!payload.last_data_period_partial || !payload.data_through || !payload.unit) return undefined;
+  const own = periodStartOf(payload.unit, payload.data_through);
+  const later = payload.counted.end > periodEnd(payload.unit, own);
   return (
-    `XDMoD has data only through ${longDate(payload.data_through)}, so the ` +
-    `${periodLabel(payload.unit, payload.data_through)} value may cover only part of that period, ` +
-    `and later periods have no data yet. Don't read it as a change.`
+    `XDMoD has data only through ${periodLabel("Day", payload.data_through)}, so the ` +
+    `${periodLabel(payload.unit, payload.data_through)} value may cover only part of that period` +
+    `${later ? ", and later periods have no data yet" : ""}. Don't read it as a change.`
   );
 }
 
@@ -224,6 +215,8 @@ export function buildChartPayload(input: {
   today: string;
   hasMore: boolean;
   dimensionOrder?: string[];
+  /** The latest day XDMoD holds data for in this realm, when known. */
+  latestDataDay?: string | null;
   link: string;
 }): ChartPayload {
   const { params, chartInfo, matchNotes, label, today, hasMore, dimensionOrder, link } = input;
@@ -285,9 +278,19 @@ export function buildChartPayload(input: {
         payload.data_through = start;
       }
     }
-    payload.last_data_period_partial =
-      payload.data_through !== null && starts[starts.length - 1] > payload.data_through;
     payload.counted = { start: starts[0], end: periodEnd(unit, starts[starts.length - 1]) };
+    const probe = input.latestDataDay;
+    let fromProbe = false;
+    if (probe && probe >= payload.counted.start && probe <= payload.counted.end) {
+      payload.data_through = probe;
+      fromProbe = true;
+    }
+    if (payload.data_through !== null) {
+      const own = periodStartOf(unit, payload.data_through);
+      const laterEmpty = starts[starts.length - 1] > own;
+      const cutShort = fromProbe && payload.data_through < periodEnd(unit, own);
+      payload.last_data_period_partial = laterEmpty || cutShort;
+    }
     payload.last_period_incomplete = payload.counted.end >= today;
   } else {
     const trace = traces[0];

@@ -285,6 +285,14 @@ export class XDMoDMetricsServer extends BaseAccessServer {
   private static readonly CHART_CACHE_MAX_ENTRIES = 100;
   private dimensionOrderCache = new Map<string, { names: string[]; expires: number }>();
   private static readonly DIMENSION_ORDER_TTL = 1000 * 60 * 30; // 30 minutes
+  private latestDayCache = new Map<string, { day: string; expires: number }>();
+  private static readonly LATEST_DAY_TTL = 1000 * 60 * 60; // 1 hour
+  // Count statistics that have a value on every day a realm has data.
+  private static readonly PROBE_STATISTICS: Record<string, string> = {
+    Jobs: "job_count",
+    SUPREMM: "job_count",
+    Gateways: "job_count",
+  };
 
   constructor() {
     super("xdmod", version, "https://xdmod.access-ci.org");
@@ -1037,7 +1045,10 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       const dimensionOrder = ORDERED_DIMENSIONS.has(params.group_by)
         ? await this.dimensionOrder(params.realm, params.group_by)
         : undefined;
+      const latestDataDay =
+        params.dataset_type === "timeseries" ? await this.latestDataDay(params.realm) : null;
       return buildChartPayload({
+        latestDataDay,
         params,
         chartInfo,
         matchNotes,
@@ -1054,6 +1065,59 @@ export class XDMoDMetricsServer extends BaseAccessServer {
         error: error instanceof Error ? error.message : String(error),
       });
       return undefined;
+    }
+  }
+
+  /**
+   * The last day in the past 120 with data in a realm, since public data can
+   * stop weeks before today. Null when unknown; a failure is not cached.
+   */
+  private async latestDataDay(realm: string): Promise<string | null> {
+    const statistic = XDMoDMetricsServer.PROBE_STATISTICS[realm];
+    if (!statistic) return null;
+    const cached = this.latestDayCache.get(realm);
+    if (cached && cached.expires > Date.now()) return cached.day;
+    try {
+      const end = new Date().toISOString().slice(0, 10);
+      const start = new Date(Date.parse(end) - 119 * 86_400_000).toISOString().slice(0, 10);
+      const response = await fetch(`${this.baseURL}/controllers/user_interface.php`, {
+        method: "POST",
+        headers: this.getHeaders(),
+        body: new URLSearchParams({
+          operation: "get_charts",
+          public_user: "true",
+          dataset_type: "timeseries",
+          format: "hc_jsonstore",
+          width: "916",
+          height: "484",
+          realm,
+          group_by: "none",
+          statistic,
+          start_date: start,
+          end_date: end,
+          aggregation_unit: "Day",
+        }),
+      });
+      if (!response.ok) return null;
+      const json = await response.json().catch(() => null);
+      const traces: { name?: string; x?: unknown[]; y?: unknown[] }[] | undefined =
+        json?.data?.[0]?.hc_jsonstore?.data;
+      let day: string | null = null;
+      for (const trace of traces ?? []) {
+        if (!trace.name || trace.name.toLowerCase().includes("gap connector")) continue;
+        for (const p of timeseriesPoints(trace)) {
+          if (p.value !== 0 && (day === null || p.start > day)) day = p.start;
+        }
+      }
+      if (day) {
+        this.latestDayCache.set(realm, {
+          day,
+          expires: Date.now() + XDMoDMetricsServer.LATEST_DAY_TTL,
+        });
+      }
+      return day;
+    } catch {
+      return null;
     }
   }
 

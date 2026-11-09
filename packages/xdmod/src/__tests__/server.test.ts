@@ -98,6 +98,8 @@ describe("XDMoDMetricsServer", () => {
     // Clear the menu cache between tests
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (server as any).menuCache = null;
+    // The probe for XDMoD's latest day has its own tests.
+    server["latestDataDay"] = async () => null;
   });
 
   describe("basic configuration", () => {
@@ -947,7 +949,7 @@ describe("XDMoDMetricsServer", () => {
 
         expect(result.structuredContent!.chart.last_data_period_partial).toBe(true);
         expect(result.content[0].text).toContain(
-          "XDMoD has data only through September 1, 2026, so the Sep 2026 value may cover only part of that period"
+          "XDMoD has data only through Sep 1, 2026, so the Sep 2026 value may cover only part of that period"
         );
       });
 
@@ -1290,5 +1292,132 @@ describe("XDMoDMetricsServer", () => {
       expect(text).toContain("SVG");
       expect(text).toContain("<svg>chart</svg>");
     });
+  });
+});
+
+describe("latest data day probe", () => {
+  let probeServer: InstanceType<typeof XDMoDMetricsServer>;
+  const day = (d: string) => Date.parse(`${d}T05:00:00Z`);
+  const probeResponse = (y: (number | null)[]) =>
+    mockResponse({
+      success: true,
+      data: [
+        {
+          hc_jsonstore: {
+            data: [
+              {
+                name: "Number of Jobs Ended",
+                x: [day("2026-09-28"), day("2026-09-29"), day("2026-09-30"), day("2026-10-01")],
+                y,
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+  beforeEach(() => {
+    mockFetch.mockReset();
+    vi.useFakeTimers({ now: new Date("2026-11-09T12:00:00Z"), toFake: ["Date"] });
+    probeServer = new XDMoDMetricsServer();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("asks for 120 days of daily job counts and returns the last non-zero day", async () => {
+    mockFetch.mockResolvedValueOnce(probeResponse([5, 6, 7, 0]));
+
+    expect(await probeServer["latestDataDay"]("Jobs")).toBe("2026-09-30");
+
+    const body = mockFetch.mock.calls[0][1].body as URLSearchParams;
+    expect(body.get("realm")).toBe("Jobs");
+    expect(body.get("group_by")).toBe("none");
+    expect(body.get("statistic")).toBe("job_count");
+    expect(body.get("dataset_type")).toBe("timeseries");
+    expect(body.get("aggregation_unit")).toBe("Day");
+    expect(body.get("end_date")).toBe("2026-11-09");
+    expect(body.get("start_date")).toBe("2026-07-13");
+  });
+
+  test("ignores null days and caches per realm", async () => {
+    mockFetch.mockResolvedValueOnce(probeResponse([5, 6, null, null]));
+
+    expect(await probeServer["latestDataDay"]("Jobs")).toBe("2026-09-29");
+    expect(await probeServer["latestDataDay"]("Jobs")).toBe("2026-09-29");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test("returns null on failure without caching it", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse(null, false, 500));
+    expect(await probeServer["latestDataDay"]("Jobs")).toBeNull();
+
+    mockFetch.mockRejectedValueOnce(new Error("down"));
+    expect(await probeServer["latestDataDay"]("Jobs")).toBeNull();
+
+    mockFetch.mockResolvedValueOnce(probeResponse([1, 0, 0, 0]));
+    expect(await probeServer["latestDataDay"]("Jobs")).toBe("2026-09-28");
+  });
+
+  test("skips realms it has no count statistic for", async () => {
+    expect(await probeServer["latestDataDay"]("Storage")).toBeNull();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  test("get_chart_data still answers when the probe fails", async () => {
+    const x = [1785556800000, 1788235200000, 1790827200000];
+    mockFetch
+      .mockResolvedValueOnce(
+        mockResponse({ success: true, data: [{ hc_jsonstore: { data: [{ name: "A", x, y: [1, 2, 3] }] } }] })
+      )
+      .mockRejectedValueOnce(new Error("probe down"));
+    const result = (await probeServer["handleToolCall"]({
+      method: "tools/call",
+      params: {
+        name: "get_chart_data",
+        arguments: {
+          realm: "Jobs",
+          group_by: "resource",
+          statistic: "job_count",
+          start_date: "2026-08-01",
+          end_date: "2026-10-31",
+          dataset_type: "timeseries",
+          aggregation_unit: "Month",
+        },
+      },
+    })) as { content: { text: string }[]; structuredContent?: { chart: ChartPayload } };
+
+    expect(result.content[0].text).toMatch(/^Chart Data for/);
+    expect(result.structuredContent!.chart.data_through).toBe("2026-10-01");
+  });
+
+  test("a probe day inside the last period puts the note in the text", async () => {
+    const x = [1785556800000, 1788235200000, 1790827200000];
+    mockFetch
+      .mockResolvedValueOnce(
+        mockResponse({ success: true, data: [{ hc_jsonstore: { data: [{ name: "A", x, y: [12, 11, 0.05] }] } }] })
+      )
+      .mockResolvedValueOnce(probeResponse([5, 6, 7, 8]));
+    const result = (await probeServer["handleToolCall"]({
+      method: "tools/call",
+      params: {
+        name: "get_chart_data",
+        arguments: {
+          realm: "Jobs",
+          group_by: "resource",
+          statistic: "job_count",
+          start_date: "2026-08-01",
+          end_date: "2026-10-31",
+          dataset_type: "timeseries",
+          aggregation_unit: "Month",
+        },
+      },
+    })) as { content: { text: string }[]; structuredContent?: { chart: ChartPayload } };
+
+    expect(result.structuredContent!.chart.last_data_period_partial).toBe(true);
+    expect(result.content[0].text).toContain(
+      "XDMoD has data only through Oct 1, 2026, so the Oct 2026 value may cover only part of that period. Don't read it as a change."
+    );
   });
 });
