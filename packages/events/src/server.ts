@@ -19,7 +19,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import axios, { AxiosInstance } from "axios";
 import { createRequire } from "module";
-import { validateRecurrence, buildRuleField } from "./recurrence.js";
+import { validateRecurrence, buildRuleField, RECURRENCE_EXAMPLES } from "./recurrence.js";
 import type { RecurrenceIntent } from "./recurrence.js";
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -498,7 +498,9 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             recurrence: {
               type: "object",
               description:
-                "A high-level recurrence pattern for a REPEATING event, translated to the native Drupal rule-field columns server-side. Use this for any repeating pattern. Mutually exclusive with recur_type and with custom_dates (supplying more than one is refused with validation_error). Examples: daily (freq:daily, start_date:2025-01-01, end_date:2025-02-28, start_time:10:00, duration_minutes:90); weekly (freq:weekly, start_date:2025-01-06, end_date:2025-03-31, days:[mon,wed], start_time:14:00, duration_minutes:60); monthly weekday (freq:monthly, monthly_mode:weekday, start_date:2025-01-06, end_date:2025-06-30, days:[mon], week_positions:[first], start_time:15:00, ends_at:16:30); monthly monthday (freq:monthly, monthly_mode:monthday, start_date:2025-01-15, end_date:2025-12-31, days_of_month:[15], start_time:10:00, duration_minutes:120); yearly (freq:yearly, start_date:2025-06-21, end_date:2027-06-21, monthly_mode:monthday, months:[jun], days_of_month:[21], year_interval:1, start_time:12:00, ends_at:13:00); consecutive (freq:consecutive, start_date:2025-01-13, end_date:2025-01-17, window_start:2025-01-13, window_end:2025-01-17, session_minutes:180, gap_minutes:30). Invalid combinations are refused with code validation_error, over_fill, or out_of_vocab naming the problem field.",
+                "A high-level recurrence pattern for a REPEATING event, translated to the native Drupal rule-field columns server-side. Use this for any repeating pattern. Mutually exclusive with recur_type and with custom_dates (supplying more than one is refused with validation_error). Examples: " +
+                RECURRENCE_EXAMPLES.map((e) => `${e.label} ${JSON.stringify(e.intent)}`).join("; ") +
+                ". Invalid combinations are refused with code validation_error, over_fill, or out_of_vocab naming the problem field.",
               properties: {
                 frequency: {
                   type: "string",
@@ -554,11 +556,11 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
                 },
                 window_start: {
                   type: "string",
-                  description: "Window start date (YYYY-MM-DD). Required for consecutive.",
+                  description: "Start of each day's session window (24h HH:MM), interpreted in the acting user's profile timezone. Required for consecutive.",
                 },
                 window_end: {
                   type: "string",
-                  description: "Window end date (YYYY-MM-DD). Required for consecutive.",
+                  description: "End of each day's session window (24h HH:MM), interpreted in the acting user's profile timezone. Required for consecutive.",
                 },
                 session_minutes: {
                   type: "number",

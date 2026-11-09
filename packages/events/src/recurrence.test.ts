@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DRUPAL_CONTRACT, fmt12, validateRecurrence } from "./recurrence.js";
+import { DRUPAL_CONTRACT, fmt12, validateRecurrence, RECURRENCE_EXAMPLES } from "./recurrence.js";
 import { buildRuleField } from "./recurrence.js";
 
 describe("DRUPAL_CONTRACT", () => {
@@ -143,5 +143,35 @@ describe("DRUPAL_CONTRACT drift guard", () => {
     expect(Object.keys(DRUPAL_CONTRACT.months)).toHaveLength(12);
     expect(Object.values(DRUPAL_CONTRACT.months)).toContain("Mar"); // capitalized 3-letter
     expect(DRUPAL_CONTRACT.monthlyModes).toEqual(["weekday", "monthday"]);
+  });
+});
+
+describe("RECURRENCE_EXAMPLES", () => {
+  it.each(RECURRENCE_EXAMPLES.map((e) => [e.label, e.intent] as const))("%s passes validation", (_label, intent) => {
+    expect(validateRecurrence(intent)).toEqual({ ok: true, errors: [] });
+  });
+});
+
+describe("validateRecurrence time format", () => {
+  it.each([
+    ["start_time", { frequency: "daily", ...base, start_time: "2026-09-01", duration_minutes: 60 }],
+    ["ends_at", { frequency: "daily", ...base, start_time: "09:00", ends_at: "5pm" }],
+    ["start_time", { frequency: "daily", ...base, start_time: "9:00", duration_minutes: 60 }],
+    ["window_start", { frequency: "consecutive", ...base, window_start: "2026-09-01", window_end: "17:00", session_minutes: 30, gap_minutes: 0 }],
+    ["window_end", { frequency: "consecutive", ...base, window_start: "09:00", window_end: "24:00", session_minutes: 30, gap_minutes: 0 }],
+  ] as const)("refuses a malformed %s", (field, intent) => {
+    const r = validateRecurrence(intent as never);
+    expect(r.ok).toBe(false);
+    expect(r.errors).toEqual([
+      { code: "validation_error", message: `${field} must be a 24-hour time (HH:MM), such as 14:00.` },
+    ]);
+  });
+
+  it("refuses dates for the consecutive window without a spurious ordering error", () => {
+    const r = validateRecurrence({ frequency: "consecutive", ...base, window_start: "2025-01-13", window_end: "2025-01-17", session_minutes: 180, gap_minutes: 30 });
+    expect(r.errors.map((e) => e.message)).toEqual([
+      "window_start must be a 24-hour time (HH:MM), such as 14:00.",
+      "window_end must be a 24-hour time (HH:MM), such as 14:00.",
+    ]);
   });
 });

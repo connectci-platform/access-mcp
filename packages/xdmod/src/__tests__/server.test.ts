@@ -123,6 +123,28 @@ describe("XDMoDMetricsServer", () => {
       expect(tools).toHaveLength(6);
     });
 
+    test("filters examples fit the filters schema", () => {
+      type Filters = { description: string; additionalProperties: unknown };
+      const withFilters = server["getTools"]().filter(
+        (t: { inputSchema: { properties?: Record<string, unknown> } }) => t.inputSchema.properties?.filters,
+      );
+      expect(withFilters.map((t: { name: string }) => t.name)).toEqual(["get_chart_data", "get_chart_image"]);
+      for (const tool of withFilters) {
+        const filters = tool.inputSchema.properties?.filters as Filters;
+        expect(filters.additionalProperties).toEqual({
+          anyOf: [{ type: "string" }, { type: "array", items: { type: "string" }, minItems: 1 }],
+        });
+        const examples = filters.description.match(/\{[^{}]*\}/g) ?? [];
+        expect(examples.length, tool.name).toBeGreaterThan(1);
+        for (const example of examples) {
+          for (const value of Object.values(JSON.parse(example))) {
+            const ok = typeof value === "string" || (Array.isArray(value) && value.every((v) => typeof v === "string"));
+            expect(ok, `${tool.name}: ${example}`).toBe(true);
+          }
+        }
+      }
+    });
+
     test("should include chart tools", () => {
       const tools = server["getTools"]();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -491,7 +513,7 @@ describe("XDMoDMetricsServer", () => {
             data: [{ hc_jsonstore: { data: [{ name: "ACCESS", x: ["ACCESS"], y: [5] }] } }],
           }),
       };
-      const call = (resource: string) =>
+      const call = (resource: string | string[]) =>
         server["handleToolCall"]({
           method: "tools/call",
           params: {
@@ -510,6 +532,29 @@ describe("XDMoDMetricsServer", () => {
 
       beforeEach(() => {
         mockFetch.mockReset();
+      });
+
+      test("should send every id when the filter is a list", async () => {
+        mockFetch
+          .mockResolvedValueOnce(dimension(["NCSA DELTA CPU", "Anvil CPU", "Expanse"]))
+          .mockResolvedValueOnce(dimension(["NCSA DELTA CPU", "Anvil CPU", "Expanse"]))
+          .mockResolvedValueOnce(chart);
+
+        await call(["NCSA DELTA CPU", "Expanse"]);
+        const body = mockFetch.mock.calls[2][1].body as URLSearchParams;
+        expect(body.get("resource_filter")).toBe("1,3");
+      });
+
+      test("should send each id once when list entries overlap", async () => {
+        const names = ["NCSA DELTA CPU", "NCSA DELTA GPU", "Expanse"];
+        mockFetch
+          .mockResolvedValueOnce(dimension(names))
+          .mockResolvedValueOnce(dimension(names))
+          .mockResolvedValueOnce(chart);
+
+        await call(["Delta", "NCSA DELTA CPU"]);
+        const body = mockFetch.mock.calls[2][1].body as URLSearchParams;
+        expect(body.get("resource_filter")).toBe("1,2");
       });
 
       test("should say which resources a partial name included", async () => {

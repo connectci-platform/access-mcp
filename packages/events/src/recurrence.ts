@@ -49,6 +49,21 @@ export function fmt12(hhmm: string): string {
   return `${String(h12).padStart(2, "0")}:${String(m).padStart(2, "0")} ${period}`;
 }
 
+/**
+ * Worked examples shown to the model in the create_event recurrence
+ * description. Typed as RecurrenceIntent so a wrong key fails to compile, and
+ * tested to pass validateRecurrence, so the examples can't drift from the
+ * schema the way hand-written prose did.
+ */
+export const RECURRENCE_EXAMPLES: ReadonlyArray<{ label: string; intent: RecurrenceIntent }> = [
+  { label: "daily", intent: { frequency: "daily", start_date: "2025-01-01", end_date: "2025-02-28", start_time: "10:00", duration_minutes: 90 } },
+  { label: "weekly", intent: { frequency: "weekly", start_date: "2025-01-06", end_date: "2025-03-31", days: ["mon", "wed"], start_time: "14:00", duration_minutes: 60 } },
+  { label: "monthly, first Monday", intent: { frequency: "monthly", monthly_mode: "weekday", start_date: "2025-01-06", end_date: "2025-06-30", days: ["mon"], week_positions: ["first"], start_time: "15:00", ends_at: "16:30" } },
+  { label: "monthly, the 15th", intent: { frequency: "monthly", monthly_mode: "monthday", start_date: "2025-01-15", end_date: "2025-12-31", days_of_month: [15], start_time: "10:00", duration_minutes: 120 } },
+  { label: "yearly", intent: { frequency: "yearly", monthly_mode: "monthday", start_date: "2025-06-21", end_date: "2027-06-21", months: ["jun"], days_of_month: [21], year_interval: 1, start_time: "12:00", ends_at: "13:00" } },
+  { label: "consecutive sessions each day", intent: { frequency: "consecutive", start_date: "2025-01-13", end_date: "2025-01-17", window_start: "09:00", window_end: "17:00", session_minutes: 180, gap_minutes: 30 } },
+];
+
 export interface RecurrenceError {
   code: "validation_error" | "over_fill" | "out_of_vocab";
   message: string;
@@ -62,6 +77,10 @@ const DAILY_FAMILY = new Set<Frequency>(["daily", "weekly", "monthly", "yearly"]
 // passes here and is left for Drupal's calendar validation. The point is to
 // reject datetime/timezone-suffixed strings (the mistake that caused PR #61).
 const BARE_DATE = /^\d{4}-\d{2}-\d{2}$/;
+// Zero-padded so the lexical ordering checks below are chronological, and so a
+// date or other non-time never reaches fmt12, which would render it as NaN.
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+const TIME_FIELDS = ["start_time", "ends_at", "window_start", "window_end"] as const;
 
 export function validateRecurrence(intent: RecurrenceIntent): { ok: boolean; errors: RecurrenceError[] } {
   const errors: RecurrenceError[] = [];
@@ -89,6 +108,14 @@ export function validateRecurrence(intent: RecurrenceIntent): { ok: boolean; err
       && intent.end_date < intent.start_date) {
     err("out_of_vocab", "end_date is before start_date.");
   }
+  const badTime = new Set<string>();
+  for (const k of TIME_FIELDS) {
+    const v = intent[k];
+    if (v != null && !HHMM.test(v)) {
+      badTime.add(k);
+      err("validation_error", `${k} must be a 24-hour time (HH:MM), such as 14:00.`);
+    }
+  }
 
   // Daily-family time + length.
   if (DAILY_FAMILY.has(f)) {
@@ -98,7 +125,8 @@ export function validateRecurrence(intent: RecurrenceIntent): { ok: boolean; err
     if (!hasDur && !hasEnds) err("validation_error", "Provide exactly one of duration_minutes or ends_at.");
     if (hasDur && hasEnds) err("over_fill", "Provide only one of duration_minutes or ends_at, not both.");
     if (hasDur && intent.duration_minutes! < 0) err("out_of_vocab", "duration_minutes must be non-negative.");
-    if (intent.start_time && intent.ends_at && intent.ends_at <= intent.start_time) {
+    if (intent.start_time && intent.ends_at && !badTime.has("start_time") && !badTime.has("ends_at")
+        && intent.ends_at <= intent.start_time) {
       err("out_of_vocab", "ends_at must be after start_time.");
     }
   }
@@ -155,7 +183,8 @@ export function validateRecurrence(intent: RecurrenceIntent): { ok: boolean; err
     for (const [k, v] of [["window_start", intent.window_start], ["window_end", intent.window_end], ["session_minutes", intent.session_minutes], ["gap_minutes", intent.gap_minutes]] as const) {
       if (v == null) err("validation_error", `${k} is required for consecutive.`);
     }
-    if (intent.window_start && intent.window_end && intent.window_end <= intent.window_start) {
+    if (intent.window_start && intent.window_end && !badTime.has("window_start") && !badTime.has("window_end")
+        && intent.window_end <= intent.window_start) {
       err("out_of_vocab", "window_end must be after window_start.");
     }
   } else {
