@@ -281,7 +281,14 @@ export function buildChartPayload(input: {
     payload.counted = { start: starts[0], end: periodEnd(unit, starts[starts.length - 1]) };
     const probe = input.latestDataDay;
     let fromProbe = false;
-    if (probe && probe >= payload.counted.start && probe <= payload.counted.end) {
+    // The series' own last period wins. The realm-wide day only sharpens it
+    // when it falls inside that same period.
+    if (
+      probe &&
+      payload.data_through !== null &&
+      probe >= payload.data_through &&
+      probe <= periodEnd(unit, periodStartOf(unit, payload.data_through))
+    ) {
       payload.data_through = probe;
       fromProbe = true;
     }

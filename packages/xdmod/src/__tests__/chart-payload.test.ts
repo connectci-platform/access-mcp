@@ -408,6 +408,22 @@ describe("latestDataDay", () => {
     expect(p.last_data_period_partial).toBe(false);
   });
 
+  it("lets a series that ended earlier win over a later realm-wide day", () => {
+    const anvil = {
+      hc_jsonstore: {
+        data: [{ name: "Anvil", x: [ms("2026-10-18"), ms("2026-10-19")], y: [4, 5] }],
+      },
+    };
+    const p = build({
+      chartInfo: anvil,
+      params: { aggregation_unit: "Day", start_date: "2026-10-18", end_date: "2026-11-08" },
+      latestDataDay: "2026-11-08",
+    });
+    expect(p.data_through).toBe("2026-10-19");
+    expect(p.last_data_period_partial).toBe(true);
+    expect(partialPeriodNote(p)).toContain("through Oct 19, 2026, so the Oct 19, 2026 value");
+  });
+
   it("is not partial when the probe day is the last day of the period", () => {
     const p = build({ chartInfo: info, params: range, latestDataDay: "2026-10-31" });
     expect(p.data_through).toBe("2026-10-31");
