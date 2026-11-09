@@ -4,6 +4,7 @@ import {
   effectiveUnit,
   measureKind,
   ORDERED_DIMENSIONS,
+  partialPeriodNote,
   periodStarts,
   plainDescription,
   type ChartDataParams,
@@ -326,5 +327,60 @@ describe("rank prefixes and data_through", () => {
       chartInfo: { hc_jsonstore: { data: [{ name: "A", x: [ms("2026-08-01")], y: [null] }] } },
     });
     expect(p.data_through).toBeNull();
+  });
+});
+
+describe("partial last data period and label stripping", () => {
+  const info = (unit: "m" | "d") => ({
+    hc_jsonstore: {
+      data: [
+        unit === "m"
+          ? { name: "A", x: [ms("2026-08-01"), ms("2026-09-01"), ms("2026-10-01")], y: [12, 11, 0.05] }
+          : { name: "A", x: [ms("2026-10-01")], y: [1] },
+      ],
+    },
+  });
+
+  it("flags a last data period followed by empty periods", () => {
+    const p = build({ chartInfo: info("m"), params: { end_date: "2026-11-08" } });
+    expect(p.data_through).toBe("2026-10-01");
+    expect(p.last_data_period_partial).toBe(true);
+  });
+
+  it("does not flag when data reaches the last period, or for aggregates", () => {
+    expect(build({ chartInfo: info("m"), params: { end_date: "2026-10-31" } }).last_data_period_partial).toBe(false);
+    const agg = build({
+      params: { dataset_type: "aggregate" },
+      chartInfo: { hc_jsonstore: { data: [{ name: "m", x: ["a"], y: [1] }] } },
+    });
+    expect(agg.last_data_period_partial).toBe(false);
+  });
+
+  it("words the note for Month and Day", () => {
+    const month = build({ chartInfo: info("m"), params: { end_date: "2026-11-08" } });
+    expect(partialPeriodNote(month)).toBe(
+      "XDMoD has data only through October 1, 2026, so the Oct 2026 value may cover only part of that period, and later periods have no data yet. Don't read it as a change."
+    );
+    const day = build({
+      chartInfo: info("d"),
+      params: { aggregation_unit: "Day", start_date: "2026-09-29", end_date: "2026-10-03" },
+    });
+    expect(partialPeriodNote(day)).toBe(
+      "XDMoD has data only through October 1, 2026, so the Oct 1, 2026 value may cover only part of that period, and later periods have no data yet. Don't read it as a change."
+    );
+  });
+
+  it("strips the label from the start of the description", () => {
+    const p = build({
+      label: "Wait Hours: Per Job",
+      chartInfo: {
+        description:
+          "<b>Wait Hours: Per Job</b>: The average time, in hours, a job waited.<br/><i>Wait Time: </i>Wait time is defined as the time between submission &amp; start.",
+        hc_jsonstore: { data: [] },
+      },
+    });
+    expect(p.measure.description).toBe(
+      "The average time, in hours, a job waited. Wait Time: Wait time is defined as the time between submission & start."
+    );
   });
 });

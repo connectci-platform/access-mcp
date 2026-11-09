@@ -939,6 +939,18 @@ describe("XDMoDMetricsServer", () => {
         expect(mockFetch).toHaveBeenCalledTimes(3);
       });
 
+      test("the text warns when the last period holds only part of the data", async () => {
+        mockFetch.mockResolvedValueOnce(
+          respond([{ name: "A", x: monthStarts.slice(0, 2), y: [12, 0.05] }])
+        );
+        const result = await run();
+
+        expect(result.structuredContent!.chart.last_data_period_partial).toBe(true);
+        expect(result.content[0].text).toContain(
+          "XDMoD has data only through September 1, 2026, so the Sep 2026 value may cover only part of that period"
+        );
+      });
+
       test("no data gives no structuredContent", async () => {
         mockFetch.mockResolvedValueOnce(mockResponse({ success: true, data: [] }));
         const result = await run();

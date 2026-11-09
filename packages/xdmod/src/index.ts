@@ -11,6 +11,7 @@ import {
 import { createRequire } from "module";
 import {
   buildChartPayload,
+  partialPeriodNote,
   effectiveUnit,
   ORDERED_DIMENSIONS,
   timeseriesPoints,
@@ -883,8 +884,16 @@ export class XDMoDMetricsServer extends BaseAccessServer {
 
       let chartInfo: ChartInfo | undefined;
       let hasMore = false;
+      let chart: ChartPayload | undefined;
       if (data.data && data.data.length > 0) {
         ({ chartInfo, hasMore } = this.trimToLimit(data.data[0] as ChartInfo, params));
+        chart = await this.chartPayload(
+          params,
+          chartInfo,
+          matchNotes,
+          hasMore,
+          new Date().toISOString().slice(0, 10)
+        );
 
         if (chartInfo.group_description) {
           resultText += `**Group Description:**\n${chartInfo.group_description}\n\n`;
@@ -948,6 +957,8 @@ export class XDMoDMetricsServer extends BaseAccessServer {
                 "Each date is the start of a whole period. XDMoD counts the whole first and last period, " +
                 "even when start_date or end_date falls partway through it.\n";
             }
+            const partial = chart && partialPeriodNote(chart);
+            if (partial) resultText += `${partial}\n`;
             if (summarized) {
               resultText +=
                 `Only series of up to ${MAX_SERIES_POINTS} points, ${MAX_LISTED_POINTS} in all, are listed. ` +
@@ -971,10 +982,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
         ],
       };
       const today = new Date().toISOString().slice(0, 10);
-      if (chartInfo) {
-        const chart = await this.chartPayload(params, chartInfo, matchNotes, hasMore, today);
-        if (chart) result.structuredContent = { chart };
-      }
+      if (chart) result.structuredContent = { chart };
       if (data.data?.length > 0 && params.end_date < today) {
         this.cacheChart(cacheKey, result);
       }

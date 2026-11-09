@@ -42,6 +42,8 @@ export interface ChartPayload {
   categories?: { name: string; value: number | null }[];
   /** Start of the last period with any value, or null (always null for aggregates). */
   data_through: string | null;
+  /** The last period with data may hold only part of its data, because later periods are empty. */
+  last_data_period_partial: boolean;
   has_more: boolean;
   ranked_by: "value";
   link: string;
@@ -170,6 +172,45 @@ export function plainDescription(html: string): string {
     .trim();
 }
 
+/** XDMoD starts a description with the measure's label and a colon. */
+function stripLabel(text: string, label: string): string {
+  const prefix = `${label}:`;
+  return label && text.toLowerCase().startsWith(prefix.toLowerCase())
+    ? text.slice(prefix.length).trim()
+    : text;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const LONG_MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+/** "October 1, 2026" */
+export function longDate(date: string): string {
+  const { y, m, d } = parseDate(date);
+  return `${LONG_MONTHS[m - 1]} ${d}, ${y}`;
+}
+
+/** A period's name as people say it: Oct 1, 2026 / Oct 2026 / Q4 2026 / 2026. */
+export function periodLabel(unit: Unit, start: string): string {
+  const { y, m, d } = parseDate(start);
+  if (unit === "Day") return `${MONTHS[m - 1]} ${d}, ${y}`;
+  if (unit === "Month") return `${MONTHS[m - 1]} ${y}`;
+  if (unit === "Quarter") return `Q${Math.floor((m - 1) / 3) + 1} ${y}`;
+  return String(y);
+}
+
+/** The line that keeps a reader from taking a half-empty last period for a drop. */
+export function partialPeriodNote(payload: ChartPayload): string | undefined {
+  if (!payload.last_data_period_partial || !payload.data_through || !payload.unit) return undefined;
+  return (
+    `XDMoD has data only through ${longDate(payload.data_through)}, so the ` +
+    `${periodLabel(payload.unit, payload.data_through)} value may cover only part of that period, ` +
+    `and later periods have no data yet. Don't read it as a change.`
+  );
+}
+
 /** XDMoD numbers ranked names ("1. NCSA DELTA GPU"). */
 function stripRank(name: string): string {
   return name.replace(/^\d+\.\s+/, "");
@@ -201,13 +242,14 @@ export function buildChartPayload(input: {
     last_period_incomplete: false,
     measure: {
       label,
-      description: plainDescription(chartInfo.description ?? ""),
+      description: stripLabel(plainDescription(chartInfo.description ?? ""), label),
       kind,
       missing: kind === "total" ? "zero" : "gap",
     },
     dimension: { name: params.group_by, ordered: ORDERED_DIMENSIONS.has(params.group_by) },
     filters: { notes: matchNotes },
     data_through: null,
+    last_data_period_partial: false,
     has_more: hasMore,
     ranked_by: "value",
     link,
@@ -243,6 +285,8 @@ export function buildChartPayload(input: {
         payload.data_through = start;
       }
     }
+    payload.last_data_period_partial =
+      payload.data_through !== null && starts[starts.length - 1] > payload.data_through;
     payload.counted = { start: starts[0], end: periodEnd(unit, starts[starts.length - 1]) };
     payload.last_period_incomplete = payload.counted.end >= today;
   } else {
