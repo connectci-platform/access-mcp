@@ -821,6 +821,105 @@ describe("XDMoDMetricsServer", () => {
       expect(text).not.toContain("gap connector");
     });
 
+    describe("aggregation_unit and per-period values", () => {
+      // Midnight Eastern on Aug 1, Sep 1 and Oct 1 2026, as XDMoD sends them.
+      const monthStarts = [1785556800000, 1788235200000, 1790827200000];
+      const timeseries = (y: (number | null)[], x: unknown[] = monthStarts) =>
+        mockResponse({ data: [{ hc_jsonstore: { data: [{ name: "NCSA DELTA GPU", x, y }] } }] });
+      const chartData = (extra: Record<string, unknown> = {}) =>
+        server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "get_chart_data",
+            arguments: {
+              realm: "Jobs",
+              group_by: "resource",
+              statistic: "total_cpu_hours",
+              start_date: "2026-08-01",
+              end_date: "2026-10-31",
+              dataset_type: "timeseries",
+              ...extra,
+            },
+          },
+        });
+      const sentBody = () => mockFetch.mock.calls.at(-1)![1].body as URLSearchParams;
+
+      test("sends the unit and lists each period's start and value", async () => {
+        mockFetch.mockResolvedValueOnce(timeseries([5966498.92, null, 6625166.73]));
+        const text = getText(await chartData({ aggregation_unit: "Month" }));
+
+        expect(sentBody().get("aggregation_unit")).toBe("Month");
+        expect(text).toContain("(2026-08-01 to 2026-10-31, by month):");
+        expect(text).toContain("- NCSA DELTA GPU: avg 6295832.8250 (2 data points)");
+        expect(text).toContain("  - 2026-08-01: 5966498.9200\n  - 2026-10-01: 6625166.7300\n");
+        expect(text).not.toContain("2026-09-01");
+      });
+
+      test("leaves the unit to XDMoD when it is omitted", async () => {
+        mockFetch.mockResolvedValueOnce(timeseries([1, 2, 3]));
+        const text = getText(await chartData());
+
+        expect(sentBody().has("aggregation_unit")).toBe(false);
+        expect(text).toContain("(2026-08-01 to 2026-10-31):");
+        expect(text).toContain("  - 2026-09-01: 2.0000");
+      });
+
+      test("summarizes a series too long to list", async () => {
+        const days = Array.from({ length: 61 }, (_, i) => monthStarts[0] + i * 86_400_000);
+        mockFetch.mockResolvedValueOnce(timeseries(days.map(() => 1), days));
+        const text = getText(await chartData({ aggregation_unit: "Day" }));
+
+        expect(text).toContain("- NCSA DELTA GPU: avg 1.0000 (61 data points)");
+        expect(text).not.toContain("  - 2026-08-01");
+        expect(text).toContain("set aggregation_unit to Month");
+      });
+
+      test("says periods are whole even when the range is not", async () => {
+        mockFetch.mockResolvedValueOnce(timeseries([1, 2, 3]));
+        const text = getText(await chartData({ start_date: "2026-08-15", aggregation_unit: "Month" }));
+        expect(text).toContain("XDMoD counts the whole first and last period");
+      });
+
+      test("stops listing once the total budget is spent", async () => {
+        const series = Array.from({ length: 6 }, (_, n) => ({
+          name: `R${n}`,
+          x: Array.from({ length: 60 }, (_, i) => monthStarts[0] + i * 86_400_000),
+          y: Array.from({ length: 60 }, () => 1),
+        }));
+        mockFetch.mockResolvedValueOnce(mockResponse({ data: [{ hc_jsonstore: { data: series } }] }));
+        const text = getText(await chartData({ aggregation_unit: "Day", limit: 6 }));
+
+        expect(text.match(/^  - /gm)).toHaveLength(300);
+        expect(text).toContain("- R5: avg 1.0000 (60 data points)");
+        expect(text).toContain("300 in all, are listed");
+      });
+
+      test("get_chart_image sends the unit too", async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          arrayBuffer: async () => new ArrayBuffer(8),
+          headers: new Headers(),
+        } as Response);
+        await server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "get_chart_image",
+            arguments: {
+              realm: "Jobs",
+              group_by: "none",
+              statistic: "total_cpu_hours",
+              start_date: "2024-01-01",
+              end_date: "2024-12-31",
+              format: "png",
+              aggregation_unit: "Quarter",
+            },
+          },
+        });
+        expect(sentBody().get("aggregation_unit")).toBe("Quarter");
+      });
+    });
+
     test("should handle empty chart data", async () => {
       mockFetch.mockResolvedValueOnce(mockResponse({ data: [] }));
 
