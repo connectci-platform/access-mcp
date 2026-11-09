@@ -246,6 +246,30 @@ interface MenuEntry {
 
 type ChartResult = { content: { type: "text"; text: string }[] };
 
+// Per series, enough for ten years of quarters or five of months, so a year of
+// days is summarized. The total keeps a high limit from listing every series.
+const MAX_SERIES_POINTS = 60;
+const MAX_LISTED_POINTS = 300;
+
+/**
+ * Pairs a timeseries trace's period starts with its values, dropping gaps.
+ * XDMoD sends each start as epoch milliseconds at local midnight on the
+ * US East Coast, so the UTC date is the period's calendar date.
+ */
+export function timeseriesPoints(series: { x?: unknown[]; y?: unknown[] }): { start: string; value: number }[] {
+  const xs = series.x ?? [];
+  const ys = series.y ?? [];
+  const points: { start: string; value: number }[] = [];
+  for (let i = 0; i < ys.length; i++) {
+    const value = ys[i];
+    if (typeof value !== "number") continue;
+    const x = xs[i];
+    const start = typeof x === "number" ? new Date(x).toISOString().slice(0, 10) : String(x ?? `period ${i + 1}`);
+    points.push({ start, value });
+  }
+  return points;
+}
+
 export class XDMoDMetricsServer extends BaseAccessServer {
   private menuCache: { data: MenuEntry[]; timestamp: number } | null = null;
   private static readonly MENU_CACHE_TTL = 1000 * 60 * 30; // 30 minutes
@@ -420,7 +444,8 @@ export class XDMoDMetricsServer extends BaseAccessServer {
           "The go-to tool for ACCESS-wide usage statistics, counts, and trends: " +
           "job counts, CPU/GPU hours, utilization, most-used resources, active users/PIs, " +
           "allocation usage — any 'how many / how much / trend over time' usage question " +
-          "(e.g. 'how many jobs ran on Delta last month'). Aggregate data only, not " +
+          "(e.g. 'how many jobs ran on Delta last month'). For a trend, use dataset_type timeseries; " +
+          "each period's value is listed, and aggregation_unit sets the period length. Aggregate data only, not " +
           "per-user extracts. Filters accept names (auto-resolved to IDs). " +
           "Stats by realm — Jobs: job_count, total_cpu_hours, total_su, active_person_count; " +
           "Allocations: allocated_ace, used_ace, active_allocation_count; Accounts: unique_account_count; " +
@@ -496,6 +521,13 @@ export class XDMoDMetricsServer extends BaseAccessServer {
               description: 'Use logarithmic scale (default: "n")',
               enum: ["y", "n"],
               default: "n",
+            },
+            aggregation_unit: {
+              type: "string",
+              description:
+                "Length of each timeseries period. Omit for Auto, where XDMoD uses days for ranges under 6 months, " +
+                "months under 10 years, and quarters beyond that. Set Month for a monthly trend over a shorter range.",
+              enum: ["Auto", "Day", "Month", "Quarter", "Year"],
             },
             filters: {
               type: "object",
@@ -591,6 +623,13 @@ export class XDMoDMetricsServer extends BaseAccessServer {
               description: 'Use logarithmic scale (default: "n")',
               enum: ["y", "n"],
               default: "n",
+            },
+            aggregation_unit: {
+              type: "string",
+              description:
+                "Length of each timeseries period. Omit for Auto, where XDMoD uses days for ranges under 6 months, " +
+                "months under 10 years, and quarters beyond that. Set Month for a monthly trend over a shorter range.",
+              enum: ["Auto", "Day", "Month", "Quarter", "Year"],
             },
             filters: {
               type: "object",
@@ -716,6 +755,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
           limit: (args.limit as number) || 10,
           offset: (args.offset as number) || 0,
           log_scale: (args.log_scale as string) || "n",
+          aggregation_unit: args.aggregation_unit as string | undefined,
           filters: args.filters as Record<string, string | string[]> | undefined,
         });
 
@@ -735,6 +775,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
           limit: (args.limit as number) || 10,
           offset: (args.offset as number) || 0,
           log_scale: (args.log_scale as string) || "n",
+          aggregation_unit: args.aggregation_unit as string | undefined,
           filters: args.filters as Record<string, string | string[]> | undefined,
         });
 
@@ -775,6 +816,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     limit?: number;
     offset?: number;
     log_scale?: string;
+    aggregation_unit?: string;
     filters?: Record<string, string | string[]>;
   }): Promise<ChartResult> {
     // Queries can take over 45 seconds. Charts are public data, so results can
@@ -809,6 +851,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       if (params.limit !== undefined) urlParams.append("limit", params.limit.toString());
       if (params.offset !== undefined) urlParams.append("offset", params.offset.toString());
       if (params.log_scale) urlParams.append("log_scale", params.log_scale);
+      if (params.aggregation_unit) urlParams.append("aggregation_unit", params.aggregation_unit);
 
       if (resolvedFilters) {
         for (const [key, value] of Object.entries(resolvedFilters)) {
@@ -876,15 +919,35 @@ export class XDMoDMetricsServer extends BaseAccessServer {
             }
             resultText += "\n";
           } else if (params.dataset_type === "timeseries") {
-            resultText += `**${chartTitle} by ${params.group_by} (${params.start_date} to ${params.end_date}):**\n`;
+            const unit = params.aggregation_unit && params.aggregation_unit !== "Auto"
+              ? `, by ${params.aggregation_unit.toLowerCase()}`
+              : "";
+            resultText += `**${chartTitle} by ${params.group_by} (${params.start_date} to ${params.end_date}${unit}):**\n`;
+            let listed = 0;
+            let summarized = false;
             for (const series of hcData) {
               if (series.name && !series.name.toLowerCase().includes("gap connector")) {
-                const values = (series.y || []).filter((v: unknown) => v !== null);
-                if (values.length > 0) {
-                  const avg = (values as number[]).reduce((a: number, b: number) => a + b, 0) / values.length;
-                  resultText += `- ${series.name}: avg ${avg.toFixed(4)} (${values.length} data points)\n`;
+                const points = timeseriesPoints(series);
+                if (points.length === 0) continue;
+                const avg = points.reduce((sum, p) => sum + p.value, 0) / points.length;
+                resultText += `- ${series.name}: avg ${avg.toFixed(4)} (${points.length} data points)\n`;
+                if (points.length <= MAX_SERIES_POINTS && listed + points.length <= MAX_LISTED_POINTS) {
+                  for (const p of points) resultText += `  - ${p.start}: ${p.value.toFixed(4)}\n`;
+                  listed += points.length;
+                } else {
+                  summarized = true;
                 }
               }
+            }
+            if (listed > 0) {
+              resultText +=
+                "Each date is the start of a whole period. XDMoD counts the whole first and last period, " +
+                "even when start_date or end_date falls partway through it.\n";
+            }
+            if (summarized) {
+              resultText +=
+                `Only series of up to ${MAX_SERIES_POINTS} points, ${MAX_LISTED_POINTS} in all, are listed. ` +
+                "For the rest, set aggregation_unit to Month (Quarter or Year for long ranges), or lower limit.\n";
             }
             resultText += "\n";
           }
@@ -977,6 +1040,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     limit?: number;
     offset?: number;
     log_scale?: string;
+    aggregation_unit?: string;
     filters?: Record<string, string | string[]>;
   }) {
     try {
@@ -1004,6 +1068,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       if (params.limit !== undefined) urlParams.append("limit", params.limit.toString());
       if (params.offset !== undefined) urlParams.append("offset", params.offset.toString());
       if (params.log_scale) urlParams.append("log_scale", params.log_scale);
+      if (params.aggregation_unit) urlParams.append("aggregation_unit", params.aggregation_unit);
 
       if (resolvedFilters) {
         for (const [key, value] of Object.entries(resolvedFilters)) {
