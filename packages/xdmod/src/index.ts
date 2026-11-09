@@ -9,6 +9,9 @@ import {
   type ToolWithAccess,
 } from "@access-mcp/shared";
 import { createRequire } from "module";
+import { timeseriesPoints, type ChartDataParams } from "./chart-payload.js";
+
+export { timeseriesPoints };
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
 
@@ -250,25 +253,6 @@ type ChartResult = { content: { type: "text"; text: string }[] };
 // days is summarized. The total keeps a high limit from listing every series.
 const MAX_SERIES_POINTS = 60;
 const MAX_LISTED_POINTS = 300;
-
-/**
- * Pairs a timeseries trace's period starts with its values, dropping gaps.
- * XDMoD sends each start as epoch milliseconds at local midnight on the
- * US East Coast, so the UTC date is the period's calendar date.
- */
-export function timeseriesPoints(series: { x?: unknown[]; y?: unknown[] }): { start: string; value: number }[] {
-  const xs = series.x ?? [];
-  const ys = series.y ?? [];
-  const points: { start: string; value: number }[] = [];
-  for (let i = 0; i < ys.length; i++) {
-    const value = ys[i];
-    if (typeof value !== "number") continue;
-    const x = xs[i];
-    const start = typeof x === "number" ? new Date(x).toISOString().slice(0, 10) : String(x ?? `period ${i + 1}`);
-    points.push({ start, value });
-  }
-  return points;
-}
 
 export class XDMoDMetricsServer extends BaseAccessServer {
   private menuCache: { data: MenuEntry[]; timestamp: number } | null = null;
@@ -804,21 +788,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     }
   }
 
-  private async getChartData(params: {
-    realm: string;
-    group_by: string;
-    statistic: string;
-    start_date: string;
-    end_date: string;
-    dataset_type: string;
-    display_type?: string;
-    combine_type?: string;
-    limit?: number;
-    offset?: number;
-    log_scale?: string;
-    aggregation_unit?: string;
-    filters?: Record<string, string | string[]>;
-  }): Promise<ChartResult> {
+  private async getChartData(params: ChartDataParams): Promise<ChartResult> {
     // Queries can take over 45 seconds. Charts are public data, so results can
     // be shared between callers, and a range that has ended no longer moves.
     const cacheKey = JSON.stringify(params);
