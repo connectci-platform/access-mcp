@@ -559,12 +559,15 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     let found = matchItems(items, value);
     // Past the first page, a partial match there may miss the exact name, so
     // XDMoD is searched unless the first page already had it.
+    let unsearched = false;
     if (!found?.exact && !complete) {
       const searched = await this.lookupDimension(realm, dimension, value);
       if (searched) {
         const better = matchItems(searched.items, value);
         if (better) found = better;
         if (!found) complete = true;
+      } else {
+        unsearched = true;
       }
     }
     if (!found) {
@@ -576,7 +579,10 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     const names = found.items.map((m) => m.name ?? m.id ?? "");
     const ids = found.items.map((m) => m.id as string);
     // A partial name can include more than was asked for, such as DeltaAI for Delta.
-    const note = found.exact ? `${dimension} ${names[0]}` : `${dimension} "${value}" included ${names.join(", ")}`;
+    const note = found.exact
+      ? `${dimension} ${names[0]}`
+      : `${dimension} "${value}" included ${names.join(", ")}` +
+        (unsearched ? ` (XDMoD's search failed, so only its first ${items.length} names were checked)` : "");
     const label = names.length === 1 ? names[0] : `${names.length} ${value} ${dimensionNoun(dimension)}`;
     return { ids, names, note, label };
   }
@@ -1082,6 +1088,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       let hasMore = false;
       let othersCount: number | null = 0;
       let chart: ChartPayload | undefined;
+      let probeFailed = false;
       const filtered = hasFilters(params);
       if (data.data && data.data.length > 0) {
         ({ chartInfo, hasMore, othersCount } = this.trimToLimit(data.data[0] as ChartInfo, params));
@@ -1094,6 +1101,11 @@ export class XDMoDMetricsServer extends BaseAccessServer {
           );
         }
         const order = await dimensionOrder;
+        const latestDay = await latestDataDay;
+        const days = await resourceDays;
+        // A chart built while a probe was failing mustn't outlive the failure.
+        const probes = XDMoDMetricsServer.PROBE_STATISTICS[params.realm] !== undefined;
+        probeFailed = probes && (latestDay === null || (params.group_by === "resource" && days === null));
         chart = this.chartPayload({
           params,
           chartInfo,
@@ -1103,8 +1115,8 @@ export class XDMoDMetricsServer extends BaseAccessServer {
           today: new Date().toISOString().slice(0, 10),
           dimensionOrder: order?.names,
           dimensionComplete: order?.complete,
-          latestDataDay: await latestDataDay,
-          resourceDays: await resourceDays,
+          latestDataDay: latestDay,
+          resourceDays: days,
         });
 
         if (chartInfo.group_description) {
@@ -1214,7 +1226,11 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       const today = new Date().toISOString().slice(0, 10);
       if (chart) result.structuredContent = { chart };
       if (data.data?.length > 0 && params.end_date < today) {
-        this.cacheChart(cacheKey, result);
+        this.cacheChart(
+          cacheKey,
+          result,
+          probeFailed ? XDMoDMetricsServer.PROBE_FAILURE_TTL : XDMoDMetricsServer.CHART_CACHE_TTL
+        );
       }
       return forCaller(result);
     } catch (error) {
@@ -1479,14 +1495,14 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     return `XDMoD error: ${msg}${hint}`;
   }
 
-  private cacheChart(key: string, result: ChartResult) {
+  private cacheChart(key: string, result: ChartResult, ttl = XDMoDMetricsServer.CHART_CACHE_TTL) {
     if (this.chartCache.size >= XDMoDMetricsServer.CHART_CACHE_MAX_ENTRIES) {
       const oldest = this.chartCache.keys().next().value;
       if (oldest !== undefined) this.chartCache.delete(oldest);
     }
     this.chartCache.set(key, {
       result,
-      expires: Date.now() + XDMoDMetricsServer.CHART_CACHE_TTL,
+      expires: Date.now() + ttl,
     });
   }
 

@@ -585,24 +585,48 @@ describe("series that stop early", () => {
     expect(p.series![1].data_through_source).toBe("series");
   });
 
-  it("fills a count's trailing empties for other dimensions, with no per-series note (t3)", () => {
+  it("never fills another dimension's trailing empties: a queue can stop with its resource (r3)", () => {
+    // total_cpu_hours by queue: Anvil's wholenode queue stops when Anvil's
+    // data does, while other queues run to the chart's end.
     const p = build({
-      params: { end_date: "2026-10-31", group_by: "fieldofscience" },
-      chartInfo: { hc_jsonstore: { data: [trace("Physics", [1, 2, 3]), trace("Arts", [5, null, null])] } },
-      resourceDays: { since, days: { Arts: "2026-08-02" } },
+      params: { end_date: "2026-10-31", group_by: "queue", statistic: "total_cpu_hours" },
+      chartInfo: { hc_jsonstore: { data: [trace("normal", [1, 2, 3]), trace("wholenode", [5, 6, null])] } },
+      resourceDays: { since, days: { wholenode: "2026-10-30" } },
     });
-    expect(values(p, 1)).toEqual([5, 0, 0]);
-    expect(p.series![1].data_through).toBeUndefined();
-    expect(earlyEndNote(p)).toBeUndefined();
+    expect(values(p, 1)).toEqual([5, 6, null]);
+    expect(p.series![1]).toMatchObject({
+      data_through: "2026-09-01",
+      data_through_precision: "period",
+      data_through_source: "series",
+    });
+    expect(earlyEndNote(p)).toBe("Nothing is recorded for wholenode after Sep 2026.");
   });
 
-  it("an average's trailing empties stay gaps, with no note", () => {
+  it("a daily chart by queue leaves the days after a queue stops as gaps (r1)", () => {
+    const days = ["2026-10-18", "2026-10-19", "2026-10-20", "2026-10-21"];
+    const p = build({
+      params: { start_date: "2026-10-18", end_date: "2026-10-21", aggregation_unit: "Day", group_by: "queue" },
+      chartInfo: {
+        hc_jsonstore: {
+          data: [
+            { name: "normal", x: days.map(ms), y: [1, 2, 3, 4] },
+            { name: "wholenode", x: days.map(ms), y: [7, 8, null, null] },
+            { name: "shared", x: days.map(ms), y: [7, 8, null, null] },
+          ],
+        },
+      },
+    });
+    expect(values(p, 1)).toEqual([7, 8, null, null]);
+    expect(earlyEndNote(p)).toBe("Nothing is recorded for wholenode and shared after Oct 19, 2026.");
+  });
+
+  it("an average by another dimension stays a gap, said neutrally", () => {
     const p = build({
       params: { end_date: "2026-10-31", group_by: "fieldofscience", statistic: "avg_waitduration_hours" },
       chartInfo: { hc_jsonstore: { data: [trace("Physics", [1, 2, 3]), trace("Arts", [5, null, null])] } },
     });
     expect(values(p, 1)).toEqual([5, null, null]);
-    expect(earlyEndNote(p)).toBeUndefined();
+    expect(earlyEndNote(p)).toBe("Nothing is recorded for Arts after Aug 2026.");
   });
 
   it("an average by resource stays a gap where the resource has data, without a note", () => {

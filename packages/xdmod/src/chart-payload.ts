@@ -540,11 +540,10 @@ function resourceDaysFor(
 
 /**
  * Settles what each series' trailing empty periods mean. Of a count or
- * total, a period with nothing in it is 0 wherever XDMoD is known to have
- * data then: up to the chart's own data end, or for a resource, up to that
- * resource's last day. A series whose data is known to stop earlier, or whose
- * resource can't be checked, is marked, worded only as strongly as is known.
- * An average's empty periods stay gaps.
+ * total by resource, a period with nothing in it is 0 up to that resource's
+ * last day, which the probe knows. Any other series that stops early keeps
+ * its gaps and is marked, worded only as strongly as is known. An average's
+ * empty periods stay gaps.
  *
  * `probed` is undefined when the series aren't resources, and null when they
  * are but the per-resource probe failed.
@@ -573,9 +572,14 @@ function markEarlySeries(
     const own = s.points[last].start;
     const ownEnd = periodEnd(unit, own);
     if (probed === undefined) {
-      // Not resources: the realm has data through the chart's end, so a
-      // count's empty periods up to there are 0.
-      fillThrough(s.points, last, chartPeriod);
+      // Not resources: the chart's data end comes from its newest series, and
+      // a resource behind this one may stop earlier (Anvil's queues), so its
+      // empty periods stay gaps and are said only as nothing recorded.
+      if (own < chartPeriod) {
+        s.data_through = own;
+        s.data_through_precision = unit === "Day" ? "day" : "period";
+        s.data_through_source = "series";
+      }
       continue;
     }
     const day = probed?.days[s.name];

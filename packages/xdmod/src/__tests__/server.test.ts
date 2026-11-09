@@ -712,7 +712,10 @@ describe("XDMoDMetricsServer", () => {
 
         const result = await call("Big State U");
 
-        expect(payload(result)!.filters.notes).toEqual(['resource "Big State U" included Big State U Main']);
+        expect(payload(result)!.filters.notes).toEqual([
+          'resource "Big State U" included Big State U Main ' +
+            "(XDMoD's search failed, so only its first 1 names were checked)",
+        ]);
       });
 
       test("names a filtered chart briefly, by each filter (n2)", async () => {
@@ -902,6 +905,26 @@ describe("XDMoDMetricsServer", () => {
         await chart();
 
         expect(mockFetch).toHaveBeenCalledTimes(2);
+      });
+
+      test("keeps a chart built while a probe failed for five minutes, not an hour", async () => {
+        // The suite's probes return null, as a failed probe does.
+        await chart();
+        vi.setSystemTime(new Date("2026-03-15T12:04:00Z"));
+        await chart();
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+        vi.setSystemTime(new Date("2026-03-15T12:05:01Z"));
+        await chart();
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+      });
+
+      test("keeps a chart for an hour when the probes answered", async () => {
+        server["latestDataDay"] = async () => "2026-03-01";
+        server["resourceDataDays"] = async () => ({ since: "2025-11-16", days: { Delta: "2026-03-01" } });
+        await chart();
+        vi.setSystemTime(new Date("2026-03-15T12:59:00Z"));
+        await chart();
+        expect(mockFetch).toHaveBeenCalledTimes(1);
       });
 
       test("should drop the oldest result when full", async () => {
