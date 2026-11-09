@@ -739,8 +739,9 @@ describe("SoftwareDiscoveryServer", () => {
         expanse: "not_indexed",
       });
       expect(data.comparison[1].resource_status.expanse).toBe("not_indexed");
-      expect(data.gap_note).toMatch(/not_listed means .* not that it can't be used/);
-      expect(data.gap_note).toMatch(/not_indexed means no software list exists/);
+      expect(data.gap_note).toMatch(/not_listed is "Not listed": .* not that it can't be used/);
+      expect(data.gap_note).toMatch(/not_indexed is "Not indexed": no software list exists/);
+      expect(data.gap_note).toContain("never the status codes");
     });
 
     it("keeps the existing fields unchanged", async () => {
