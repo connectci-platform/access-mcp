@@ -1177,6 +1177,85 @@ describe("AnnouncementsServer", () => {
         expect(responseData.data).not.toHaveProperty("nid");
       });
 
+      it("should tell the user when the edit is waiting for review (D8-3000)", async () => {
+        mockDrupalAuth.patch.mockResolvedValue({
+          success: true,
+          uuid: "announcement-uuid",
+          title: "Updated Title",
+          review_required: true,
+          edit_url: "https://test.drupal.site/node/12345/edit",
+          message: "Your changes were saved as a draft and will go live after review.",
+        });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: { name: "update_announcement", arguments: { uuid: "announcement-uuid", title: "Updated Title" } },
+        });
+
+        const responseData = JSON.parse((result.content[0] as TextContent).text);
+        expect(responseData.status).toBe("updated");
+        expect(responseData.data.review_required).toBe(true);
+        expect(responseData.warning).toContain("will go live after review");
+      });
+
+      it("should still explain a pending review when Drupal sends no message", async () => {
+        mockDrupalAuth.patch.mockResolvedValue({
+          success: true,
+          uuid: "announcement-uuid",
+          title: "Updated Title",
+          review_required: true,
+        });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: { name: "update_announcement", arguments: { uuid: "announcement-uuid", title: "Updated Title" } },
+        });
+
+        const responseData = JSON.parse((result.content[0] as TextContent).text);
+        expect(responseData.data.review_required).toBe(true);
+        expect(responseData.warning).toMatch(/live announcement is unchanged/);
+      });
+
+      it("should keep both the review notice and skipped tags in the warning", async () => {
+        mockDrupalAuth.get.mockResolvedValueOnce({
+          data: [{ id: "tag-uuid-1", attributes: { name: "gpu" } }],
+        });
+        mockDrupalAuth.patch.mockResolvedValue({
+          success: true,
+          uuid: "announcement-uuid",
+          title: "Test",
+          review_required: true,
+          message: "Saved for review.",
+        });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: { name: "update_announcement", arguments: { uuid: "announcement-uuid", tags: ["gpu", "nonexistent-tag"] } },
+        });
+
+        const responseData = JSON.parse((result.content[0] as TextContent).text);
+        expect(responseData.warning).toContain("Saved for review.");
+        expect(responseData.warning).toContain("nonexistent-tag");
+      });
+
+      it("should report review_required false when the edit went live", async () => {
+        mockDrupalAuth.patch.mockResolvedValue({
+          success: true,
+          uuid: "announcement-uuid",
+          title: "Updated Title",
+          review_required: false,
+        });
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: { name: "update_announcement", arguments: { uuid: "announcement-uuid", title: "Updated Title" } },
+        });
+
+        const responseData = JSON.parse((result.content[0] as TextContent).text);
+        expect(responseData.data.review_required).toBe(false);
+        expect(responseData).not.toHaveProperty("warning");
+      });
+
       it("should leave edit_url null when the controller omits it (no nid fallback)", async () => {
         mockDrupalAuth.patch.mockResolvedValue({
           success: true,
