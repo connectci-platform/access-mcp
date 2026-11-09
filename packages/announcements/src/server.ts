@@ -359,7 +359,7 @@ BEFORE CALLING:
 3. Only include fields that are changing. To remove every tag, set clear_tags: true (not tags: []), only when the user asks to remove all tags, and say in the preview that all tags will be removed
 4. Show a preview of the changes and ask for confirmation before updating
 
-Returns the write envelope {action:"update", status:"updated", executed:true, data:{uuid, title, edit_url}} (a "warning" is added when some tags could not be matched; if one is returned, tell the user which tags were skipped). Read "status" and "executed"; the updated fields are under "data".
+Returns the write envelope {action:"update", status:"updated", executed:true, data:{uuid, title, edit_url, review_required}}. Read "status" and "executed"; the updated fields are under "data". When data.review_required is true, the user may not publish and the announcement is published, so the edit was saved as a draft for review and the live announcement is unchanged. Never tell that user the change is live; tell them it is waiting for review. A "warning" carries that review notice and any tags that could not be matched; if one is returned, pass the review notice on and tell the user which tags were skipped.
 ALWAYS display data.edit_url to the user so they can review changes in Drupal.`,
         inputSchema: {
           type: "object",
@@ -404,7 +404,7 @@ ALWAYS display data.edit_url to the user so they can review changes in Drupal.`,
             affinity_group: {
               type: "string",
               description:
-                "Affinity group name or UUID. User must be allowed to post to the group (a coordinator of it, or an administrator or news manager). Replaces all of the announcement's affinity groups (only if changing). get_announcement_context lists only coordinated groups; an administrator or news manager names the group directly.",
+                "Affinity group name or UUID. User must be allowed to post to the group (a coordinator of it, or an administrator or news manager). Replaces all of the announcement's affinity groups (only if changing). If get_my_announcements lists other groups on this announcement, including ones with a null title that the user may not view, say in the preview that they will be removed. get_announcement_context lists only coordinated groups; an administrator or news manager names the group directly.",
             },
             external_link: {
               type: "object",
@@ -470,7 +470,7 @@ Returns the write envelope {action:"delete", status, executed, data}. "confirmed
 
 Returns announcements with: uuid, nid, title, status (draft/published), created date, published_date, summary, tags (english NAMES, ready to display or reuse as the tags parameter for update_announcement), edit_url
 
-Each item also carries, when available, affiliation, where_to_share (known values as labels; unknown values are shown as is and cannot be sent back to create/update) and affinity_groups ([{uuid, title}]); the keys are absent when Drupal does not provide them.
+Each item also carries, when available, affiliation, where_to_share (known values as labels; unknown values are shown as is and cannot be sent back to create/update) and affinity_groups ([{uuid, title}]); the keys are absent when Drupal does not provide them. An affinity group with a null title exists but the user may not view it; still count it as one of the announcement's groups.
 
 Use this to:
 - Find announcement UUIDs for update/delete operations
@@ -1179,12 +1179,27 @@ Which would you like to do?`,
       requestBody
     );
 
-    // Controller returns a flat {success, uuid, title, edit_url}.
-    // Update's edit_url can be null — no nid fallback here (unlike create).
-    const warning =
-      unmatchedTags.length > 0
-        ? `These tags were not found and were skipped: ${unmatchedTags.join(", ")}. Use suggest_tags to get valid tag names.`
-        : undefined;
+    // Controller returns a flat {success, uuid, title, edit_url, review_required},
+    // plus message when review_required is true. Update's edit_url can be null,
+    // so there is no nid fallback here (unlike create).
+    // review_required means a user who may not publish edited a published
+    // announcement: the edit is saved as a draft for review and the live
+    // version is unchanged, so "updated" alone would mislead them.
+    const reviewRequired = result.review_required === true;
+    const warnings: string[] = [];
+    if (reviewRequired) {
+      warnings.push(
+        typeof result.message === "string" && result.message.trim()
+          ? result.message
+          : "These changes were saved as a draft for review. The live announcement is unchanged until an editor publishes them."
+      );
+    }
+    if (unmatchedTags.length > 0) {
+      warnings.push(
+        `These tags were not found and were skipped: ${unmatchedTags.join(", ")}. Use suggest_tags to get valid tag names.`
+      );
+    }
+    const warning = warnings.length > 0 ? warnings.join(" ") : undefined;
 
     return this.writeResponse({
       action: "update",
@@ -1194,6 +1209,7 @@ Which would you like to do?`,
         uuid: result.uuid,
         title: result.title,
         edit_url: result.edit_url ?? null,
+        ...(typeof result.review_required === "boolean" && { review_required: reviewRequired }),
       },
       ...(warning && { warning }),
     });
