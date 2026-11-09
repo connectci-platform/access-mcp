@@ -194,12 +194,21 @@ export function buildChartPayload(input: {
   if (params.dataset_type === "timeseries") {
     const unit = effectiveUnit(params.aggregation_unit, params.start_date, params.end_date);
     const starts = periodStarts(unit, params.start_date, params.end_date);
+    if (starts.length === 0) {
+      throw new Error(`No periods between ${params.start_date} and ${params.end_date}`);
+    }
+    const grid = new Set(starts);
     payload.unit = unit;
     payload.series = traces
       .filter((t) => t.name && !t.name.toLowerCase().includes("gap connector"))
       .map((t) => {
         const byStart = new Map<string, number>();
-        for (const p of timeseriesPoints(t)) byStart.set(periodStartOf(unit, p.start), p.value);
+        for (const p of timeseriesPoints(t)) {
+          if (!grid.has(p.start) || byStart.has(p.start)) {
+            throw new Error(`XDMoD periods don't match the ${unit} grid`);
+          }
+          byStart.set(p.start, p.value);
+        }
         return {
           name: t.name as string,
           points: starts.map((start) => ({ start, value: byStart.get(start) ?? null })),
@@ -215,7 +224,7 @@ export function buildChartPayload(input: {
       name: String(x),
       value: typeof ys[i] === "number" ? (ys[i] as number) : null,
     }));
-    if (dimensionOrder && dimensionOrder.length > 0) {
+    if (dimensionOrder && dimensionOrder.length > 0 && payload.dimension.ordered) {
       const rank = (name: string) => {
         const i = dimensionOrder.indexOf(name);
         return i === -1 ? dimensionOrder.length : i;

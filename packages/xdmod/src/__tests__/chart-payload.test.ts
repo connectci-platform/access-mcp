@@ -185,3 +185,90 @@ describe("buildChartPayload aggregate", () => {
     expect(p.categories!.map((c) => c.name)).toEqual(["1", "2 - 4", "5 - 8"]);
   });
 });
+
+describe("buildChartPayload edge cases", () => {
+  const info = (x: string[], y: number[]) => ({
+    hc_jsonstore: { data: [{ name: "A", x: x.map(ms), y }] },
+  });
+
+  it("throws when day points collide on a month grid", () => {
+    expect(() =>
+      build({ chartInfo: info(["2026-08-01", "2026-08-02", "2026-08-03"], [1, 2, 3]) })
+    ).toThrow(/don't match the Month grid/);
+  });
+
+  it("throws when month points sit on a day grid", () => {
+    expect(() =>
+      build({
+        params: { aggregation_unit: "Day", start_date: "2026-08-01", end_date: "2026-08-05" },
+        chartInfo: info(["2026-08-01"], [1]),
+      })
+    ).not.toThrow();
+    expect(() =>
+      build({
+        params: { aggregation_unit: "Day", start_date: "2026-08-01", end_date: "2026-08-05" },
+        chartInfo: info(["2026-07-01"], [1]),
+      })
+    ).toThrow(/don't match the Day grid/);
+  });
+
+  it("throws a clear error for an inverted range", () => {
+    expect(() =>
+      build({
+        params: { start_date: "2026-11-08", end_date: "2026-08-01" },
+        chartInfo: info([], []),
+      })
+    ).toThrow(/No periods/);
+  });
+
+  it("does not reorder a nominal dimension", () => {
+    const p = build({
+      params: { dataset_type: "aggregate", group_by: "resource" },
+      dimensionOrder: ["B", "A"],
+      chartInfo: { hc_jsonstore: { data: [{ x: ["A", "B"], y: [1, 2] }] } },
+    });
+    expect(p.categories!.map((c) => c.name)).toEqual(["A", "B"]);
+  });
+
+  it("sorts categories missing from dimensionOrder after listed ones", () => {
+    const p = build({
+      params: { dataset_type: "aggregate", group_by: "jobsize" },
+      dimensionOrder: ["1", "2 - 4"],
+      chartInfo: { hc_jsonstore: { data: [{ x: ["9+", "2 - 4", "1"], y: [1, 2, 3] }] } },
+    });
+    expect(p.categories!.map((c) => c.name)).toEqual(["1", "2 - 4", "9+"]);
+  });
+
+  it("handles an empty data array", () => {
+    expect(build({ chartInfo: { hc_jsonstore: { data: [] } } }).series).toEqual([]);
+    expect(
+      build({ params: { dataset_type: "aggregate" }, chartInfo: { hc_jsonstore: { data: [] } } })
+        .categories
+    ).toEqual([]);
+  });
+
+  it("rolls December into January for months and quarters", () => {
+    expect(periodStarts("Month", "2026-11-20", "2027-01-05")).toEqual([
+      "2026-11-01",
+      "2026-12-01",
+      "2027-01-01",
+    ]);
+    expect(periodStarts("Quarter", "2026-11-20", "2027-01-05")).toEqual([
+      "2026-10-01",
+      "2027-01-01",
+    ]);
+    const p = build({
+      params: { start_date: "2026-12-01", end_date: "2027-01-05" },
+      chartInfo: info(["2026-12-01", "2027-01-01"], [1, 2]),
+    });
+    expect(p.counted).toEqual({ start: "2026-12-01", end: "2027-01-31" });
+  });
+
+  it("ends the counted range at a month end when the range does", () => {
+    const p = build({
+      params: { start_date: "2026-08-01", end_date: "2026-09-30" },
+      chartInfo: info(["2026-08-01", "2026-09-01"], [1, 2]),
+    });
+    expect(p.counted).toEqual({ start: "2026-08-01", end: "2026-09-30" });
+  });
+});
