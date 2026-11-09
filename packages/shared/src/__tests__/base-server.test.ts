@@ -318,6 +318,21 @@ describe("BaseAccessServer helper methods", () => {
       }
     });
 
+    it("does not blame the user's session when Drupal redirects right after a fresh service login", () => {
+      const err = new DrupalApiError(
+        "Drupal API error: 302 Found",
+        302,
+        "",
+        "auth_redirect_after_relogin"
+      );
+      const result = server["drupalAuthError"](err)!;
+      const parsed = JSON.parse((result.content[0] as { text: string }).text);
+      expect(parsed.error.code).toBe("upstream_error");
+      expect(parsed.error.message).not.toMatch(/session may have expired|authentication required/i);
+      expect(parsed.error.hint).not.toMatch(/re-authenticate/i);
+      expect(parsed.error.hint).toMatch(/operator/i);
+    });
+
     it("maps a failed re-login to reauth_failed, keeping its diagnostic detail", () => {
       const err = new DrupalApiError(
         "Drupal session expired and re-authentication failed: Drupal login failed: 503 Service Unavailable",

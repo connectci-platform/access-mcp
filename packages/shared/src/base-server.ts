@@ -324,6 +324,16 @@ export abstract class BaseAccessServer {
       });
     }
 
+    if (error.code === "auth_redirect_after_relogin") {
+      return this.errorResponse(
+        "The ACCESS site could not complete this request. It sent the request to its sign-in page even though the service had just signed in.",
+        {
+          code: "upstream_error",
+          hint: "Signing in again will not help. This needs an operator; try again later.",
+        }
+      );
+    }
+
     return this.authRedirectError(error.status);
   }
 

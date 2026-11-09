@@ -417,6 +417,51 @@ describe("DrupalAuthProvider per-call acting user", () => {
       expect(get.mock.calls.length).toBe(2);
     });
 
+    it("codes a retry that still redirects to sign-in after a fresh login, and logs the target without its query", async () => {
+      const p = newProvider();
+      await p.ensureAuthenticated();
+      const warn = vi.fn();
+      (p as unknown as { logger: { warn: typeof warn } }).logger.warn = warn;
+      const bounce = {
+        status: 302,
+        statusText: "Found",
+        headers: { location: "https://support.access-ci.org/user/login?destination=/api/suggest-tags&token=secret" },
+        data: "",
+      };
+      post.mockResolvedValueOnce(bounce).mockResolvedValueOnce(LOGIN_OK).mockResolvedValueOnce(bounce);
+
+      let caught: unknown;
+      try {
+        await p.post("erin@access-ci.org", "/api/suggest-tags", { text: "t" });
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(caught).toBeInstanceOf(DrupalApiError);
+      expect((caught as DrupalApiError).status).toBe(302);
+      expect((caught as DrupalApiError).code).toBe("auth_redirect_after_relogin");
+      const logged = JSON.stringify(warn.mock.calls);
+      expect(logged).toContain("/user/login");
+      expect(logged).not.toContain("secret");
+      expect(logged).not.toContain("destination");
+    });
+
+    it("codes the same case on get, patch and delete", async () => {
+      const bounce = { status: 307, statusText: "Temporary Redirect", data: "" };
+      for (const [verb, mock, run] of [
+        ["get", get, (p: DrupalAuthProvider) => p.get("u", "/x")],
+        ["patch", patch, (p: DrupalAuthProvider) => p.patch("u", "/x", {})],
+        ["delete", del, (p: DrupalAuthProvider) => p.delete("u", "/x")],
+      ] as const) {
+        const p = newProvider();
+        await p.ensureAuthenticated();
+        mock.mockReset();
+        mock.mockResolvedValue(bounce);
+        const err = await run(p).catch((e: unknown) => e);
+        expect((err as DrupalApiError).code, verb).toBe("auth_redirect_after_relogin");
+      }
+    });
+
     it("post recovers from a 302 session expiry and retries once", async () => {
       const p = newProvider();
       await p.ensureAuthenticated();
