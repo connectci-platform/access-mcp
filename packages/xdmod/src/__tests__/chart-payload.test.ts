@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  aggregateDataNote,
   buildChartPayload,
   effectiveUnit,
   measureKind,
@@ -358,13 +359,16 @@ describe("partial last data period and label stripping", () => {
 
   it("words the note for Month and Day", () => {
     const month = build({ chartInfo: info("m"), params: { end_date: "2026-11-08" } });
+    // Without the probe the month start isn't the day data stops.
+    expect(month.data_through_precision).toBe("period");
     expect(partialPeriodNote(month)).toBe(
-      "XDMoD has data only through Oct 1, 2026, so the Oct 2026 value may cover only part of that period, and later periods have no data yet. Don't read it as a change."
+      "XDMoD has no data after Oct 2026, so the Oct 2026 value may cover only part of that period. Don't read it as a change."
     );
     const day = build({
       chartInfo: info("d"),
       params: { aggregation_unit: "Day", start_date: "2026-09-29", end_date: "2026-10-03" },
     });
+    expect(day.data_through_precision).toBe("day");
     expect(partialPeriodNote(day)).toBe(
       "XDMoD has data only through Oct 1, 2026, so the Oct 1, 2026 value may cover only part of that period, and later periods have no data yet. Don't read it as a change."
     );
@@ -405,7 +409,15 @@ describe("latestDataDay", () => {
   it("keeps the series rule when the probe day is after the range", () => {
     const p = build({ chartInfo: info, params: range, latestDataDay: "2026-11-05" });
     expect(p.data_through).toBe("2026-10-01");
+    // October is the last period and holds data: Oct 1 is only its start.
+    expect(p.data_through_precision).toBe("period");
     expect(p.last_data_period_partial).toBe(false);
+    expect(partialPeriodNote(p)).toBeUndefined();
+  });
+
+  it("says day precision when the probe sharpens a month", () => {
+    const p = build({ chartInfo: info, params: range, latestDataDay: "2026-10-01" });
+    expect(p.data_through_precision).toBe("day");
   });
 
   it("lets a series that ended earlier win over a later realm-wide day", () => {
@@ -428,5 +440,48 @@ describe("latestDataDay", () => {
     const p = build({ chartInfo: info, params: range, latestDataDay: "2026-10-31" });
     expect(p.data_through).toBe("2026-10-31");
     expect(p.last_data_period_partial).toBe(false);
+  });
+});
+
+describe("aggregates and the latest data day", () => {
+  const agg = (over: Parameters<typeof build>[0] = {}) =>
+    build({
+      ...over,
+      params: { dataset_type: "aggregate", start_date: "2026-01-01", end_date: "2026-11-09", ...over.params },
+      chartInfo: { hc_jsonstore: { data: [{ name: "m", x: ["a", "b"], y: [2, 1] }] } },
+    });
+
+  it("is incomplete when the range reaches today", () => {
+    expect(agg().last_period_incomplete).toBe(true);
+    expect(agg({ params: { end_date: "2026-10-31" } }).last_period_incomplete).toBe(false);
+  });
+
+  it("takes the probe day as data_through when it is before the end asked for", () => {
+    const p = agg({ latestDataDay: "2026-10-01" });
+    expect(p.data_through).toBe("2026-10-01");
+    expect(p.data_through_precision).toBe("day");
+    expect(aggregateDataNote(p)).toBe(
+      "XDMoD has data only through Oct 1, 2026, but the range asked for runs to Nov 9, 2026, so these values leave out the rest of the range."
+    );
+  });
+
+  it("has no data_through when the probe reaches the end, or is unknown", () => {
+    expect(agg({ latestDataDay: "2026-11-09" }).data_through).toBeNull();
+    const p = agg({ latestDataDay: null });
+    expect(p.data_through).toBeNull();
+    expect(p.data_through_precision).toBeNull();
+    expect(aggregateDataNote(p)).toBeUndefined();
+  });
+
+  it("gives no aggregate note for a timeseries", () => {
+    expect(aggregateDataNote(build({ latestDataDay: "2026-10-01" }))).toBeUndefined();
+  });
+});
+
+describe("others_count", () => {
+  it("is 0 with nothing left out, null when there is more but no count, and passed through", () => {
+    expect(build({}).others_count).toBe(0);
+    expect(build({ hasMore: true }).others_count).toBeNull();
+    expect(build({ hasMore: true, othersCount: 38 }).others_count).toBe(38);
   });
 });

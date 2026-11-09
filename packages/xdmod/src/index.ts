@@ -5,11 +5,13 @@ import {
   Resource,
   CallToolResult,
   callerSafeUpstreamError,
+  getRequestContext,
   logUpstreamFailure,
   type ToolWithAccess,
 } from "@access-mcp/shared";
 import { createRequire } from "module";
 import {
+  aggregateDataNote,
   buildChartPayload,
   partialPeriodNote,
   effectiveUnit,
@@ -277,6 +279,26 @@ function portalChartUrl(realm: string, groupBy: string, statistic: string): stri
   return `https://xdmod.access-ci.org/index.php#tg_usage?${urlParams.toString()}`;
 }
 
+/** XDMoD's last series or bar past the limit: "All 37 Others". */
+const OTHERS = /^(?:\d+\.\s+)?All ([\d,]+) Others$/i;
+
+function othersIn(name: unknown): number | null {
+  const match = OTHERS.exec(String(name ?? "").trim());
+  return match ? Number(match[1].replace(/,/g, "")) : null;
+}
+
+const isGapConnector = (name: string) => name.toLowerCase().includes("gap connector");
+
+/**
+ * structuredContent goes only to callers that asked for it with
+ * X-Include-Structured-Content: 1 (the ACCESS agent, which keeps it out of the
+ * model's context). Other MCP hosts may hand it to their model.
+ */
+function forCaller(result: ChartResult): ChartResult {
+  if (!result.structuredContent || getRequestContext()?.includeStructuredContent) return result;
+  return { content: result.content };
+}
+
 export class XDMoDMetricsServer extends BaseAccessServer {
   private menuCache: { data: MenuEntry[]; timestamp: number } | null = null;
   private static readonly MENU_CACHE_TTL = 1000 * 60 * 30; // 30 minutes
@@ -286,7 +308,10 @@ export class XDMoDMetricsServer extends BaseAccessServer {
   private dimensionOrderCache = new Map<string, { names: string[]; expires: number }>();
   private static readonly DIMENSION_ORDER_TTL = 1000 * 60 * 30; // 30 minutes
   private latestDayCache = new Map<string, { day: string; expires: number }>();
+  private latestDayInFlight = new Map<string, Promise<string | null>>();
   private static readonly LATEST_DAY_TTL = 1000 * 60 * 60; // 1 hour
+  // The probe only sharpens the payload, so it never holds up the answer for long.
+  private probeTimeoutMs = 5000;
   // Count statistics that have a value on every day a realm has data.
   private static readonly PROBE_STATISTICS: Record<string, string> = {
     Jobs: "job_count",
@@ -826,7 +851,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     // be shared between callers, and a range that has ended no longer moves.
     const cacheKey = JSON.stringify(params);
     const cached = this.chartCache.get(cacheKey);
-    if (cached && cached.expires > Date.now()) return cached.result;
+    if (cached && cached.expires > Date.now()) return forCaller(cached.result);
 
     try {
       // Resolve text filter values to numeric IDs
@@ -869,11 +894,18 @@ export class XDMoDMetricsServer extends BaseAccessServer {
         }
       }
 
-      const response = await fetch(`${this.baseURL}/controllers/user_interface.php`, {
+      const chartRequest = fetch(`${this.baseURL}/controllers/user_interface.php`, {
         method: "POST",
         headers: this.getHeaders(),
         body: urlParams,
       });
+      // Started beside the chart request, so they add no time of their own.
+      // Neither rejects: each falls back to undefined or null.
+      const dimensionOrder = ORDERED_DIMENSIONS.has(params.group_by)
+        ? this.dimensionOrder(params.realm, params.group_by)
+        : Promise.resolve(undefined);
+      const latestDataDay = this.latestDataDay(params.realm);
+      const response = await chartRequest;
 
       // Any response may not be JSON, and the parser's error quotes the body.
       const data = await response.json().catch(() => null);
@@ -892,16 +924,20 @@ export class XDMoDMetricsServer extends BaseAccessServer {
 
       let chartInfo: ChartInfo | undefined;
       let hasMore = false;
+      let othersCount: number | null = 0;
       let chart: ChartPayload | undefined;
       if (data.data && data.data.length > 0) {
-        ({ chartInfo, hasMore } = this.trimToLimit(data.data[0] as ChartInfo, params));
-        chart = await this.chartPayload(
+        ({ chartInfo, hasMore, othersCount } = this.trimToLimit(data.data[0] as ChartInfo, params));
+        chart = this.chartPayload({
           params,
           chartInfo,
           matchNotes,
           hasMore,
-          new Date().toISOString().slice(0, 10)
-        );
+          othersCount,
+          today: new Date().toISOString().slice(0, 10),
+          dimensionOrder: await dimensionOrder,
+          latestDataDay: await latestDataDay,
+        });
 
         if (chartInfo.group_description) {
           resultText += `**Group Description:**\n${chartInfo.group_description}\n\n`;
@@ -941,6 +977,8 @@ export class XDMoDMetricsServer extends BaseAccessServer {
                 resultText += `- ${label}: ${value}\n`;
               }
             }
+            const dataNote = chart && aggregateDataNote(chart);
+            if (dataNote) resultText += `${dataNote}\n`;
             resultText += "\n";
           } else if (params.dataset_type === "timeseries") {
             const unitText = unit ? `, by ${unit.toLowerCase()}` : "";
@@ -976,7 +1014,15 @@ export class XDMoDMetricsServer extends BaseAccessServer {
           }
         }
 
-        resultText += `*Use get_chart_image or get_chart_link for visual charts.*`;
+        if (hasMore) {
+          resultText +=
+            othersCount !== null
+              ? `XDMoD has ${othersCount} more not listed.\n\n`
+              : "XDMoD has more not listed.\n\n";
+        }
+        resultText += `Open this chart in XDMoD: ${
+          chart?.link ?? portalChartUrl(params.realm, params.group_by, params.statistic)
+        }`;
       } else {
         resultText += "No data available for the specified parameters.";
       }
@@ -994,7 +1040,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       if (data.data?.length > 0 && params.end_date < today) {
         this.cacheChart(cacheKey, result);
       }
-      return result;
+      return forCaller(result);
     } catch (error) {
       throw new Error(
         `Failed to fetch chart data: ${error instanceof Error ? error.message : String(error)}`
@@ -1003,59 +1049,78 @@ export class XDMoDMetricsServer extends BaseAccessServer {
   }
 
   /**
-   * XDMoD was asked for one series more than the limit. Drops the extra one
-   * and says whether there was one.
+   * XDMoD was asked for one series more than the limit, and may add an
+   * "All N Others" series after it. Drops both, and series with no values
+   * (they draw nothing and shouldn't take a place in the top N), and says how
+   * many were left out: null when there were more but XDMoD didn't say how many.
    */
   private trimToLimit(
     chartInfo: ChartInfo,
     params: ChartDataParams
-  ): { chartInfo: ChartInfo; hasMore: boolean } {
+  ): { chartInfo: ChartInfo; hasMore: boolean; othersCount: number | null } {
     const limit = params.limit;
     const store = chartInfo.hc_jsonstore;
     const traces = store?.data;
-    if (limit === undefined || !store || !traces) return { chartInfo, hasMore: false };
+    const none = { chartInfo, hasMore: false, othersCount: 0 };
+    if (!store || !traces) return none;
+    let others: number | null = null;
+    const leftOut = (total: number, kept: number) => {
+      const cut = total - kept;
+      const hasMore = cut > 0 || (others ?? 0) > 0;
+      return { hasMore, othersCount: !hasMore ? 0 : others === null ? null : cut + others };
+    };
 
     if (params.dataset_type === "timeseries") {
-      const real = traces.filter(
-        (t) => t.name && !t.name.toLowerCase().includes("gap connector")
-      );
-      if (real.length <= limit) return { chartInfo, hasMore: false };
-      const kept = real.slice(0, limit);
-      return { chartInfo: { ...chartInfo, hc_jsonstore: { ...store, data: kept } }, hasMore: true };
+      const real = traces.filter((t) => {
+        if (!t.name || isGapConnector(t.name)) return false;
+        const n = othersIn(t.name);
+        if (n !== null) {
+          others = n;
+          return false;
+        }
+        return timeseriesPoints(t).length > 0;
+      });
+      const kept = limit === undefined ? real : real.slice(0, limit);
+      return {
+        chartInfo: { ...chartInfo, hc_jsonstore: { ...store, data: kept } },
+        ...leftOut(real.length, kept.length),
+      };
     }
 
     const trace = traces[0];
-    if (!trace?.x || trace.x.length <= limit) return { chartInfo, hasMore: false };
-    const cut = { ...trace, x: trace.x.slice(0, limit), y: (trace.y ?? []).slice(0, limit) };
+    if (!trace?.x) return none;
+    const ys = trace.y ?? [];
+    const pairs = trace.x
+      .map((x, i) => ({ x, y: ys[i] }))
+      .filter(({ x }) => {
+        const n = othersIn(x);
+        if (n !== null) others = n;
+        return n === null;
+      });
+    const kept = limit === undefined ? pairs : pairs.slice(0, limit);
+    const cut = { ...trace, x: kept.map((p) => p.x), y: kept.map((p) => p.y) };
     return {
       chartInfo: { ...chartInfo, hc_jsonstore: { ...store, data: [cut, ...traces.slice(1)] } },
-      hasMore: true,
+      ...leftOut(pairs.length, kept.length),
     };
   }
 
   /** The structured chart, or undefined (with a warning) when XDMoD's data doesn't fit it. */
-  private async chartPayload(
-    params: ChartDataParams,
-    chartInfo: ChartInfo,
-    matchNotes: string[],
-    hasMore: boolean,
-    today: string
-  ): Promise<ChartPayload | undefined> {
+  private chartPayload(input: {
+    params: ChartDataParams;
+    chartInfo: ChartInfo;
+    matchNotes: string[];
+    hasMore: boolean;
+    othersCount: number | null;
+    today: string;
+    dimensionOrder: string[] | undefined;
+    latestDataDay: string | null;
+  }): ChartPayload | undefined {
+    const { params } = input;
     try {
-      const dimensionOrder = ORDERED_DIMENSIONS.has(params.group_by)
-        ? await this.dimensionOrder(params.realm, params.group_by)
-        : undefined;
-      const latestDataDay =
-        params.dataset_type === "timeseries" ? await this.latestDataDay(params.realm) : null;
       return buildChartPayload({
-        latestDataDay,
-        params,
-        chartInfo,
-        matchNotes,
+        ...input,
         label: REALM_STATISTICS[params.realm]?.statistics[params.statistic] ?? params.statistic,
-        today,
-        hasMore,
-        dimensionOrder,
         link: portalChartUrl(params.realm, params.group_by, params.statistic),
       });
     } catch (error) {
@@ -1072,11 +1137,23 @@ export class XDMoDMetricsServer extends BaseAccessServer {
    * The last day in the past 120 with data in a realm, since public data can
    * stop weeks before today. Null when unknown; a failure is not cached.
    */
-  private async latestDataDay(realm: string): Promise<string | null> {
+  private latestDataDay(realm: string): Promise<string | null> {
     const statistic = XDMoDMetricsServer.PROBE_STATISTICS[realm];
-    if (!statistic) return null;
+    if (!statistic) return Promise.resolve(null);
     const cached = this.latestDayCache.get(realm);
-    if (cached && cached.expires > Date.now()) return cached.day;
+    if (cached && cached.expires > Date.now()) return Promise.resolve(cached.day);
+    // Calls that arrive while a probe runs share it.
+    const running = this.latestDayInFlight.get(realm);
+    if (running) return running;
+    const probe = this.probeLatestDay(realm, statistic).finally(() =>
+      this.latestDayInFlight.delete(realm)
+    );
+    this.latestDayInFlight.set(realm, probe);
+    return probe;
+  }
+
+  /** One probe request, cut off after probeTimeoutMs. Null on any failure. */
+  private async probeLatestDay(realm: string, statistic: string): Promise<string | null> {
     try {
       const end = new Date().toISOString().slice(0, 10);
       const start = new Date(Date.parse(end) - 119 * 86_400_000).toISOString().slice(0, 10);
@@ -1097,6 +1174,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
           end_date: end,
           aggregation_unit: "Day",
         }),
+        signal: AbortSignal.timeout(this.probeTimeoutMs),
       });
       if (!response.ok) return null;
       const json = await response.json().catch(() => null);

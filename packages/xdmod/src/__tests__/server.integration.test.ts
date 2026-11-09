@@ -19,6 +19,7 @@ vi.mock("@access-mcp/shared", () => ({
     httpClient = { get: vi.fn() };
     async start() {}
   },
+  getRequestContext: () => ({ includeStructuredContent: true }),
   handleApiError: vi.fn((error: unknown) =>
     error instanceof Error ? error.message : "Unknown error"
   ),

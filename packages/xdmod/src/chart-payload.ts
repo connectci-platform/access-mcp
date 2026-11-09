@@ -40,8 +40,17 @@ export interface ChartPayload {
   filters: { notes: string[] };
   series?: { name: string; points: { start: string; value: number | null }[] }[];
   categories?: { name: string; value: number | null }[];
-  /** Start of the last period with any value, or null (always null for aggregates). */
+  /**
+   * Where XDMoD's data stops, or null. A timeseries gives the start of the last
+   * period with any value, sharpened to a day by the realm's latest data day
+   * when that day falls inside the period. An aggregate gives the realm's
+   * latest data day when it is before the requested end.
+   */
   data_through: string | null;
+  /** "day" when data_through is a real last day; "period" when it is a period start. */
+  data_through_precision: "day" | "period" | null;
+  /** How many series or categories XDMoD left out past the limit, when it says; 0 when none. */
+  others_count: number | null;
   /** The last period with data may hold only part of its data, because later periods are empty. */
   last_data_period_partial: boolean;
   has_more: boolean;
@@ -195,10 +204,27 @@ export function partialPeriodNote(payload: ChartPayload): string | undefined {
   if (!payload.last_data_period_partial || !payload.data_through || !payload.unit) return undefined;
   const own = periodStartOf(payload.unit, payload.data_through);
   const later = payload.counted.end > periodEnd(payload.unit, own);
+  const period = periodLabel(payload.unit, payload.data_through);
+  // A period start isn't the day data stops: the period may be full.
+  if (payload.data_through_precision !== "day") {
+    return later
+      ? `XDMoD has no data after ${period}, so the ${period} value may cover only part of that period. ` +
+          "Don't read it as a change."
+      : undefined;
+  }
   return (
     `XDMoD has data only through ${periodLabel("Day", payload.data_through)}, so the ` +
-    `${periodLabel(payload.unit, payload.data_through)} value may cover only part of that period` +
+    `${period} value may cover only part of that period` +
     `${later ? ", and later periods have no data yet" : ""}. Don't read it as a change.`
+  );
+}
+
+/** The line that keeps a reader from taking an aggregate cut short for the whole range. */
+export function aggregateDataNote(payload: ChartPayload): string | undefined {
+  if (payload.dataset_type !== "aggregate" || !payload.data_through) return undefined;
+  return (
+    `XDMoD has data only through ${periodLabel("Day", payload.data_through)}, but the range asked for ` +
+    `runs to ${periodLabel("Day", payload.requested.end)}, so these values leave out the rest of the range.`
   );
 }
 
@@ -214,6 +240,8 @@ export function buildChartPayload(input: {
   label: string;
   today: string;
   hasMore: boolean;
+  /** Series or categories left out past the limit; null when XDMoD didn't say. */
+  othersCount?: number | null;
   dimensionOrder?: string[];
   /** The latest day XDMoD holds data for in this realm, when known. */
   latestDataDay?: string | null;
@@ -242,8 +270,10 @@ export function buildChartPayload(input: {
     dimension: { name: params.group_by, ordered: ORDERED_DIMENSIONS.has(params.group_by) },
     filters: { notes: matchNotes },
     data_through: null,
+    data_through_precision: null,
     last_data_period_partial: false,
     has_more: hasMore,
+    others_count: input.othersCount === undefined ? (hasMore ? null : 0) : input.othersCount,
     ranked_by: "value",
     link,
     source: "XDMoD",
@@ -293,6 +323,7 @@ export function buildChartPayload(input: {
       fromProbe = true;
     }
     if (payload.data_through !== null) {
+      payload.data_through_precision = unit === "Day" || fromProbe ? "day" : "period";
       const own = periodStartOf(unit, payload.data_through);
       const laterEmpty = starts[starts.length - 1] > own;
       const cutShort = fromProbe && payload.data_through < periodEnd(unit, own);
@@ -319,6 +350,14 @@ export function buildChartPayload(input: {
     }
     categories = categories.map((c) => ({ ...c, name: stripRank(c.name) }));
     payload.categories = categories;
+    // An aggregate has no periods to read the end of data from, so the realm's
+    // latest data day says whether XDMoD's data reaches the end asked for.
+    payload.last_period_incomplete = requested.end.slice(0, 10) >= today;
+    const probe = input.latestDataDay;
+    if (probe && probe < requested.end.slice(0, 10)) {
+      payload.data_through = probe;
+      payload.data_through_precision = "day";
+    }
   }
   return payload;
 }
