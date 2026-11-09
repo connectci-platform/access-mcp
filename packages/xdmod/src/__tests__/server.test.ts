@@ -886,6 +886,26 @@ describe("XDMoDMetricsServer", () => {
         expect(result.content[0].text).toMatch(/^Chart Data for/);
       });
 
+      test("a filtered chart has no link and no portal line", async () => {
+        mockFetch.mockResolvedValueOnce(respond([trace("A")]));
+        const result = await run({ filters: { resource: "5" } });
+
+        expect(result.structuredContent!.chart.link).toBeNull();
+        expect(result.content[0].text).toContain(
+          "XDMoD's public portal can't link to this filtered chart."
+        );
+        expect(result.content[0].text).not.toContain("Explore this measure in XDMoD");
+      });
+
+      test("an unfiltered chart keeps the link and its line", async () => {
+        mockFetch.mockResolvedValueOnce(respond([trace("A")]));
+        const result = await run({ filters: {} });
+
+        expect(result.structuredContent!.chart.link).toContain("#tg_usage?");
+        expect(result.content[0].text).toContain("Explore this measure in XDMoD");
+        expect(result.content[0].text).not.toContain("can't link");
+      });
+
       test("the text no longer prints a per-series avg", async () => {
         mockFetch.mockResolvedValueOnce(respond([trace("A")]));
         const text = (await run()).content[0].text;

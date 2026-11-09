@@ -55,7 +55,8 @@ export interface ChartPayload {
   last_data_period_partial: boolean;
   has_more: boolean;
   ranked_by: "value";
-  link: string;
+  /** Null when the public portal can't open this chart, as with filters. */
+  link: string | null;
   source: "XDMoD";
   retrieved: string;
 }
@@ -245,7 +246,8 @@ export function buildChartPayload(input: {
   dimensionOrder?: string[];
   /** The latest day XDMoD holds data for in this realm, when known. */
   latestDataDay?: string | null;
-  link: string;
+  /** Null when the public portal can't open this chart, as with filters. */
+  link: string | null;
 }): ChartPayload {
   const { params, chartInfo, matchNotes, label, today, hasMore, dimensionOrder, link } = input;
   const kind = measureKind(params.statistic);

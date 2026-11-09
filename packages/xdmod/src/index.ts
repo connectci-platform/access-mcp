@@ -269,6 +269,11 @@ const MAX_SERIES_POINTS = 60;
 const MAX_LISTED_POINTS = 300;
 
 // The portal's hash picks a statistic node only; its Usage tab reads no dates from it.
+// The Usage-tab hash can't carry filters, so a filtered chart gets no link.
+function hasFilters(params: ChartDataParams): boolean {
+  return Object.keys(params.filters ?? {}).length > 0;
+}
+
 function portalChartUrl(realm: string, groupBy: string, statistic: string): string {
   const urlParams = new URLSearchParams({
     node: "statistic",
@@ -926,6 +931,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       let hasMore = false;
       let othersCount: number | null = 0;
       let chart: ChartPayload | undefined;
+      const filtered = hasFilters(params);
       if (data.data && data.data.length > 0) {
         ({ chartInfo, hasMore, othersCount } = this.trimToLimit(data.data[0] as ChartInfo, params));
         chart = this.chartPayload({
@@ -1020,9 +1026,9 @@ export class XDMoDMetricsServer extends BaseAccessServer {
               ? `XDMoD has ${othersCount} more not listed.\n\n`
               : "XDMoD has more not listed.\n\n";
         }
-        resultText += `Explore this measure in XDMoD (opens with XDMoD's default dates, not this chart's range or filters): ${
-          chart?.link ?? portalChartUrl(params.realm, params.group_by, params.statistic)
-        }`;
+        resultText += filtered
+          ? "XDMoD's public portal can't link to this filtered chart."
+          : `Explore this measure in XDMoD (opens with XDMoD's default dates, not this chart's range or filters): ${portalChartUrl(params.realm, params.group_by, params.statistic)}`;
       } else {
         resultText += "No data available for the specified parameters.";
       }
@@ -1121,7 +1127,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       return buildChartPayload({
         ...input,
         label: REALM_STATISTICS[params.realm]?.statistics[params.statistic] ?? params.statistic,
-        link: portalChartUrl(params.realm, params.group_by, params.statistic),
+        link: hasFilters(params) ? null : portalChartUrl(params.realm, params.group_by, params.statistic),
       });
     } catch (error) {
       this.logger.warn("Could not build chart payload", {
