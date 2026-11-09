@@ -24,7 +24,9 @@ export class DrupalApiError extends Error {
      * upstream status. Currently "reauth_failed": the session had expired and
      * the automatic re-login itself failed, meaning credentials or Drupal are
      * broken and a process restart will NOT help — materially different from an
-     * ordinary expired session, which self-heals.
+     * ordinary expired session, which self-heals. "auth_redirect_after_relogin":
+     * the re-login succeeded but the retry was still sent to sign-in, so the
+     * caller must not blame the user's session.
      */
     public code?: string
   ) {
@@ -319,7 +321,7 @@ export class DrupalAuthProvider {
         headers: this.getAuthHeaders(actingUser),
       });
 
-      return this.handleResponse(retryResponse);
+      return this.handleRetryResponse(retryResponse);
     }
 
     return this.handleResponse(response);
@@ -356,7 +358,7 @@ export class DrupalAuthProvider {
         headers: this.getAuthHeaders(actingUser, headerOverrides),
       });
 
-      return this.handleResponse(retryResponse);
+      return this.handleRetryResponse(retryResponse);
     }
 
     return this.handleResponse(response);
@@ -452,7 +454,7 @@ export class DrupalAuthProvider {
         headers: this.getAuthHeaders(actingUser),
       });
 
-      return this.handleResponse(retryResponse);
+      return this.handleRetryResponse(retryResponse);
     }
 
     return this.handleResponse(response);
@@ -477,9 +479,34 @@ export class DrupalAuthProvider {
         headers: this.getAuthHeaders(actingUser),
       });
 
-      return this.handleResponse(retryResponse);
+      return this.handleRetryResponse(retryResponse);
     }
 
+    return this.handleResponse(response);
+  }
+
+  /**
+   * The retry after a successful re-login. If Drupal still sends it to sign-in,
+   * the fresh service session was not the problem: in D8-3013 the route ran and
+   * an uncaught error came back as a login redirect. Coding it keeps callers
+   * from telling the user their session expired. The redirect target is logged
+   * without its query, which can carry tokens.
+   */
+  private handleRetryResponse(response: any): any {
+    if (this.isAuthRedirect(response)) {
+      const location = this.redirectLocation(response);
+      this.logger.warn("Drupal redirected to sign-in right after a fresh login", {
+        status: response.status,
+        location: location ? location.split(/[?#]/)[0] : undefined,
+      });
+      try {
+        return this.handleResponse(response);
+      } catch (error) {
+        // Keep handleResponse's caller-safe message; only add the code.
+        if (error instanceof DrupalApiError) error.code = "auth_redirect_after_relogin";
+        throw error;
+      }
+    }
     return this.handleResponse(response);
   }
 
