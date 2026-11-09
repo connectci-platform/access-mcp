@@ -654,6 +654,15 @@ describe("series that stop early", () => {
     );
   });
 
+  it("lists at most six names per date", () => {
+    const names = Array.from({ length: 9 }, (_, i) => `q${i}`);
+    const p = build({
+      params: { end_date: "2026-10-31", group_by: "queue" },
+      chartInfo: { hc_jsonstore: { data: [trace("top", [1, 2, 3]), ...names.map((n) => trace(n, [1, 2, null]))] } },
+    });
+    expect(earlyEndNote(p)).toBe("Nothing is recorded for q0, q1, q2, q3, q4, q5 and 3 more after Sep 2026.");
+  });
+
   it("a daily chart names the last day", () => {
     const days = ["2026-11-06", "2026-11-07", "2026-11-08"];
     const p = build({

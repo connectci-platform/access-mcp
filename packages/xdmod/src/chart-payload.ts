@@ -309,8 +309,13 @@ export function aggregateDataNote(payload: ChartPayload): string | undefined {
   );
 }
 
-/** "A", "A and B", "A, B and C". */
+const MAX_LISTED_NAMES = 6;
+
+/** "A", "A and B", "A, B and C", past six "A, B, C, D, E, F and 12 more". */
 function listNames(names: string[]): string {
+  if (names.length > MAX_LISTED_NAMES) {
+    return `${names.slice(0, MAX_LISTED_NAMES).join(", ")} and ${names.length - MAX_LISTED_NAMES} more`;
+  }
   return names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
