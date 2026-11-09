@@ -26,6 +26,7 @@ vi.mock("@access-mcp/shared", async (importOriginal) => {
   };
 });
 import { EventsServer } from "../server.js";
+import { RECURRENCE_EXAMPLES } from "../recurrence.js";
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const { version } = require("../../package.json");
@@ -148,6 +149,42 @@ describe("EventsServer", () => {
       expect(resources.map((r) => r.uri)).toContain("accessci://events/upcoming");
       expect(resources.map((r) => r.uri)).toContain("accessci://events/workshops");
       expect(resources.map((r) => r.uri)).toContain("accessci://events/webinars");
+    });
+  });
+
+  describe("create_event recurrence examples", () => {
+    type Prop = { type: string; enum?: string[]; items?: { type: string; enum?: string[] } };
+    const recurrenceSchema = () => {
+      const create = server["getTools"]().find((t: { name: string }) => t.name === "create_event") as {
+        inputSchema: { properties: { recurrence: { description: string; properties: Record<string, Prop> } } };
+      };
+      return create.inputSchema.properties.recurrence;
+    };
+    const fits = (value: unknown, type: string, allowed?: string[]) =>
+      typeof value === type && (!allowed || allowed.includes(value as string));
+
+    it("shows every example in the description", () => {
+      const { description } = recurrenceSchema();
+      for (const { intent } of RECURRENCE_EXAMPLES) {
+        expect(description).toContain(JSON.stringify(intent));
+      }
+    });
+
+    it("uses only declared properties, types and allowed values", () => {
+      const { properties } = recurrenceSchema();
+      for (const { label, intent } of RECURRENCE_EXAMPLES) {
+        for (const [key, value] of Object.entries(intent)) {
+          const where = `${label}: ${key}=${JSON.stringify(value)}`;
+          expect(properties, where).toHaveProperty(key);
+          const prop = properties[key];
+          if (prop.type === "array") {
+            expect(Array.isArray(value), where).toBe(true);
+            for (const item of value as unknown[]) expect(fits(item, prop.items!.type, prop.items!.enum), where).toBe(true);
+          } else {
+            expect(fits(value, prop.type, prop.enum), where).toBe(true);
+          }
+        }
+      }
     });
   });
 

@@ -157,7 +157,7 @@ class XDMoDPythonServer(BaseAccessServer):
                 Tool(
                     name="get_raw_data",
                     annotations=_READS_ONLY,
-                    description="Extract actual XDMoD metrics data with filtering. This is the PRIMARY data extraction tool. Use filters parameter with values discovered via get_smart_filters() or use configuration from get_analysis_template(). Supports complex boolean filters, timeseries/aggregate modes, and progress tracking for large datasets.",
+                    description="Extract actual XDMoD metrics data with filtering. This is the PRIMARY data extraction tool. Use filters parameter with values discovered via get_smart_filters() or use configuration from get_analysis_template(). Supports timeseries/aggregate modes and progress tracking for large datasets.",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -185,7 +185,21 @@ class XDMoDPythonServer(BaseAccessServer):
                             },
                             "filters": {
                                 "type": "object",
-                                "description": "Complex filter combinations. Use get_smart_filters() first to discover valid filter values. Example: {'resource': ['Delta', 'Bridges-2'], 'pi': 'Smith', 'jobsize': '>1000'}. Supports boolean operators (AND/OR) and comparison operators (>, <, =).",
+                                "description": (
+                                    "Keys are dimensions; each value is a name or a list of names as get_smart_filters() lists them. "
+                                    "Case and spacing are forgiven, and person, pi and username also match a first and last name. "
+                                    "A list matches any of its names, and separate dimensions must all match. "
+                                    'Example: {"resource": ["NCSA DELTA GPU", "NCSA DELTA CPU"]}. '
+                                    "There are no comparison or boolean operators. Names that match nothing are dropped with a warning, "
+                                    "and if none of a dimension's names match, the query is refused rather than run unfiltered. "
+                                    "If a dimension's names can't be checked, they are used as given, with a warning."
+                                ),
+                                "additionalProperties": {
+                                    "anyOf": [
+                                        {"type": "string"},
+                                        {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                                    ]
+                                },
                             },
                             "aggregation_unit": {
                                 "type": "string",
@@ -1359,6 +1373,21 @@ class XDMoDPythonServer(BaseAccessServer):
                             else:
                                 processed_filters[key] = [value] if not isinstance(value, list) else value
                             filter_warnings.append(f"⚠️ Could not validate filter {key}: {caller_safe_error(e)}")
+
+                # Dropping every value of a dimension would silently widen the
+                # query to all of XDMoD, which reads as a real answer.
+                unmatched = [key for key in (filters or {}) if not processed_filters.get(key)]
+                if unmatched:
+                    refusal = (
+                        f"❌ **No filter values matched for {', '.join(unmatched)}, so the query was not run.** "
+                        "Running it would have returned unfiltered totals.\n\n"
+                    )
+                    refusal += "".join(f"⚠️ No names were given for {key}\n" for key in unmatched if not filters[key])
+                    refusal += "".join(f"{warning}\n" for warning in filter_warnings)
+                    refusal += "\nUse get_smart_filters() to find the exact names, then try again.\n"
+                    if realm == "SUPREMM":
+                        refusal += "Some users exist in the Jobs realm but not SUPREMM, so try realm='Jobs' for broader user coverage.\n"
+                    return [TextContent(type="text", text=refusal)]
                 
                 # Display filter warnings with cross-realm suggestions
                 if filter_warnings:
@@ -2568,6 +2597,10 @@ class XDMoDPythonServer(BaseAccessServer):
         result += f"\n**Semantic Filter Options:**\n"
         for filter_name, filter_config in template['semantic_filters'].items():
             result += f"• **{filter_name}**: {filter_config}\n"
+        result += (
+            "• Filters only match names. For a numeric condition such as >1M CPU hours, group by that "
+            "dimension, request the metric, and keep the rows that meet it.\n"
+        )
         
         # Add smart suggestions based on template type
         result += f"\n💡 **Smart Integration Suggestions:**\n"
@@ -2600,7 +2633,7 @@ class XDMoDPythonServer(BaseAccessServer):
         result += f'  "end_date": "2024-12-31"'
         
         # Add example filters section
-        result += ',\n  "filters": {"example": "Use get_smart_filters() to get current values"}'
+        result += ',\n  "filters": {"resource": ["<names from get_smart_filters(dimension=\'resource\')>"]}'
         
         result += "\n}\n```\n"
         

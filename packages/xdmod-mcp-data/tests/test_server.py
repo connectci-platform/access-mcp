@@ -175,6 +175,26 @@ class TestXDMoDPythonServer:
         for expected_tool in expected_tools:
             assert expected_tool in tool_names
 
+    def test_raw_data_filters_example_fits_schema(self):
+        """The filters example is valid input and promises no unsupported operators"""
+        import json
+        import re
+
+        tools = {t.name: t for t in XDMoDPythonServer().get_tools()}
+        filters = tools["get_raw_data"].inputSchema["properties"]["filters"]
+        allowed = filters["additionalProperties"]["anyOf"]
+        assert allowed == [{"type": "string"}, {"type": "array", "items": {"type": "string"}, "minItems": 1}]
+
+        examples = re.findall(r"\{[^{}]*\}", filters["description"])
+        assert examples
+        for example in examples:
+            for value in json.loads(example).values():
+                assert isinstance(value, str) or (
+                    isinstance(value, list) and all(isinstance(v, str) for v in value)
+                ), example
+                values = [value] if isinstance(value, str) else value
+                assert not any(re.match(r"\s*[<>=]", v) for v in values), example
+
     def test_request_token_priority(self):
         """Test that request header token takes priority over env var"""
         from xdmod_mcp_data.base_server import _request_headers
@@ -368,3 +388,72 @@ class TestUpstreamFailureLogging:
         assert '"status": 500' in caplog.text
         assert '"path": "/tools/search"' in caplog.text
         assert "10.0.3.4" not in caplog.text
+
+
+class TestRawDataUnmatchedFilters:
+    """A filter whose names all fail to match must not widen the query to everything."""
+
+    class Warehouse:
+        def __init__(self, xdmod_host=None):
+            self.data_calls = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get_filter_values(self, realm, dimension):
+            import pandas as pd
+            return pd.DataFrame({"label": ["NCSA DELTA GPU", "NCSA DELTA CPU"]})
+
+        def get_data(self, **kwargs):
+            import pandas as pd
+            self.data_calls.append(kwargs)
+            return pd.DataFrame({"value": [1.0]}, index=["NCSA DELTA GPU"])
+
+    def _run(self, filters, warehouse=None, realm="Jobs"):
+        warehouse = warehouse or self.Warehouse()
+        server = XDMoDPythonServer()
+        server._env_api_token = "t"
+        args = {"start_date": "2026-09-01", "end_date": "2026-09-30", "dimension": "resource",
+                "filters": filters, "realm": realm}
+        with patch.dict(os.environ, {"XDMOD_API_TOKEN": "t"}), \
+             patch("xdmod_data.warehouse.DataWarehouse", return_value=warehouse):
+            text = asyncio.run(server._get_raw_data(args))[0].text
+        return text, warehouse.data_calls
+
+    def test_refuses_when_no_name_matches(self):
+        text, calls = self._run({"resource": "Delta"})
+        assert calls == []
+        assert "No filter values matched for resource, so the query was not run" in text
+
+    def test_runs_with_the_names_that_matched(self):
+        text, calls = self._run({"resource": ["Delta", "ncsa delta gpu"]})
+        assert len(calls) == 1
+        assert calls[0]["filters"] == {"resource": ["NCSA DELTA GPU"]}
+        assert "Values not found in Jobs realm for resource: ['Delta']" in text
+
+    def test_refuses_when_one_of_several_dimensions_matches_nothing(self):
+        text, calls = self._run({"resource": "NCSA DELTA GPU", "queue": "nope"})
+        assert calls == []
+        assert "No filter values matched for queue" in text
+
+    def test_refuses_an_empty_list_and_says_why(self):
+        text, calls = self._run({"resource": []})
+        assert calls == []
+        assert "No names were given for resource" in text
+
+    def test_points_supremm_callers_at_jobs(self):
+        text, _ = self._run({"resource": "Delta"}, realm="SUPREMM")
+        assert "try realm='Jobs'" in text
+
+    def test_runs_with_names_as_given_when_they_cannot_be_checked(self):
+        class Unchecked(self.Warehouse):
+            def get_filter_values(self, realm, dimension):
+                raise RuntimeError("Error 400: unknown dimension")
+
+        warehouse = Unchecked()
+        text, calls = self._run({"resource": "Delta"}, warehouse=warehouse)
+        assert calls[0]["filters"] == {"resource": ["Delta"]}
+        assert "Could not validate filter resource" in text

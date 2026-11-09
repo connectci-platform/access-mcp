@@ -391,7 +391,8 @@ export class XDMoDMetricsServer extends BaseAccessServer {
             this.resolveFilterId(realm, dimension, String(v), matchNotes)
           )
         );
-        resolved[dimension] = ids.join(",");
+        // Overlapping names (Delta and NCSA DELTA CPU) resolve to the same ids.
+        resolved[dimension] = [...new Set(ids.join(",").split(","))].join(",");
       } else {
         resolved[dimension] = await this.resolveFilterId(
           realm,
@@ -500,9 +501,10 @@ export class XDMoDMetricsServer extends BaseAccessServer {
               type: "object",
               description:
                 'Filter by dimension. Keys are dimension names (e.g., "resource", "pi", "fieldofscience"). ' +
-                'Values can be names (e.g., {"resource": "Delta"}) or numeric IDs — names are auto-resolved.',
+                'Each value is a name, auto-resolved to its ID (e.g., {"resource": "Delta"}), or an id listed by get_dimension_values given as a string. ' +
+                'A partial name can match several (Delta also matches DeltaAI). Pass a list to match any of several (e.g., {"resource": ["Delta", "Anvil"]}).',
               additionalProperties: {
-                type: "string",
+                anyOf: [{ type: "string" }, { type: "array", items: { type: "string" }, minItems: 1 }],
               },
             },
           },
@@ -594,9 +596,10 @@ export class XDMoDMetricsServer extends BaseAccessServer {
               type: "object",
               description:
                 'Filter by dimension. Keys are dimension names (e.g., "resource", "pi", "fieldofscience"). ' +
-                'Values can be names (e.g., "Delta") or numeric IDs — names are auto-resolved.',
+                'Each value is a name, auto-resolved to its ID (e.g., {"resource": "Delta"}), or an id listed by get_dimension_values given as a string. ' +
+                'A partial name can match several (Delta also matches DeltaAI). Pass a list to match any of several (e.g., {"resource": ["Delta", "Anvil"]}).',
               additionalProperties: {
-                type: "string",
+                anyOf: [{ type: "string" }, { type: "array", items: { type: "string" }, minItems: 1 }],
               },
             },
           },
@@ -713,7 +716,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
           limit: (args.limit as number) || 10,
           offset: (args.offset as number) || 0,
           log_scale: (args.log_scale as string) || "n",
-          filters: args.filters as Record<string, string> | undefined,
+          filters: args.filters as Record<string, string | string[]> | undefined,
         });
 
       case "get_chart_image":
@@ -732,7 +735,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
           limit: (args.limit as number) || 10,
           offset: (args.offset as number) || 0,
           log_scale: (args.log_scale as string) || "n",
-          filters: args.filters as Record<string, string> | undefined,
+          filters: args.filters as Record<string, string | string[]> | undefined,
         });
 
       case "get_chart_link":
@@ -772,7 +775,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     limit?: number;
     offset?: number;
     log_scale?: string;
-    filters?: Record<string, string>;
+    filters?: Record<string, string | string[]>;
   }): Promise<ChartResult> {
     // Queries can take over 45 seconds. Charts are public data, so results can
     // be shared between callers, and a range that has ended no longer moves.
@@ -974,7 +977,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     limit?: number;
     offset?: number;
     log_scale?: string;
-    filters?: Record<string, string>;
+    filters?: Record<string, string | string[]>;
   }) {
     try {
       // Resolve text filter values to numeric IDs

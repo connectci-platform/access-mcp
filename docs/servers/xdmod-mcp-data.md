@@ -58,7 +58,7 @@ Get raw data from XDMoD for detailed analysis with complex filtering and progres
 - `metric`: Metric to retrieve (e.g., total_cpu_hours, job_count, wall_hours)
 - `start_date`: Start date (YYYY-MM-DD)
 - `end_date`: End date (YYYY-MM-DD)
-- `filters`: Complex filter combinations (e.g., `{'resource': ['Delta', 'Bridges-2'], 'pi': 'Smith'}`)
+- `filters`: Dimension names mapped to a name or a list of names from `get_smart_filters` (e.g., `{"resource": ["NCSA DELTA GPU", "NCSA DELTA CPU"]}`). A list matches any of its names; there are no comparison or boolean operators. If no name matches for a dimension, the query is refused rather than run unfiltered.
 - `aggregation_unit`: Time aggregation (day, month, quarter, year, auto)
 - `dataset_type`: Dataset type (aggregate or timeseries)
 - `show_progress`: Show progress updates for large data retrievals
