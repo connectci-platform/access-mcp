@@ -100,6 +100,9 @@ interface UpdateAnnouncementArgs {
   clear_tags?: boolean;
   affiliation?: string;
   affinity_group?: string;
+  add_affinity_group?: string;
+  remove_affinity_group?: string;
+  clear_affinity_groups?: boolean;
   external_link?: { uri: string; title?: string };
   where_to_share?: string[];
 }
@@ -358,6 +361,7 @@ BEFORE CALLING:
 2. Confirm which fields the user wants to change
 3. Only include fields that are changing. To remove every tag, set clear_tags: true (not tags: []), only when the user asks to remove all tags, and say in the preview that all tags will be removed
 4. Show a preview of the changes and ask for confirmation before updating
+5. Send at most one of affinity_group, add_affinity_group, remove_affinity_group or clear_affinity_groups. Drupal checks that the user may post to every group the announcement ends up with, hidden ones included; if it refuses with not_coordinator, show its message as is
 
 Returns the write envelope {action:"update", status:"updated", executed:true, data:{uuid, title, edit_url, review_required}}. Read "status" and "executed"; the updated fields are under "data". When data.review_required is true, the user may not publish and the announcement is published, so the edit was saved as a draft for review and the live announcement is unchanged. Never tell that user the change is live; tell them it is waiting for review. A "warning" carries that review notice and any tags that could not be matched; if one is returned, pass the review notice on and tell the user which tags were skipped.
 ALWAYS display data.edit_url to the user so they can review changes in Drupal.`,
@@ -404,7 +408,22 @@ ALWAYS display data.edit_url to the user so they can review changes in Drupal.`,
             affinity_group: {
               type: "string",
               description:
-                "Affinity group name or UUID. User must be allowed to post to the group (a coordinator of it, or an administrator or news manager). Replaces all of the announcement's affinity groups (only if changing). If get_my_announcements lists other groups on this announcement, including ones with a null title that the user may not view, say in the preview that they will be removed. get_announcement_context lists only coordinated groups; an administrator or news manager names the group directly.",
+                "Affinity group name or UUID. User must be allowed to post to the group (a coordinator of it, or an administrator or news manager). Replaces all of the announcement's affinity groups with this one (only if changing). To add or remove one group and keep the rest, use add_affinity_group or remove_affinity_group instead. If get_my_announcements lists other groups on this announcement, including ones with a null title that the user may not view, say in the preview that they will be removed. get_announcement_context lists only coordinated groups; an administrator or news manager names the group directly.",
+            },
+            add_affinity_group: {
+              type: "string",
+              description:
+                "Affinity group name or UUID to add while keeping every group already on the announcement, including ones the user may not view. Use when the user asks to also share with a group.",
+            },
+            remove_affinity_group: {
+              type: "string",
+              description:
+                "Title or UUID of one group on the announcement to remove, as listed in get_my_announcements affinity_groups. Every other group is kept, including ones the user may not view.",
+            },
+            clear_affinity_groups: {
+              type: "boolean",
+              description:
+                "Set true to remove ALL affinity groups. Only when the user explicitly asks to remove every group. Omit otherwise.",
             },
             external_link: {
               type: "object",
@@ -470,7 +489,7 @@ Returns the write envelope {action:"delete", status, executed, data}. "confirmed
 
 Returns announcements with: uuid, nid, title, status (draft/published), created date, published_date, summary, tags (english NAMES, ready to display or reuse as the tags parameter for update_announcement), edit_url
 
-Each item also carries, when available, affiliation, where_to_share (known values as labels; unknown values are shown as is and cannot be sent back to create/update) and affinity_groups ([{uuid, title}]); the keys are absent when Drupal does not provide them. An affinity group with a null title exists but the user may not view it; still count it as one of the announcement's groups.
+Each item also carries, when available, affiliation, where_to_share (known values as labels; unknown values are shown as is and cannot be sent back to create/update) and affinity_groups ([{uuid, title}]); the keys are absent when Drupal does not provide them. An affinity group with a null title exists but the user may not view it; still count it as one of the announcement's groups. Each item shows its newest revision, the one update_announcement edits, so changes waiting for review appear here; status is still the live published state. has_pending_revision is true when an edit is waiting for review, and absent when Drupal does not send it.
 
 Use this to:
 - Find announcement UUIDs for update/delete operations
@@ -1137,8 +1156,34 @@ Which would you like to do?`,
       }
     }
 
-    // Update affinity group if provided (controller resolves by uuid)
-    if (args.affinity_group) {
+    // The controller replaces the stored groups with exactly the uuid list sent.
+    // A blank target is refused: trimmed to "", it would match a hidden group's
+    // null title or quietly drop the change.
+    for (const key of ["add_affinity_group", "remove_affinity_group"] as const) {
+      const value = args[key];
+      if (value !== undefined && (typeof value !== "string" || value.trim() === "")) {
+        return this.errorResponse(`${key} must name a group by title or UUID.`, {
+          code: "invalid_arguments",
+        });
+      }
+    }
+    let pendingRevisionNotice: string | undefined;
+    const groupChanges = [
+      args.affinity_group,
+      args.add_affinity_group,
+      args.remove_affinity_group,
+      args.clear_affinity_groups === true ? true : undefined,
+    ].filter((v) => v !== undefined && v !== "");
+    if (groupChanges.length > 1) {
+      return this.errorResponse(
+        "Send only one of affinity_group, add_affinity_group, remove_affinity_group or clear_affinity_groups per update.",
+        { code: "invalid_arguments" }
+      );
+    }
+
+    if (args.clear_affinity_groups === true) {
+      requestBody.field_affinity_group_node = [];
+    } else if (args.affinity_group) {
       const groupUuid = await this.getAffinityGroupUuid(actingUser, args.affinity_group);
       if (groupUuid) {
         requestBody.field_affinity_group_node = [groupUuid];
@@ -1146,6 +1191,76 @@ Which would you like to do?`,
         throw new Error(
           `Affinity group not found: ${args.affinity_group}. Use get_announcement_context to see groups you coordinate.`
         );
+      }
+    } else if (args.add_affinity_group || args.remove_affinity_group) {
+      // Adding or removing one group has to resend every other group, including
+      // ones the user may not view (title null), or the replace drops them.
+      // The single-item read shows the newest revision, the one PATCH edits, and
+      // answers 404 both for an unknown uuid and for one the user may not edit.
+      let item: {
+        affinity_groups?: { uuid: string; title: string | null }[];
+        has_pending_revision?: boolean;
+      };
+      try {
+        item = await auth.get(actingUser, `/api/2.3/announcements/${encodeURIComponent(args.uuid)}`);
+      } catch (error) {
+        if (error instanceof DrupalApiError && error.status === 404) {
+          return this.errorResponse("Announcement not found, or not yours to edit.", {
+            hint: "Check the uuid via get_my_announcements.",
+            code: "not_found",
+          });
+        }
+        throw error;
+      }
+      // Without the current list, treating it as empty would drop every group.
+      if (!Array.isArray(item.affinity_groups)) {
+        return this.errorResponse(
+          "Could not read this announcement's current affinity groups, so it was not changed.",
+          { hint: "Try again shortly.", code: "upstream_error" }
+        );
+      }
+      const current = item.affinity_groups;
+      const currentUuids = current.map((g) => g.uuid);
+      const sameUuid = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+      if (item.has_pending_revision === true) {
+        pendingRevisionNotice =
+          "This group change joins an edit to this announcement that is already waiting for review.";
+      }
+
+      if (args.add_affinity_group) {
+        const groupUuid = await this.getAffinityGroupUuid(actingUser, args.add_affinity_group);
+        if (!groupUuid) {
+          throw new Error(
+            `Affinity group not found: ${args.add_affinity_group}. Use get_announcement_context to see groups you coordinate.`
+          );
+        }
+        requestBody.field_affinity_group_node = currentUuids.some((u) => sameUuid(u, groupUuid))
+          ? currentUuids
+          : [...currentUuids, groupUuid];
+      } else {
+        const target = args.remove_affinity_group!;
+        const wanted = target.trim().toLowerCase();
+        // A uuid names one group. A title may be shared, and a hidden group
+        // (title null) can only be named by uuid.
+        const byUuid = current.filter((g) => sameUuid(g.uuid, wanted));
+        const matches =
+          byUuid.length > 0
+            ? byUuid
+            : current.filter((g) => g.title !== null && g.title.trim().toLowerCase() === wanted);
+        if (matches.length > 1) {
+          return this.errorResponse(
+            `More than one group on this announcement is titled "${target}": ${matches.map((g) => g.uuid).join(", ")}. Name the one to remove by UUID.`,
+            { code: "invalid_arguments" }
+          );
+        }
+        const match = matches[0];
+        if (!match) {
+          return this.errorResponse(`Affinity group "${target}" is not on this announcement.`, {
+            hint: "get_my_announcements lists the announcement's current affinity_groups.",
+            code: "not_found",
+          });
+        }
+        requestBody.field_affinity_group_node = currentUuids.filter((u) => !sameUuid(u, match.uuid));
       }
     }
 
@@ -1169,7 +1284,7 @@ Which would you like to do?`,
         );
       }
       throw new Error(
-        "No fields to update. Provide at least one of title, body, summary, published_date, tags, clear_tags, affiliation, affinity_group, external_link or where_to_share."
+        "No fields to update. Provide at least one of title, body, summary, published_date, tags, clear_tags, affiliation, affinity_group, add_affinity_group, remove_affinity_group, clear_affinity_groups, external_link or where_to_share."
       );
     }
 
@@ -1187,6 +1302,9 @@ Which would you like to do?`,
     // version is unchanged, so "updated" alone would mislead them.
     const reviewRequired = result.review_required === true;
     const warnings: string[] = [];
+    if (pendingRevisionNotice) {
+      warnings.push(pendingRevisionNotice);
+    }
     if (reviewRequired) {
       warnings.push(
         typeof result.message === "string" && result.message.trim()
@@ -1349,6 +1467,7 @@ Which would you like to do?`,
         affiliation?: string | null;
         where_to_share?: string[];
         affinity_groups?: { uuid: string; title: string }[];
+        has_pending_revision?: boolean;
       }) => ({
         uuid: item.uuid,
         nid: item.nid,
@@ -1369,6 +1488,9 @@ Which would you like to do?`,
           ),
         }),
         ...(item.affinity_groups !== undefined && { affinity_groups: item.affinity_groups }),
+        ...(typeof item.has_pending_revision === "boolean" && {
+          has_pending_revision: item.has_pending_revision,
+        }),
       })
     );
 
