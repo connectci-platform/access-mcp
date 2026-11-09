@@ -40,6 +40,8 @@ export interface ChartPayload {
   filters: { notes: string[] };
   series?: { name: string; points: { start: string; value: number | null }[] }[];
   categories?: { name: string; value: number | null }[];
+  /** Start of the last period with any value, or null (always null for aggregates). */
+  data_through: string | null;
   has_more: boolean;
   ranked_by: "value";
   link: string;
@@ -152,6 +154,27 @@ export function effectiveUnit(requested: string | undefined, start: string, end:
   return "Quarter";
 }
 
+/** XDMoD's description is HTML; the panel wants plain text. */
+export function plainDescription(html: string): string {
+  return html
+    .replace(/(?<![.!?:;,])\s*<br\s*\/?>\s*/gi, ". ")
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** XDMoD numbers ranked names ("1. NCSA DELTA GPU"). */
+function stripRank(name: string): string {
+  return name.replace(/^\d+\.\s+/, "");
+}
+
 export function buildChartPayload(input: {
   params: ChartDataParams;
   chartInfo: ChartInfo;
@@ -178,12 +201,13 @@ export function buildChartPayload(input: {
     last_period_incomplete: false,
     measure: {
       label,
-      description: chartInfo.description ?? "",
+      description: plainDescription(chartInfo.description ?? ""),
       kind,
       missing: kind === "total" ? "zero" : "gap",
     },
     dimension: { name: params.group_by, ordered: ORDERED_DIMENSIONS.has(params.group_by) },
     filters: { notes: matchNotes },
+    data_through: null,
     has_more: hasMore,
     ranked_by: "value",
     link,
@@ -210,10 +234,15 @@ export function buildChartPayload(input: {
           byStart.set(p.start, p.value);
         }
         return {
-          name: t.name as string,
+          name: stripRank(t.name as string),
           points: starts.map((start) => ({ start, value: byStart.get(start) ?? null })),
         };
       });
+    for (const start of starts) {
+      if (payload.series.some((sr) => sr.points.find((pt) => pt.start === start)?.value != null)) {
+        payload.data_through = start;
+      }
+    }
     payload.counted = { start: starts[0], end: periodEnd(unit, starts[starts.length - 1]) };
     payload.last_period_incomplete = payload.counted.end >= today;
   } else {
@@ -234,6 +263,7 @@ export function buildChartPayload(input: {
         .sort((a, b) => rank(a.c.name) - rank(b.c.name) || a.i - b.i)
         .map(({ c }) => c);
     }
+    categories = categories.map((c) => ({ ...c, name: stripRank(c.name) }));
     payload.categories = categories;
   }
   return payload;

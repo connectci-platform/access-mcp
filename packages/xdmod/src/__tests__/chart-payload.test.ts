@@ -5,6 +5,7 @@ import {
   measureKind,
   ORDERED_DIMENSIONS,
   periodStarts,
+  plainDescription,
   type ChartDataParams,
 } from "../chart-payload.js";
 
@@ -270,5 +271,60 @@ describe("buildChartPayload edge cases", () => {
       chartInfo: info(["2026-08-01", "2026-09-01"], [1, 2]),
     });
     expect(p.counted).toEqual({ start: "2026-08-01", end: "2026-09-30" });
+  });
+});
+
+describe("plainDescription", () => {
+  it("turns XDMoD's HTML into plain text", () => {
+    const html =
+      "<b>Wait Hours: Per Job</b>: The average time, in hours, a job waited.<br/><i>Wait Time: </i>Wait time is defined as the time between submission &amp; start.";
+    expect(plainDescription(html)).toBe(
+      "Wait Hours: Per Job: The average time, in hours, a job waited. Wait Time: Wait time is defined as the time between submission & start."
+    );
+  });
+
+  it("uses a sentence break when no punctuation precedes a br", () => {
+    expect(plainDescription("One<br>Two&nbsp;&lt;3&gt; &quot;x&quot; it&#39;s")).toBe(
+      'One. Two <3> "x" it\'s'
+    );
+  });
+});
+
+describe("rank prefixes and data_through", () => {
+  const info = {
+    description: "d",
+    hc_jsonstore: {
+      data: [
+        { name: "1. NCSA DELTA GPU", x: [ms("2026-08-01"), ms("2026-09-01")], y: [3, null] },
+        { name: "2. NCSA DELTA CPU", x: [ms("2026-08-01"), ms("2026-09-01")], y: [1, 2] },
+      ],
+    },
+  };
+
+  it("strips rank prefixes from series names", () => {
+    const p = build({ chartInfo: info, params: { end_date: "2026-09-30" } });
+    expect(p.series!.map((s) => s.name)).toEqual(["NCSA DELTA GPU", "NCSA DELTA CPU"]);
+  });
+
+  it("strips rank prefixes from category names", () => {
+    const p = build({
+      params: { dataset_type: "aggregate" },
+      chartInfo: { hc_jsonstore: { data: [{ name: "m", x: ["1. A", "2. B"], y: [2, 1] }] } },
+    });
+    expect(p.categories!.map((c) => c.name)).toEqual(["A", "B"]);
+    expect(p.data_through).toBeNull();
+  });
+
+  it("reports the last period with any value", () => {
+    const p = build({ chartInfo: info, params: { end_date: "2026-11-08" } });
+    expect(p.data_through).toBe("2026-09-01");
+  });
+
+  it("is null when no series has a value", () => {
+    const p = build({
+      params: { end_date: "2026-09-30" },
+      chartInfo: { hc_jsonstore: { data: [{ name: "A", x: [ms("2026-08-01")], y: [null] }] } },
+    });
+    expect(p.data_through).toBeNull();
   });
 });
