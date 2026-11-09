@@ -69,6 +69,7 @@ class TestServer extends BaseAccessServer {
             text: JSON.stringify({
               actingUser: context?.actingUser,
               requestId: context?.requestId,
+              includeStructuredContent: context?.includeStructuredContent,
             }),
           },
         ],
@@ -545,6 +546,22 @@ describe("HTTP Mode - Acting User Headers", () => {
       const result = JSON.parse(data.content[0].text);
       expect(result.actingUser).toBeUndefined();
       expect(result.requestId).toBeUndefined();
+      expect(result.includeStructuredContent).toBe(false);
+    });
+  });
+
+  describe("X-Include-Structured-Content header", () => {
+    const call = (headers: Record<string, string>) =>
+      fetch(`${baseUrl}/tools/get_context`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify({ arguments: {} }),
+      }).then(async (r) => JSON.parse((await r.json()).content[0].text));
+
+    it("is on only when the header is 1", async () => {
+      expect((await call({ "X-Include-Structured-Content": "1" })).includeStructuredContent).toBe(true);
+      expect((await call({ "X-Include-Structured-Content": "true" })).includeStructuredContent).toBe(false);
+      expect((await call({})).includeStructuredContent).toBe(false);
     });
   });
 });

@@ -58,6 +58,12 @@ export interface RequestContext {
   actingUser?: string;
   /** Unique request ID for tracing (from X-Request-ID header) */
   requestId?: string;
+  /**
+   * The caller keeps a tool's structuredContent out of the model's context
+   * (X-Include-Structured-Content: 1). Only the /tools route sets it, so MCP
+   * hosts that may hand structuredContent to their model never receive it.
+   */
+  includeStructuredContent?: boolean;
 }
 
 /** AsyncLocalStorage instance for request context */
@@ -742,6 +748,7 @@ export abstract class BaseAccessServer {
       const context: RequestContext = {
         actingUser: c.req.header("X-Acting-User"),
         requestId: c.req.header("X-Request-ID"),
+        includeStructuredContent: c.req.header("X-Include-Structured-Content") === "1",
       };
 
       const toolName = c.req.param("toolName");
