@@ -37,9 +37,22 @@ export interface ChartPayload {
   last_period_incomplete: boolean;
   measure: { label: string; description: string; kind: MeasureKind; missing: "zero" | "gap" };
   dimension: { name: string; ordered: boolean };
+  /** What the chart was filtered to, one note per filter value; empty when unfiltered. */
   filters: { notes: string[] };
-  series?: { name: string; points: { start: string; value: number | null }[] }[];
-  categories?: { name: string; value: number | null }[];
+  /**
+   * A series' data_through is set only when its data stops before the chart's:
+   * the start of its last period with a value ("period"), or its last day ("day").
+   */
+  series?: {
+    name: string;
+    points: { start: string; value: number | null }[];
+    data_through?: string;
+    data_through_precision?: "day" | "period";
+  }[];
+  /** A category's data_through is its last day with data, set only when before the chart's end. */
+  categories?: { name: string; value: number | null; data_through?: string }[];
+  /** How many top-ranked series or categories XDMoD skipped before these; 0 when none. */
+  offset: number;
   /**
    * Where XDMoD's data stops, or null. A timeseries gives the start of the last
    * period with any value, sharpened to a day by the realm's latest data day
@@ -69,9 +82,60 @@ export const ORDERED_DIMENSIONS: ReadonlySet<string> = new Set([
   "gpu_count",
 ]);
 
+/**
+ * Measures XDMoD sums whose ids don't say so, checked against each one's
+ * XDMoD definition ("The total ..."). An empty period of these is 0.
+ */
+const TOTAL_MEASURES: ReadonlySet<string> = new Set([
+  // Allocations
+  "used_su",
+  "used_ace",
+  "allocated_nu",
+  "allocated_raw_su",
+  "allocated_su",
+  "allocated_ace",
+  // Cloud
+  "cloud_num_sessions_ended",
+  "cloud_num_sessions_started",
+  "cloud_num_sessions_running",
+  "cloud_wall_time",
+  "cloud_core_time",
+  // SUPREMM
+  "wall_time",
+  "wait_time",
+  "gpu_time",
+  "requested_wall_time",
+  "cpu_time_user",
+  "cpu_time_system",
+  "cpu_time_idle",
+  // ResourceSpecifications
+  "allocated_cpu_core_hours",
+  "allocated_gpu_hours",
+  "allocated_cpu_node_hours",
+  "allocated_gpu_node_hours",
+  "ace_total",
+  "ace_allocated",
+]);
+
+/**
+ * Measures named total_ that XDMoD defines as a per-day average ("The average
+ * number of CPU cores available per day"), so an empty period is unknown.
+ */
+const AVERAGE_MEASURES: ReadonlySet<string> = new Set([
+  "total_avg_number_of_cpu_cores",
+  "total_avg_number_of_gpus",
+  "total_avg_number_of_cpu_nodes",
+  "total_avg_number_of_gpu_nodes",
+  "allocated_avg_number_of_cpu_cores",
+  "allocated_avg_number_of_gpus",
+  "allocated_avg_number_of_cpu_nodes",
+  "allocated_avg_number_of_gpu_nodes",
+]);
+
 export function measureKind(statistic: string): MeasureKind {
+  if (AVERAGE_MEASURES.has(statistic)) return "average";
+  if (TOTAL_MEASURES.has(statistic)) return "total";
   if (statistic.startsWith("total_") || statistic.endsWith("_count")) return "total";
-  if (statistic === "gpu_time" || statistic === "wait_time") return "total";
   return "average";
 }
 
@@ -229,6 +293,42 @@ export function aggregateDataNote(payload: ChartPayload): string | undefined {
   );
 }
 
+/** The line that says which series or bars stop before the rest of the chart. */
+export function earlyEndNote(payload: ChartPayload): string | undefined {
+  const day = (d: string) => periodLabel("Day", d);
+  if (payload.dataset_type === "timeseries") {
+    const early = (payload.series ?? []).filter((s) => s.data_through);
+    if (early.length === 0 || !payload.unit) return undefined;
+    const parts = early.map((s) =>
+      s.data_through_precision === "day"
+        ? `${s.name} has data only through ${day(s.data_through!)}`
+        : `${s.name} has no data after ${periodLabel(payload.unit!, s.data_through!)}`
+    );
+    return (
+      `Some series stop before the rest of the chart: ${parts.join("; ")}. ` +
+      "Their later periods are missing from XDMoD, not zero."
+    );
+  }
+  const early = (payload.categories ?? []).filter((c) => c.data_through);
+  if (early.length === 0) return undefined;
+  const parts = early.map((c) => `${c.name} has data only through ${day(c.data_through!)}`);
+  return (
+    `Some data stops before the range does: ${parts.join("; ")}. ` +
+    "Those values leave out the rest of the range."
+  );
+}
+
+/** The line that keeps a page of results past the top from reading as the top. */
+export function offsetNote(payload: ChartPayload, shown: number): string | undefined {
+  if (payload.offset <= 0 || shown === 0) return undefined;
+  const first = payload.offset + 1;
+  const last = payload.offset + shown;
+  return (
+    `These are ranks ${first} to ${last} by value: XDMoD's top ${payload.offset} ` +
+    `${payload.offset === 1 ? "is" : "are"} left out (offset ${payload.offset}).`
+  );
+}
+
 /** XDMoD numbers ranked names ("1. NCSA DELTA GPU"). */
 function stripRank(name: string): string {
   return name.replace(/^\d+\.\s+/, "");
@@ -244,8 +344,12 @@ export function buildChartPayload(input: {
   /** Series or categories left out past the limit; null when XDMoD didn't say. */
   othersCount?: number | null;
   dimensionOrder?: string[];
+  /** dimensionOrder lists every value XDMoD has for the dimension. */
+  dimensionComplete?: boolean;
   /** The latest day XDMoD holds data for in this realm, when known. */
   latestDataDay?: string | null;
+  /** The latest day each resource has data for, by name, when known. */
+  resourceDays?: Record<string, string> | null;
   /** Null when the public portal can't open this chart, as with filters. */
   link: string | null;
 }): ChartPayload {
@@ -277,6 +381,7 @@ export function buildChartPayload(input: {
     has_more: hasMore,
     others_count: input.othersCount === undefined ? (hasMore ? null : 0) : input.othersCount,
     ranked_by: "value",
+    offset: params.offset ?? 0,
     link,
     source: "XDMoD",
     retrieved: today,
@@ -332,15 +437,33 @@ export function buildChartPayload(input: {
       payload.last_data_period_partial = laterEmpty || cutShort;
     }
     payload.last_period_incomplete = payload.counted.end >= today;
+    markEarlySeries(payload, unit, resourceDaysFor(params, input.resourceDays));
   } else {
     const trace = traces[0];
     const xs = trace?.x ?? [];
     const ys = trace?.y ?? [];
-    let categories = xs.map((x, i) => ({
+    let categories: NonNullable<ChartPayload["categories"]> = xs.map((x, i) => ({
       name: String(x),
       value: typeof ys[i] === "number" ? (ys[i] as number) : null,
     }));
+    categories = categories.map((c) => ({ ...c, name: stripRank(c.name) }));
     if (dimensionOrder && dimensionOrder.length > 0 && payload.dimension.ordered) {
+      // XDMoD leaves out a bucket with no jobs. Of a count or total, that
+      // bucket is 0, so it is shown, but only when every bucket came back and
+      // none was filtered or paged away.
+      const fill =
+        input.dimensionComplete &&
+        kind === "total" &&
+        categories.length > 0 &&
+        !hasMore &&
+        payload.offset === 0 &&
+        params.filters?.[params.group_by] === undefined;
+      if (fill) {
+        const have = new Set(categories.map((c) => c.name));
+        for (const name of dimensionOrder) {
+          if (!have.has(name)) categories.push({ name, value: 0 });
+        }
+      }
       const rank = (name: string) => {
         const i = dimensionOrder.indexOf(name);
         return i === -1 ? dimensionOrder.length : i;
@@ -350,7 +473,6 @@ export function buildChartPayload(input: {
         .sort((a, b) => rank(a.c.name) - rank(b.c.name) || a.i - b.i)
         .map(({ c }) => c);
     }
-    categories = categories.map((c) => ({ ...c, name: stripRank(c.name) }));
     payload.categories = categories;
     // An aggregate has no periods to read the end of data from, so the realm's
     // latest data day says whether XDMoD's data reaches the end asked for.
@@ -360,6 +482,53 @@ export function buildChartPayload(input: {
       payload.data_through = probe;
       payload.data_through_precision = "day";
     }
+    const days = resourceDaysFor(params, input.resourceDays);
+    if (days) {
+      const end = payload.data_through ?? requested.end.slice(0, 10);
+      for (const c of categories) {
+        const day = days[c.name];
+        if (day && day < end && day >= requested.start.slice(0, 10)) c.data_through = day;
+      }
+    }
   }
   return payload;
+}
+
+/** Per-resource days apply only when the chart's series or bars are resources. */
+function resourceDaysFor(
+  params: ChartDataParams,
+  days: Record<string, string> | null | undefined
+): Record<string, string> | undefined {
+  return params.group_by === "resource" && days ? days : undefined;
+}
+
+/**
+ * Marks each series whose data stops before the chart's: its own last period
+ * is earlier, or its resource's last day falls before the chart's last day.
+ */
+function markEarlySeries(
+  payload: ChartPayload,
+  unit: Unit,
+  days: Record<string, string> | undefined
+): void {
+  if (payload.data_through === null) return;
+  const chartPeriod = periodStartOf(unit, payload.data_through);
+  const chartEnd =
+    payload.data_through_precision === "day" ? payload.data_through : periodEnd(unit, chartPeriod);
+  for (const s of payload.series ?? []) {
+    let last = -1;
+    s.points.forEach((p, i) => {
+      if (p.value !== null) last = i;
+    });
+    if (last === -1) continue;
+    const own = s.points[last].start;
+    const day = days?.[s.name];
+    if (day && day >= own && day <= periodEnd(unit, own) && day < chartEnd) {
+      s.data_through = day;
+      s.data_through_precision = "day";
+    } else if (own < chartPeriod) {
+      s.data_through = own;
+      s.data_through_precision = unit === "Day" ? "day" : "period";
+    }
+  }
 }

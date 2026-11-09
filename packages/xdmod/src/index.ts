@@ -13,6 +13,8 @@ import { createRequire } from "module";
 import {
   aggregateDataNote,
   buildChartPayload,
+  earlyEndNote,
+  offsetNote,
   partialPeriodNote,
   effectiveUnit,
   ORDERED_DIMENSIONS,
@@ -284,15 +286,105 @@ function portalChartUrl(realm: string, groupBy: string, statistic: string): stri
   return `https://xdmod.access-ci.org/index.php#tg_usage?${urlParams.toString()}`;
 }
 
-/** XDMoD's last series or bar past the limit: "All 37 Others". */
-const OTHERS = /^(?:\d+\.\s+)?All ([\d,]+) Others$/i;
+/**
+ * XDMoD's series or bar for everything past the limit: "All 37 Others" for a
+ * sum, "Avg of 7 Others" for an average (also Max of, Min of). Matched by
+ * name wherever it sits, since it is never a resource.
+ */
+const OTHERS = /^(?:\d+\.\s+)?(?:All|Avg of|Sum of|Max of|Min of) ([\d,]+) Others$/i;
 
 function othersIn(name: unknown): number | null {
   const match = OTHERS.exec(String(name ?? "").trim());
   return match ? Number(match[1].replace(/,/g, "")) : null;
 }
 
+type DimensionItem = { id?: string; name?: string; short_name?: string };
+
+/** A filter value resolved to XDMoD ids, or nothing XDMoD has. */
+type FilterMatch =
+  | { ids: string[]; names: string[]; note: string }
+  | { unmatched: true; dimension: string; value: string; closest: string[] };
+
+const normalizeName = (s: string) =>
+  s.toLowerCase().replace(/[-_]/g, " ").replace(/\s+/g, " ").trim();
+
+function editDistance(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+/** Up to three names a mistyped value was likely meant to be. */
+function closestNames(items: DimensionItem[], value: string): string[] {
+  const target = normalizeName(value);
+  const limit = Math.max(2, Math.floor(target.length / 3));
+  return items
+    .map((i) => i.name ?? "")
+    .filter(Boolean)
+    .map((name) => ({ name, d: editDistance(target, normalizeName(name)) }))
+    .filter(({ d }) => d <= limit)
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 3)
+    .map(({ name }) => name);
+}
+
+/** Exact name first, then every name containing the value or contained in it. */
+function matchItems(
+  items: DimensionItem[],
+  value: string
+): { items: DimensionItem[]; exact: boolean } | null {
+  const lower = value.toLowerCase();
+  const exact = items.find(
+    (i) => i.id && (i.name?.toLowerCase() === lower || i.short_name?.toLowerCase() === lower)
+  );
+  if (exact) return { items: [exact], exact: true };
+  const normalized = normalizeName(value);
+  const matches = items.filter((i) => {
+    if (!i.id) return false;
+    const normName = normalizeName(i.name ?? "");
+    return (
+      normName.includes(normalized) ||
+      normalized.includes(normName) ||
+      i.name?.toLowerCase().includes(lower) ||
+      lower.includes(i.name?.toLowerCase() ?? "___")
+    );
+  });
+  return matches.length > 0 ? { items: matches, exact: false } : null;
+}
+
 const isGapConnector = (name: string) => name.toLowerCase().includes("gap connector");
+
+/** The answer when a filter value names nothing XDMoD has. */
+function noMatchText(
+  realm: string,
+  unmatched: { dimension: string; value: string; closest: string[] }[]
+): string {
+  const lines = unmatched.map(({ dimension, value, closest }) => {
+    const near = closest.length > 0 ? ` Closest names: ${closest.join(", ")}.` : "";
+    return `No ${dimension} matched "${value}" in XDMoD's ${realm} realm.${near}`;
+  });
+  return (
+    `${lines.join("\n")}\n\nNo chart was made. ` +
+    "Use get_dimension_values to list the names XDMoD has, then try again."
+  );
+}
+
+/** Names the one series or bar of a group_by none chart. */
+function relabelWhole(chartInfo: ChartInfo, name: string, aggregate: boolean): ChartInfo {
+  const store = chartInfo.hc_jsonstore;
+  if (!store?.data) return chartInfo;
+  const data = store.data.map((t) => {
+    if (aggregate) return t.x ? { ...t, x: t.x.map(() => name) } : t;
+    return t.name && !isGapConnector(t.name) ? { ...t, name } : t;
+  });
+  return { ...chartInfo, hc_jsonstore: { ...store, data } };
+}
 
 /**
  * structuredContent goes only to callers that asked for it with
@@ -310,13 +402,17 @@ export class XDMoDMetricsServer extends BaseAccessServer {
   private chartCache = new Map<string, { result: ChartResult; expires: number }>();
   private static readonly CHART_CACHE_TTL = 1000 * 60 * 60; // 1 hour
   private static readonly CHART_CACHE_MAX_ENTRIES = 100;
-  private dimensionOrderCache = new Map<string, { names: string[]; expires: number }>();
+  private dimensionOrderCache = new Map<string, { names: string[]; complete: boolean; expires: number }>();
   private static readonly DIMENSION_ORDER_TTL = 1000 * 60 * 30; // 30 minutes
   private latestDayCache = new Map<string, { day: string; expires: number }>();
   private latestDayInFlight = new Map<string, Promise<string | null>>();
   private static readonly LATEST_DAY_TTL = 1000 * 60 * 60; // 1 hour
+  private resourceDaysCache = new Map<string, { days: Record<string, string>; expires: number }>();
+  private resourceDaysInFlight = new Map<string, Promise<Record<string, string> | null>>();
   // The probe only sharpens the payload, so it never holds up the answer for long.
   private probeTimeoutMs = 5000;
+  // Grouped by resource, the probe takes 5 to 11 seconds, about as long as a chart.
+  private resourceProbeTimeoutMs = 12000;
   // Count statistics that have a value on every day a realm has data.
   private static readonly PROBE_STATISTICS: Record<string, string> = {
     Jobs: "job_count",
@@ -366,114 +462,114 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     return data;
   }
 
-  /**
-   * Resolve a filter value to a numeric XDMoD dimension ID.
-   * If the value is already numeric, returns it as-is.
-   * Otherwise searches the dimension API for a matching entry.
-   */
-  private async resolveFilterId(
+  /** One page of a dimension's values, optionally searched. Null when the lookup fails. */
+  private async lookupDimension(
     realm: string,
     dimension: string,
-    value: string,
-    matchNotes?: string[]
-  ): Promise<string> {
-    // Already numeric — use as-is
-    if (/^\d+$/.test(value)) return value;
-
-    const response = await fetch(
-      `${this.baseURL}/controllers/metric_explorer.php`,
-      {
+    searchText?: string
+  ): Promise<{ items: DimensionItem[]; complete: boolean } | null> {
+    try {
+      const body = new URLSearchParams({
+        operation: "get_dimension",
+        public_user: "true",
+        realm,
+        dimension_id: dimension,
+        start: "0",
+        limit: "200",
+      });
+      if (searchText) body.set("search_text", searchText);
+      const response = await fetch(`${this.baseURL}/controllers/metric_explorer.php`, {
         method: "POST",
         headers: this.getHeaders(),
-        body: new URLSearchParams({
-          operation: "get_dimension",
-          public_user: "true",
-          realm,
-          dimension_id: dimension,
-          start: "0",
-          limit: "200",
-        }),
-      }
-    );
-
-    if (!response.ok) return value; // fallback to original
-
-    const json = await response.json().catch(() => null);
-    if (json === null) return value; // unreadable body: fall back to original
-    const items: { id?: string; name?: string; short_name?: string }[] =
-      json.data ?? [];
-
-    const lower = value.toLowerCase();
-    // Normalize: strip hyphens/extra spaces for fuzzy matching (e.g., "Bridges-2" vs "Bridges 2 RM")
-    const normalize = (s: string) => s.toLowerCase().replace(/[-_]/g, " ").replace(/\s+/g, " ").trim();
-    const normalized = normalize(value);
-
-    // 1. Exact name match
-    const exact = items.find(
-      (i) =>
-        i.name?.toLowerCase() === lower ||
-        i.short_name?.toLowerCase() === lower
-    );
-    if (exact?.id) return exact.id;
-
-    // 2. All items whose name contains the search term (or vice versa)
-    const matches = items.filter(
-      (i) => {
-        const normName = normalize(i.name ?? "");
-        return (
-          normName.includes(normalized) ||
-          normalized.includes(normName) ||
-          i.name?.toLowerCase().includes(lower) ||
-          lower.includes(i.name?.toLowerCase() ?? "___")
-        );
-      }
-    );
-    // A partial name can include more than was asked for, such as DeltaAI for
-    // Delta, so callers can report what it matched.
-    if (matches.length > 0) {
-      matchNotes?.push(
-        `${dimension} "${value}" included ${matches.map((m) => m.name).join(", ")}`
-      );
+        body,
+      });
+      if (!response.ok) return null;
+      const json = await response.json().catch(() => null);
+      if (json === null) return null;
+      const items: DimensionItem[] = Array.isArray(json.data) ? json.data : [];
+      const total = Number(json.totalCount);
+      return {
+        items,
+        complete: Number.isFinite(total) ? total <= items.length : items.length < 200,
+      };
+    } catch {
+      return null;
     }
-    if (matches.length === 1) return matches[0].id ?? value;
-    if (matches.length > 1) {
-      // Multiple matches — return all IDs so XDMoD includes all
-      return matches.map((m) => m.id).filter(Boolean).join(",");
-    }
-
-    return value; // no match found, pass through
   }
 
   /**
-   * Resolve all filter values in a filters object to numeric IDs.
-   * Supports both string values and arrays of strings (for multi-value filters).
+   * Resolve a filter value to XDMoD dimension ids, with a note saying what it
+   * matched, so a chart always says what it was filtered to. A numeric value
+   * is an id. A value XDMoD has nothing for comes back unmatched.
+   */
+  private async resolveFilterId(realm: string, dimension: string, value: string): Promise<FilterMatch> {
+    const list = await this.lookupDimension(realm, dimension);
+    if (!list) {
+      return { ids: [value], names: [value], note: `${dimension} "${value}" (not checked against XDMoD's names)` };
+    }
+    let { items, complete } = list;
+    if (/^\d+$/.test(value)) {
+      const byId = items.find((i) => i.id === value);
+      if (byId) return { ids: [value], names: [byId.name ?? value], note: `${dimension} ${byId.name ?? value}` };
+      // Past the first page, an id can't be searched for, so it's sent as given.
+      if (!complete) return { ids: [value], names: [`id ${value}`], note: `${dimension} id ${value}` };
+    }
+    let found = matchItems(items, value);
+    if (!found && !complete) {
+      const searched = await this.lookupDimension(realm, dimension, value);
+      if (searched) {
+        items = searched.items;
+        complete = true;
+        found = matchItems(items, value);
+      }
+    }
+    if (!found) {
+      if (!complete) {
+        return { ids: [value], names: [value], note: `${dimension} "${value}" (not checked against XDMoD's names)` };
+      }
+      return { unmatched: true, dimension, value, closest: closestNames(list.items, value) };
+    }
+    const names = found.items.map((m) => m.name ?? m.id ?? "");
+    const ids = found.items.map((m) => m.id as string);
+    // A partial name can include more than was asked for, such as DeltaAI for Delta.
+    const note = found.exact ? `${dimension} ${names[0]}` : `${dimension} "${value}" included ${names.join(", ")}`;
+    return { ids, names, note };
+  }
+
+  /**
+   * Resolve every filter value to XDMoD ids. Each value gets a note, and the
+   * names it matched label a group_by none chart in place of "ACCESS".
    */
   private async resolveFilters(
     realm: string,
-    filters: Record<string, unknown>,
-    matchNotes?: string[]
-  ): Promise<Record<string, string>> {
+    filters: Record<string, unknown>
+  ): Promise<{
+    resolved: Record<string, string>;
+    notes: string[];
+    names: string[];
+    unmatched: Extract<FilterMatch, { unmatched: true }>[];
+  }> {
     const resolved: Record<string, string> = {};
+    const notes: string[] = [];
+    const names: string[] = [];
+    const unmatched: Extract<FilterMatch, { unmatched: true }>[] = [];
     for (const [dimension, value] of Object.entries(filters)) {
-      if (Array.isArray(value)) {
-        // Multi-value filter: resolve each and join with commas
-        const ids = await Promise.all(
-          value.map((v: unknown) =>
-            this.resolveFilterId(realm, dimension, String(v), matchNotes)
-          )
-        );
-        // Overlapping names (Delta and NCSA DELTA CPU) resolve to the same ids.
-        resolved[dimension] = [...new Set(ids.join(",").split(","))].join(",");
-      } else {
-        resolved[dimension] = await this.resolveFilterId(
-          realm,
-          dimension,
-          String(value),
-          matchNotes
-        );
+      const values = (Array.isArray(value) ? value : [value]).map(String);
+      const matches = await Promise.all(values.map((v) => this.resolveFilterId(realm, dimension, v)));
+      const ids: string[] = [];
+      for (const m of matches) {
+        if ("unmatched" in m) {
+          unmatched.push(m);
+          continue;
+        }
+        notes.push(m.note);
+        ids.push(...m.ids);
+        for (const n of m.names) if (!names.includes(n)) names.push(n);
       }
+      // Overlapping names (Delta and NCSA DELTA CPU) resolve to the same ids.
+      resolved[dimension] = [...new Set(ids)].join(",");
     }
-    return resolved;
+    return { resolved, notes, names, unmatched };
   }
 
   // Realms available for public (unauthenticated) queries.
@@ -860,10 +956,14 @@ export class XDMoDMetricsServer extends BaseAccessServer {
 
     try {
       // Resolve text filter values to numeric IDs
-      const matchNotes: string[] = [];
-      const resolvedFilters = params.filters
-        ? await this.resolveFilters(params.realm, params.filters, matchNotes)
+      const filterMatch = hasFilters(params)
+        ? await this.resolveFilters(params.realm, params.filters!)
         : undefined;
+      if (filterMatch && filterMatch.unmatched.length > 0) {
+        return forCaller({ content: [{ type: "text", text: noMatchText(params.realm, filterMatch.unmatched) }] });
+      }
+      const matchNotes = filterMatch?.notes ?? [];
+      const resolvedFilters = filterMatch?.resolved;
 
       const urlParams = new URLSearchParams({
         operation: "get_charts",
@@ -910,6 +1010,8 @@ export class XDMoDMetricsServer extends BaseAccessServer {
         ? this.dimensionOrder(params.realm, params.group_by)
         : Promise.resolve(undefined);
       const latestDataDay = this.latestDataDay(params.realm);
+      const resourceDays =
+        params.group_by === "resource" ? this.resourceDataDays(params.realm) : Promise.resolve(null);
       const response = await chartRequest;
 
       // Any response may not be JSON, and the parser's error quotes the body.
@@ -924,7 +1026,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
 
       let resultText = `Chart Data for ${params.statistic} (${params.realm}):\n\n`;
       if (matchNotes.length > 0) {
-        resultText += `**Filters matched:** ${matchNotes.join("; ")}\n\n`;
+        resultText += `**Filtered to:** ${matchNotes.join("; ")}\n\n`;
       }
 
       let chartInfo: ChartInfo | undefined;
@@ -934,6 +1036,15 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       const filtered = hasFilters(params);
       if (data.data && data.data.length > 0) {
         ({ chartInfo, hasMore, othersCount } = this.trimToLimit(data.data[0] as ChartInfo, params));
+        // XDMoD names a group_by none chart "ACCESS" even when it is filtered.
+        if (params.group_by === "none" && filterMatch && filterMatch.names.length > 0) {
+          chartInfo = relabelWhole(
+            chartInfo,
+            filterMatch.names.join(", "),
+            params.dataset_type === "aggregate"
+          );
+        }
+        const order = await dimensionOrder;
         chart = this.chartPayload({
           params,
           chartInfo,
@@ -941,8 +1052,10 @@ export class XDMoDMetricsServer extends BaseAccessServer {
           hasMore,
           othersCount,
           today: new Date().toISOString().slice(0, 10),
-          dimensionOrder: await dimensionOrder,
+          dimensionOrder: order?.names,
+          dimensionComplete: order?.complete,
           latestDataDay: await latestDataDay,
+          resourceDays: await resourceDays,
         });
 
         if (chartInfo.group_description) {
@@ -985,6 +1098,10 @@ export class XDMoDMetricsServer extends BaseAccessServer {
             }
             const dataNote = chart && aggregateDataNote(chart);
             if (dataNote) resultText += `${dataNote}\n`;
+            const early = chart && earlyEndNote(chart);
+            if (early) resultText += `${early}\n`;
+            const paged = chart && offsetNote(chart, chart.categories?.length ?? 0);
+            if (paged) resultText += `${paged}\n`;
             resultText += "\n";
           } else if (params.dataset_type === "timeseries") {
             const unitText = unit ? `, by ${unit.toLowerCase()}` : "";
@@ -1011,6 +1128,10 @@ export class XDMoDMetricsServer extends BaseAccessServer {
             }
             const partial = chart && partialPeriodNote(chart);
             if (partial) resultText += `${partial}\n`;
+            const early = chart && earlyEndNote(chart);
+            if (early) resultText += `${early}\n`;
+            const paged = chart && offsetNote(chart, chart.series?.length ?? 0);
+            if (paged) resultText += `${paged}\n`;
             if (summarized) {
               resultText +=
                 `Only series of up to ${MAX_SERIES_POINTS} points, ${MAX_LISTED_POINTS} in all, are listed. ` +
@@ -1120,7 +1241,9 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     othersCount: number | null;
     today: string;
     dimensionOrder: string[] | undefined;
+    dimensionComplete: boolean | undefined;
     latestDataDay: string | null;
+    resourceDays: Record<string, string> | null;
   }): ChartPayload | undefined {
     const { params } = input;
     try {
@@ -1160,82 +1283,117 @@ export class XDMoDMetricsServer extends BaseAccessServer {
 
   /** One probe request, cut off after probeTimeoutMs. Null on any failure. */
   private async probeLatestDay(realm: string, statistic: string): Promise<string | null> {
+    const days = await this.probeDays(realm, statistic, "none", this.probeTimeoutMs);
+    let day: string | null = null;
+    for (const d of Object.values(days ?? {})) if (day === null || d > day) day = d;
+    if (day) {
+      this.latestDayCache.set(realm, {
+        day,
+        expires: Date.now() + XDMoDMetricsServer.LATEST_DAY_TTL,
+      });
+    }
+    return day;
+  }
+
+  /**
+   * The last day in the past 120 each resource has data in a realm, by name,
+   * so a resource whose data stops early can be called out. Null when unknown;
+   * a failure is not cached.
+   */
+  private resourceDataDays(realm: string): Promise<Record<string, string> | null> {
+    const statistic = XDMoDMetricsServer.PROBE_STATISTICS[realm];
+    if (!statistic) return Promise.resolve(null);
+    const cached = this.resourceDaysCache.get(realm);
+    if (cached && cached.expires > Date.now()) return Promise.resolve(cached.days);
+    const running = this.resourceDaysInFlight.get(realm);
+    if (running) return running;
+    const probe = this.probeDays(realm, statistic, "resource", this.resourceProbeTimeoutMs)
+      .then((days) => {
+        if (days && Object.keys(days).length > 0) {
+          this.resourceDaysCache.set(realm, {
+            days,
+            expires: Date.now() + XDMoDMetricsServer.LATEST_DAY_TTL,
+          });
+          return days;
+        }
+        return null;
+      })
+      .finally(() => this.resourceDaysInFlight.delete(realm));
+    this.resourceDaysInFlight.set(realm, probe);
+    return probe;
+  }
+
+  /** Each trace's last non-zero day over the past 120 days. Null on any failure. */
+  private async probeDays(
+    realm: string,
+    statistic: string,
+    groupBy: string,
+    timeoutMs: number
+  ): Promise<Record<string, string> | null> {
     try {
       const end = new Date().toISOString().slice(0, 10);
       const start = new Date(Date.parse(end) - 119 * 86_400_000).toISOString().slice(0, 10);
+      const body = new URLSearchParams({
+        operation: "get_charts",
+        public_user: "true",
+        dataset_type: "timeseries",
+        format: "hc_jsonstore",
+        width: "916",
+        height: "484",
+        realm,
+        group_by: groupBy,
+        statistic,
+        start_date: start,
+        end_date: end,
+        aggregation_unit: "Day",
+      });
+      if (groupBy !== "none") body.set("limit", "200");
       const response = await fetch(`${this.baseURL}/controllers/user_interface.php`, {
         method: "POST",
         headers: this.getHeaders(),
-        body: new URLSearchParams({
-          operation: "get_charts",
-          public_user: "true",
-          dataset_type: "timeseries",
-          format: "hc_jsonstore",
-          width: "916",
-          height: "484",
-          realm,
-          group_by: "none",
-          statistic,
-          start_date: start,
-          end_date: end,
-          aggregation_unit: "Day",
-        }),
-        signal: AbortSignal.timeout(this.probeTimeoutMs),
+        body,
+        signal: AbortSignal.timeout(timeoutMs),
       });
       if (!response.ok) return null;
       const json = await response.json().catch(() => null);
       const traces: { name?: string; x?: unknown[]; y?: unknown[] }[] | undefined =
         json?.data?.[0]?.hc_jsonstore?.data;
-      let day: string | null = null;
+      const days: Record<string, string> = {};
       for (const trace of traces ?? []) {
-        if (!trace.name || trace.name.toLowerCase().includes("gap connector")) continue;
+        if (!trace.name || isGapConnector(trace.name) || othersIn(trace.name) !== null) continue;
+        const name = trace.name.replace(/^\d+\.\s+/, "");
         for (const p of timeseriesPoints(trace)) {
-          if (p.value !== 0 && (day === null || p.start > day)) day = p.start;
+          if (p.value !== 0 && (days[name] === undefined || p.start > days[name])) days[name] = p.start;
         }
       }
-      if (day) {
-        this.latestDayCache.set(realm, {
-          day,
-          expires: Date.now() + XDMoDMetricsServer.LATEST_DAY_TTL,
-        });
-      }
-      return day;
+      return days;
     } catch {
       return null;
     }
   }
 
-  /** XDMoD's own order of a dimension's values, cached. Undefined when the lookup fails. */
-  private async dimensionOrder(realm: string, dimension: string): Promise<string[] | undefined> {
+  /**
+   * XDMoD's own order of a dimension's values, cached, and whether that is
+   * every value. Undefined when the lookup fails.
+   */
+  private async dimensionOrder(
+    realm: string,
+    dimension: string
+  ): Promise<{ names: string[]; complete: boolean } | undefined> {
     const key = `${realm}/${dimension}`;
     const cached = this.dimensionOrderCache.get(key);
-    if (cached && cached.expires > Date.now()) return cached.names;
-    try {
-      const response = await fetch(`${this.baseURL}/controllers/metric_explorer.php`, {
-        method: "POST",
-        headers: this.getHeaders(),
-        body: new URLSearchParams({
-          operation: "get_dimension",
-          public_user: "true",
-          realm,
-          dimension_id: dimension,
-          start: "0",
-          limit: "200",
-        }),
-      });
-      if (!response.ok) return undefined;
-      const json = await response.json().catch(() => null);
-      const items: { id?: string; name?: string; short_name?: string }[] = json?.data ?? [];
-      const names = items.map((i) => i.name || i.short_name || i.id || "").filter(Boolean);
-      if (names.length === 0) return undefined;
-      this.dimensionOrderCache.set(key, {
-        names,
-        expires: Date.now() + XDMoDMetricsServer.DIMENSION_ORDER_TTL,
-      });
-      return names;
-    } catch {
-      return undefined;
-    }
+    if (cached && cached.expires > Date.now()) return cached;
+    const list = await this.lookupDimension(realm, dimension);
+    if (!list) return undefined;
+    const names = list.items.map((i) => i.name || i.short_name || i.id || "").filter(Boolean);
+    if (names.length === 0) return undefined;
+    const entry = {
+      names,
+      complete: list.complete,
+      expires: Date.now() + XDMoDMetricsServer.DIMENSION_ORDER_TTL,
+    };
+    this.dimensionOrderCache.set(key, entry);
+    return entry;
   }
 
   /**
@@ -1305,9 +1463,13 @@ export class XDMoDMetricsServer extends BaseAccessServer {
   }) {
     try {
       // Resolve text filter values to numeric IDs
-      const resolvedFilters = params.filters
+      const filterMatch = params.filters
         ? await this.resolveFilters(params.realm, params.filters)
         : undefined;
+      if (filterMatch && filterMatch.unmatched.length > 0) {
+        return { content: [{ type: "text" as const, text: noMatchText(params.realm, filterMatch.unmatched) }] };
+      }
+      const resolvedFilters = filterMatch?.resolved;
 
       const urlParams = new URLSearchParams({
         operation: "get_charts",

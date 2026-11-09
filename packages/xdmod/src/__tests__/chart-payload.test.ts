@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   aggregateDataNote,
   buildChartPayload,
+  earlyEndNote,
+  offsetNote,
   effectiveUnit,
   measureKind,
   ORDERED_DIMENSIONS,
@@ -51,6 +53,25 @@ describe("measureKind", () => {
     ["avg_waitduration_hours", "average"],
     ["utilization", "average"],
     ["rate_of_usage", "average"],
+    // Sums whose ids don't say so, per XDMoD's definitions.
+    ["used_su", "total"],
+    ["used_ace", "total"],
+    ["allocated_ace", "total"],
+    ["allocated_su", "total"],
+    ["cloud_num_sessions_started", "total"],
+    ["cloud_wall_time", "total"],
+    ["cloud_core_time", "total"],
+    ["wall_time", "total"],
+    ["cpu_time_user", "total"],
+    ["requested_wall_time", "total"],
+    ["allocated_cpu_core_hours", "total"],
+    ["ace_total", "total"],
+    // Named total_, but a per-day average.
+    ["total_avg_number_of_cpu_cores", "average"],
+    ["total_avg_number_of_gpus", "average"],
+    ["allocated_avg_number_of_gpu_nodes", "average"],
+    ["cloud_avg_wallduration_hours", "average"],
+    ["wall_time_per_job", "average"],
   ])("%s is %s", (stat, kind) => {
     expect(measureKind(stat)).toBe(kind);
   });
@@ -483,5 +504,114 @@ describe("others_count", () => {
     expect(build({}).others_count).toBe(0);
     expect(build({ hasMore: true }).others_count).toBeNull();
     expect(build({ hasMore: true, othersCount: 38 }).others_count).toBe(38);
+  });
+});
+
+describe("series that stop early", () => {
+  const months = ["2026-08-01", "2026-09-01", "2026-10-01"];
+  const trace = (name: string, ys: (number | null)[]) => ({ name, x: months.map(ms), y: ys });
+
+  it("marks a series whose last period is before the chart's", () => {
+    const p = build({
+      params: { end_date: "2026-10-31" },
+      chartInfo: { hc_jsonstore: { data: [trace("A", [1, 2, 3]), trace("B", [1, 2, null])] } },
+    });
+    expect(p.series![0].data_through).toBeUndefined();
+    expect(p.series![1]).toMatchObject({ data_through: "2026-09-01", data_through_precision: "period" });
+    expect(earlyEndNote(p)).toBe(
+      "Some series stop before the rest of the chart: B has no data after Sep 2026. " +
+        "Their later periods are missing from XDMoD, not zero."
+    );
+  });
+
+  it("uses a resource's own last day inside its last period", () => {
+    const p = build({
+      params: { end_date: "2026-10-31" },
+      chartInfo: { hc_jsonstore: { data: [trace("A", [1, 2, 3]), trace("B", [1, 2, 3])] } },
+      resourceDays: { A: "2026-10-31", B: "2026-10-19" },
+    });
+    expect(p.series![0].data_through).toBeUndefined();
+    expect(p.series![1]).toMatchObject({ data_through: "2026-10-19", data_through_precision: "day" });
+  });
+
+  it("ignores resource days when the chart isn't by resource", () => {
+    const p = build({
+      params: { end_date: "2026-10-31", group_by: "queue" },
+      chartInfo: { hc_jsonstore: { data: [trace("A", [1, 2, 3]), trace("B", [1, 2, 3])] } },
+      resourceDays: { B: "2026-10-19" },
+    });
+    expect(p.series!.every((s) => s.data_through === undefined)).toBe(true);
+    expect(earlyEndNote(p)).toBeUndefined();
+  });
+
+  it("a daily chart names the last day", () => {
+    const days = ["2026-11-06", "2026-11-07", "2026-11-08"];
+    const p = build({
+      params: { start_date: "2026-11-06", end_date: "2026-11-08", aggregation_unit: "Day" },
+      chartInfo: {
+        hc_jsonstore: {
+          data: [
+            { name: "A", x: days.map(ms), y: [1, 2, 3] },
+            { name: "B", x: days.map(ms), y: [1, null, null] },
+          ],
+        },
+      },
+    });
+    expect(p.series![1]).toMatchObject({ data_through: "2026-11-06", data_through_precision: "day" });
+    expect(earlyEndNote(p)).toContain("B has data only through Nov 6, 2026");
+  });
+
+  it("an aggregate marks resources whose data stops before the chart's end", () => {
+    const p = build({
+      params: { dataset_type: "aggregate", start_date: "2026-10-01", end_date: "2026-11-09" },
+      chartInfo: { hc_jsonstore: { data: [{ name: "m", x: ["A", "B", "C"], y: [3, 2, 1] }] } },
+      latestDataDay: "2026-11-08",
+      resourceDays: { A: "2026-11-08", B: "2026-10-19", C: "2026-09-01" },
+    });
+    expect(p.categories!.map((c) => c.data_through)).toEqual([undefined, "2026-10-19", undefined]);
+    expect(earlyEndNote(p)).toBe(
+      "Some data stops before the range does: B has data only through Oct 19, 2026. " +
+        "Those values leave out the rest of the range."
+    );
+  });
+});
+
+describe("empty ordered buckets", () => {
+  const agg = (extra: Partial<Parameters<typeof build>[0]> = {}, params: Partial<ChartDataParams> = {}) =>
+    build({
+      params: { dataset_type: "aggregate", group_by: "jobsize", ...params },
+      chartInfo: { hc_jsonstore: { data: [{ name: "m", x: ["5 - 8", "1"], y: [4, 9] }] } },
+      dimensionOrder: ["1", "2 - 4", "5 - 8", "> 8"],
+      dimensionComplete: true,
+      ...extra,
+    });
+
+  it("fills a count's empty buckets with 0 in XDMoD's order", () => {
+    expect(agg().categories).toEqual([
+      { name: "1", value: 9 },
+      { name: "2 - 4", value: 0 },
+      { name: "5 - 8", value: 4 },
+      { name: "> 8", value: 0 },
+    ]);
+  });
+
+  it.each([
+    ["an average", {}, { statistic: "avg_waitduration_hours" }],
+    ["a cut-short bucket list", { dimensionComplete: false }, {}],
+    ["more left out", { hasMore: true }, {}],
+    ["an offset", {}, { offset: 1 }],
+    ["a filter on the buckets", {}, { filters: { jobsize: "1" } }],
+  ])("doesn't fill for %s", (_label, extra, params) => {
+    expect(agg(extra, params).categories!.map((c) => c.name)).toEqual(["1", "5 - 8"]);
+  });
+});
+
+describe("offsetNote", () => {
+  it("says which ranks a page past the top holds", () => {
+    const p = build({ params: { dataset_type: "aggregate", offset: 3 } });
+    expect(p.offset).toBe(3);
+    expect(offsetNote(p, 5)).toBe("These are ranks 4 to 8 by value: XDMoD's top 3 are left out (offset 3).");
+    expect(offsetNote(p, 0)).toBeUndefined();
+    expect(offsetNote(build({ params: { dataset_type: "aggregate" } }), 5)).toBeUndefined();
   });
 });
