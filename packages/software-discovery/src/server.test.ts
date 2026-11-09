@@ -551,6 +551,43 @@ describe("SoftwareDiscoveryServer", () => {
       expect(responseData.summary).toBeDefined();
     });
 
+    it("returns the versions each resource lists", async () => {
+      mockSdsClient.post.mockResolvedValue({ status: 200, data: mockSoftwareWithAI });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "compare_software_availability",
+          arguments: { software_names: ["tensorflow", "gromacs"] },
+        },
+      });
+
+      const { comparison } = JSON.parse((result.content[0] as TextContent).text);
+      expect(comparison[0].versions_by_resource).toEqual({
+        delta: ["2.12", "2.11", "2.10"],
+        anvil: ["2.11"],
+      });
+      expect(comparison[1].versions_by_resource).toEqual({
+        anvil: ["2023.1", "2022.3"],
+        expanse: ["2023.1"],
+      });
+    });
+
+    it("leaves versions out for software the index doesn't list", async () => {
+      mockSdsClient.post.mockResolvedValue({ status: 200, data: mockSoftwareWithAI });
+
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "compare_software_availability",
+          arguments: { software_names: ["notarealpkg"] },
+        },
+      });
+
+      const { comparison } = JSON.parse((result.content[0] as TextContent).text);
+      expect(comparison[0].versions_by_resource).toEqual({});
+    });
+
     it("should filter by specific resources when provided", async () => {
       mockSdsClient.post.mockResolvedValue({
         status: 200,

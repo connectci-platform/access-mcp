@@ -86,6 +86,8 @@ interface SoftwareComparison {
   available_on: string[];
   resource_count: number;
   resource_status: Record<string, ResourceStatus>;
+  /** Versions per listing resource, newest first. A resource that gives none is left out. */
+  versions_by_resource: Record<string, string[]>;
 }
 
 type ResourceStatus = "listed" | "not_listed" | "not_indexed" | "lookup_failed";
@@ -811,6 +813,7 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
 
       // Build availability matrix
       const availabilityMap: Record<string, Set<string>> = {};
+      const versionsMap: Record<string, Record<string, string[]>> = {};
       const allResources = new Set<string>();
 
       for (const item of results) {
@@ -818,6 +821,7 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
 
         if (!availabilityMap[softwareName]) {
           availabilityMap[softwareName] = new Set();
+          versionsMap[softwareName] = {};
         }
 
         // Extract resources from the rps object
@@ -827,6 +831,9 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
             if (rpName) {
               availabilityMap[softwareName].add(rpName);
               allResources.add(rpName);
+              if (rpInfo.software_versions?.length) {
+                versionsMap[softwareName][rpName] = rpInfo.software_versions;
+              }
             }
           }
         }
@@ -883,6 +890,7 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
           available_on: Array.from(listedOn),
           resource_count: listedOn.size,
           resource_status: resourceStatus,
+          versions_by_resource: foundKey ? versionsMap[foundKey] : {},
         });
       }
 
