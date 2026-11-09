@@ -685,6 +685,79 @@ describe("XDMoDMetricsServer", () => {
         expect(mockFetch.mock.calls[2][1].body.get("resource_filter")).toBe("42");
       });
 
+      test("past the first page, a partial match waits for XDMoD's search (x1)", async () => {
+        mockFetch
+          .mockResolvedValueOnce({
+            ok: true,
+            json: () =>
+              Promise.resolve({ totalCount: 900, data: [{ id: "1", name: "Xavier U - Xavier University of Louisiana" }] }),
+          })
+          .mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ totalCount: 2, data: [{ id: "1", name: "Xavier U - Xavier University of Louisiana" }, { id: "7", name: "Xavier University" }] }),
+          })
+          .mockResolvedValueOnce(chart);
+
+        const result = await call("Xavier University");
+
+        expect(payload(result)!.filters.notes).toEqual(["resource Xavier University"]);
+        expect(mockFetch.mock.calls[2][1].body.get("resource_filter")).toBe("7");
+      });
+
+      test("a failed search keeps the first page's partial match", async () => {
+        mockFetch
+          .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ totalCount: 900, data: [{ id: "3", name: "Big State U Main" }] }) })
+          .mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({}) })
+          .mockResolvedValueOnce(chart);
+
+        const result = await call("Big State U");
+
+        expect(payload(result)!.filters.notes).toEqual(['resource "Big State U" included Big State U Main']);
+      });
+
+      test("names a filtered chart briefly, by each filter (n2)", async () => {
+        const resources = dimension(["Expanse", "Bridges 2 EM", "Bridges 2 GPU", "Bridges 2 RM"]);
+        mockFetch.mockImplementation((_url: string, init: { body: URLSearchParams }) =>
+          Promise.resolve(
+            init.body.get("operation") === "get_dimension"
+              ? init.body.get("dimension_id") === "resource"
+                ? resources
+                : dimension(["Genetics"])
+              : chart
+          )
+        );
+
+        const result = await server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "get_chart_data",
+            arguments: {
+              realm: "Jobs",
+              group_by: "none",
+              statistic: "job_count",
+              start_date: "2026-01-01",
+              end_date: "2026-01-31",
+              dataset_type: "aggregate",
+              filters: { resource: ["Expanse", "Bridges-2"], fieldofscience: "Genetics" },
+            },
+          },
+        });
+
+        expect(payload(result)!.categories![0].name).toBe("Expanse + 3 Bridges-2 resources, Genetics");
+        expect(textOf(result)).toContain("- Expanse + 3 Bridges-2 resources, Genetics: 5.0000");
+      });
+
+      test("caps a long filtered name by counting each dimension", async () => {
+        const names = Array.from({ length: 8 }, (_, i) => `Very Long Resource Name ${i}`);
+        mockFetch.mockImplementation((_url: string, init: { body: URLSearchParams }) =>
+          Promise.resolve(init.body.get("operation") === "get_dimension" ? dimension(names) : chart)
+        );
+
+        const result = await call(names.slice(0, 4));
+
+        expect(payload(result)!.categories![0].name).toBe("4 resources");
+      });
+
       test("a search that finds nothing either is unmatched", async () => {
         mockFetch
           .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ totalCount: 900, data: [{ id: "1", name: "Zed" }] }) })
@@ -1257,35 +1330,69 @@ describe("XDMoDMetricsServer", () => {
       });
 
       test("says which series stop before the rest", async () => {
-        server["resourceDataDays"] = async () => ({ A: "2026-10-31", B: "2026-09-19" });
+        server["resourceDataDays"] = async () => ({
+          since: "2026-07-13",
+          days: { A: "2026-10-31", B: "2026-09-19" },
+        });
         mockFetch.mockResolvedValueOnce(
           respond([trace("A"), { name: "B", x: monthStarts.slice(0, 2), y: [5, 6] }])
         );
         const result = await run();
         const chart = result.structuredContent!.chart;
 
-        expect(chart.series![1].data_through).toBe("2026-09-19");
-        expect(chart.series![1].data_through_precision).toBe("day");
+        expect(chart.series![1]).toMatchObject({
+          data_through: "2026-09-19",
+          data_through_precision: "day",
+          data_through_source: "resource",
+        });
         expect(chart.series![0].data_through).toBeUndefined();
-        expect(result.content[0].text).toContain(
-          "Some series stop before the rest of the chart: B has data only through Sep 19, 2026."
-        );
+        expect(result.content[0].text).toContain("XDMoD has no data from B after Sep 19, 2026.");
+        expect(result.content[0].text).not.toContain("not zero");
       });
 
       test("an aggregate by resource says which resources' data stops early", async () => {
         server["latestDataDay"] = async () => "2026-11-08";
-        server["resourceDataDays"] = async () => ({ a: "2026-11-08", b: "2026-10-19" });
+        server["resourceDataDays"] = async () => ({
+          since: "2026-07-13",
+          days: { a: "2026-11-08", b: "2026-10-19" },
+        });
         mockFetch.mockResolvedValueOnce(respond([{ name: "m", x: ["a", "b"], y: [3, 2] }]));
         const result = await run({ dataset_type: "aggregate", start_date: "2026-10-01", end_date: "2026-11-09" });
         const chart = result.structuredContent!.chart;
 
         expect(chart.categories).toEqual([
           { name: "a", value: 3 },
-          { name: "b", value: 2, data_through: "2026-10-19" },
+          { name: "b", value: 2, data_through: "2026-10-19", data_through_source: "resource" },
         ]);
+        expect(result.content[0].text).toContain("XDMoD has no data from b after Oct 19, 2026.");
+      });
+
+      test("a filtered count by resource reads empty months as 0 where the resource has data (f1)", async () => {
+        server["resourceDataDays"] = async () => ({
+          since: "2026-07-13",
+          days: { A: "2026-10-31", ACES: "2026-10-31" },
+        });
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ data: [{ id: "9", name: "Other humanities" }] }))
+          .mockResolvedValueOnce(respond([trace("A"), { name: "ACES", x: monthStarts.slice(0, 1), y: [5] }]));
+        const result = await run({ statistic: "job_count", filters: { fieldofscience: "Other humanities" } });
+        const aces = result.structuredContent!.chart.series![1];
+
+        expect(aces.points.map((p) => p.value)).toEqual([5, 0, 0]);
+        expect(aces.data_through).toBeUndefined();
+        expect(result.content[0].text).not.toMatch(/no data from|nothing is recorded/i);
+      });
+
+      test("an ordered dimension's offset skips its first buckets", async () => {
+        mockFetch
+          .mockResolvedValueOnce(respond([{ name: "m", x: ["5 - 8", "9 - 64"], y: [3, 7] }]))
+          .mockResolvedValueOnce(mockResponse({ data: [] }));
+        const result = await run({ dataset_type: "aggregate", group_by: "jobsize", statistic: "job_count", limit: 2, offset: 2 });
+
         expect(result.content[0].text).toContain(
-          "Some data stops before the range does: b has data only through Oct 19, 2026."
+          "These are buckets 3 to 4 in XDMoD's order: the first 2 are left out (offset 2)."
         );
+        expect(result.content[0].text).not.toContain("by value");
       });
 
       test("asks for each resource's last day only when the chart is by resource", async () => {
@@ -1793,13 +1900,18 @@ describe("latest data day probe", () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
-  test("returns null on failure without caching it", async () => {
+  test("remembers a failure for five minutes, then probes again", async () => {
     mockFetch.mockResolvedValueOnce(mockResponse(null, false, 500));
     expect(await probeServer["latestDataDay"]("Jobs")).toBeNull();
+    expect(await probeServer["latestDataDay"]("Jobs")).toBeNull();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
 
+    vi.setSystemTime(new Date("2026-11-09T12:05:01Z"));
     mockFetch.mockRejectedValueOnce(new Error("down"));
     expect(await probeServer["latestDataDay"]("Jobs")).toBeNull();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
 
+    vi.setSystemTime(new Date("2026-11-09T12:10:02Z"));
     mockFetch.mockResolvedValueOnce(probeResponse([1, 0, 0, 0]));
     expect(await probeServer["latestDataDay"]("Jobs")).toBe("2026-09-28");
   });
@@ -1932,26 +2044,26 @@ describe("latest data day probe", () => {
     );
 
     expect(await fresh["resourceDataDays"]("Jobs")).toEqual({
-      Expanse: "2026-09-29",
-      "Purdue Anvil CPU": "2026-09-28",
+      since: "2026-07-13",
+      days: { Expanse: "2026-09-29", "Purdue Anvil CPU": "2026-09-28" },
     });
     const body = mockFetch.mock.calls[0][1].body as URLSearchParams;
     expect(body.get("group_by")).toBe("resource");
     expect(body.get("limit")).toBe("200");
     expect(body.get("aggregation_unit")).toBe("Day");
 
-    // Cached, and shared while running.
-    expect(await fresh["resourceDataDays"]("Jobs")).toEqual({
-      Expanse: "2026-09-29",
-      "Purdue Anvil CPU": "2026-09-28",
-    });
+    // Cached.
+    expect((await fresh["resourceDataDays"]("Jobs"))!.days.Expanse).toBe("2026-09-29");
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
-  test("the per-resource probe gives null on failure, without caching, and skips unknown realms", async () => {
+  test("the per-resource probe gives null on failure, remembers it briefly, and skips unknown realms", async () => {
     const fresh = new XDMoDMetricsServer();
     mockFetch.mockRejectedValueOnce(new Error("down"));
     expect(await fresh["resourceDataDays"]("Jobs")).toBeNull();
+    expect(await fresh["resourceDataDays"]("Jobs")).toBeNull();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(new Date("2026-11-09T12:05:01Z"));
     mockFetch.mockResolvedValueOnce(mockResponse({ success: true, data: [] }));
     expect(await fresh["resourceDataDays"]("Jobs")).toBeNull();
     expect(mockFetch).toHaveBeenCalledTimes(2);
@@ -1967,7 +2079,7 @@ describe("latest data day probe", () => {
     const second = fresh["resourceDataDays"]("Jobs");
     release(probeResponse([5, 6, 7, 0]));
 
-    expect(await first).toEqual({ "Number of Jobs Ended": "2026-09-30" });
+    expect((await first)!.days).toEqual({ "Number of Jobs Ended": "2026-09-30" });
     expect(await second).toBe(await first);
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });

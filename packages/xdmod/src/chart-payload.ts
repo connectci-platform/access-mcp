@@ -1,5 +1,12 @@
 export type Unit = "Day" | "Month" | "Quarter" | "Year";
 export type MeasureKind = "total" | "average";
+export type DataEndSource = "resource" | "series";
+
+/** Each resource's last day with data, from a probe of the days since `since`. */
+export interface ResourceDays {
+  since: string;
+  days: Record<string, string>;
+}
 
 export interface ChartDataParams {
   realm: string;
@@ -40,17 +47,26 @@ export interface ChartPayload {
   /** What the chart was filtered to, one note per filter value; empty when unfiltered. */
   filters: { notes: string[] };
   /**
-   * A series' data_through is set only when its data stops before the chart's:
-   * the start of its last period with a value ("period"), or its last day ("day").
+   * A series' data_through is set only when its values stop before the chart's:
+   * the start of its last period with a value ("period"), or a last day ("day").
+   * data_through_source says what is known: "resource" when XDMoD has no data
+   * from that resource after it, "series" when only this series has nothing
+   * recorded after it and why is unknown.
    */
   series?: {
     name: string;
     points: { start: string; value: number | null }[];
     data_through?: string;
     data_through_precision?: "day" | "period";
+    data_through_source?: DataEndSource;
   }[];
-  /** A category's data_through is its last day with data, set only when before the chart's end. */
-  categories?: { name: string; value: number | null; data_through?: string }[];
+  /** A category's data_through is its resource's last day with data, set only when before the chart's end. */
+  categories?: {
+    name: string;
+    value: number | null;
+    data_through?: string;
+    data_through_source?: DataEndSource;
+  }[];
   /** How many top-ranked series or categories XDMoD skipped before these; 0 when none. */
   offset: number;
   /**
@@ -293,40 +309,57 @@ export function aggregateDataNote(payload: ChartPayload): string | undefined {
   );
 }
 
-/** The line that says which series or bars stop before the rest of the chart. */
-export function earlyEndNote(payload: ChartPayload): string | undefined {
-  const day = (d: string) => periodLabel("Day", d);
-  if (payload.dataset_type === "timeseries") {
-    const early = (payload.series ?? []).filter((s) => s.data_through);
-    if (early.length === 0 || !payload.unit) return undefined;
-    const parts = early.map((s) =>
-      s.data_through_precision === "day"
-        ? `${s.name} has data only through ${day(s.data_through!)}`
-        : `${s.name} has no data after ${periodLabel(payload.unit!, s.data_through!)}`
-    );
-    return (
-      `Some series stop before the rest of the chart: ${parts.join("; ")}. ` +
-      "Their later periods are missing from XDMoD, not zero."
-    );
-  }
-  const early = (payload.categories ?? []).filter((c) => c.data_through);
-  if (early.length === 0) return undefined;
-  const parts = early.map((c) => `${c.name} has data only through ${day(c.data_through!)}`);
-  return (
-    `Some data stops before the range does: ${parts.join("; ")}. ` +
-    "Those values leave out the rest of the range."
-  );
+/** "A", "A and B", "A, B and C". */
+function listNames(names: string[]): string {
+  return names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
-/** The line that keeps a page of results past the top from reading as the top. */
+/**
+ * The line that says which series or bars stop before the rest of the chart,
+ * worded only as strongly as is known, with names that stop on the same date
+ * together.
+ */
+export function earlyEndNote(payload: ChartPayload): string | undefined {
+  const items =
+    payload.dataset_type === "timeseries"
+      ? (payload.series ?? []).map((s) => ({ ...s, precision: s.data_through_precision }))
+      : (payload.categories ?? []).map((c) => ({ ...c, precision: "day" as const }));
+  const groups = new Map<string, { source: DataEndSource; when: string; names: string[] }>();
+  for (const i of items) {
+    if (!i.data_through) continue;
+    const when =
+      i.precision === "period" && payload.unit
+        ? periodLabel(payload.unit, i.data_through)
+        : periodLabel("Day", i.data_through);
+    const source = i.data_through_source ?? "series";
+    const key = `${source}|${when}`;
+    const group = groups.get(key) ?? { source, when, names: [] };
+    group.names.push(i.name);
+    groups.set(key, group);
+  }
+  if (groups.size === 0) return undefined;
+  const text = [...groups.values()]
+    .map((g) =>
+      g.source === "resource"
+        ? `XDMoD has no data from ${listNames(g.names)} after ${g.when}`
+        : `nothing is recorded for ${listNames(g.names)} after ${g.when}`
+    )
+    .join("; ");
+  return `${text[0].toUpperCase()}${text.slice(1)}.`;
+}
+
+/** The line that keeps a page of results past the first from reading as the first. */
 export function offsetNote(payload: ChartPayload, shown: number): string | undefined {
   if (payload.offset <= 0 || shown === 0) return undefined;
   const first = payload.offset + 1;
   const last = payload.offset + shown;
-  return (
-    `These are ranks ${first} to ${last} by value: XDMoD's top ${payload.offset} ` +
-    `${payload.offset === 1 ? "is" : "are"} left out (offset ${payload.offset}).`
-  );
+  const n = payload.offset;
+  // XDMoD pages an ordered dimension in bucket order, not by value.
+  return payload.dimension.ordered
+    ? `These are buckets ${first} to ${last} in XDMoD's order: the first ${n} ` +
+        `${n === 1 ? "is" : "are"} left out (offset ${n}).`
+    : `These are ranks ${first} to ${last} by value: XDMoD's top ${n} ` +
+        `${n === 1 ? "is" : "are"} left out (offset ${n}).`;
 }
 
 /** XDMoD numbers ranked names ("1. NCSA DELTA GPU"). */
@@ -349,7 +382,7 @@ export function buildChartPayload(input: {
   /** The latest day XDMoD holds data for in this realm, when known. */
   latestDataDay?: string | null;
   /** The latest day each resource has data for, by name, when known. */
-  resourceDays?: Record<string, string> | null;
+  resourceDays?: ResourceDays | null;
   /** Null when the public portal can't open this chart, as with filters. */
   link: string | null;
 }): ChartPayload {
@@ -437,7 +470,7 @@ export function buildChartPayload(input: {
       payload.last_data_period_partial = laterEmpty || cutShort;
     }
     payload.last_period_incomplete = payload.counted.end >= today;
-    markEarlySeries(payload, unit, resourceDaysFor(params, input.resourceDays));
+    markEarlySeries(payload, unit, kind, resourceDaysFor(params, input.resourceDays));
   } else {
     const trace = traces[0];
     const xs = trace?.x ?? [];
@@ -482,12 +515,15 @@ export function buildChartPayload(input: {
       payload.data_through = probe;
       payload.data_through_precision = "day";
     }
-    const days = resourceDaysFor(params, input.resourceDays);
-    if (days) {
+    const probed = resourceDaysFor(params, input.resourceDays);
+    if (probed) {
       const end = payload.data_through ?? requested.end.slice(0, 10);
       for (const c of categories) {
-        const day = days[c.name];
-        if (day && day < end && day >= requested.start.slice(0, 10)) c.data_through = day;
+        const day = probed.days[c.name];
+        if (day && day < end && day >= requested.start.slice(0, 10)) {
+          c.data_through = day;
+          c.data_through_source = "resource";
+        }
       }
     }
   }
@@ -497,24 +533,37 @@ export function buildChartPayload(input: {
 /** Per-resource days apply only when the chart's series or bars are resources. */
 function resourceDaysFor(
   params: ChartDataParams,
-  days: Record<string, string> | null | undefined
-): Record<string, string> | undefined {
-  return params.group_by === "resource" && days ? days : undefined;
+  probed: ResourceDays | null | undefined
+): ResourceDays | null | undefined {
+  return params.group_by === "resource" ? probed : undefined;
 }
 
 /**
- * Marks each series whose data stops before the chart's: its own last period
- * is earlier, or its resource's last day falls before the chart's last day.
+ * Settles what each series' trailing empty periods mean. Of a count or
+ * total, a period with nothing in it is 0 wherever XDMoD is known to have
+ * data then: up to the chart's own data end, or for a resource, up to that
+ * resource's last day. A series whose data is known to stop earlier, or whose
+ * resource can't be checked, is marked, worded only as strongly as is known.
+ * An average's empty periods stay gaps.
+ *
+ * `probed` is undefined when the series aren't resources, and null when they
+ * are but the per-resource probe failed.
  */
 function markEarlySeries(
   payload: ChartPayload,
   unit: Unit,
-  days: Record<string, string> | undefined
+  kind: MeasureKind,
+  probed: ResourceDays | null | undefined
 ): void {
   if (payload.data_through === null) return;
   const chartPeriod = periodStartOf(unit, payload.data_through);
   const chartEnd =
     payload.data_through_precision === "day" ? payload.data_through : periodEnd(unit, chartPeriod);
+  // Only trailing periods: earlier empty ones already read as 0 to the client.
+  const fillThrough = (points: { start: string; value: number | null }[], from: number, lastStart: string) => {
+    if (kind !== "total") return;
+    for (let i = from + 1; i < points.length && points[i].start <= lastStart; i++) points[i].value = 0;
+  };
   for (const s of payload.series ?? []) {
     let last = -1;
     s.points.forEach((p, i) => {
@@ -522,13 +571,34 @@ function markEarlySeries(
     });
     if (last === -1) continue;
     const own = s.points[last].start;
-    const day = days?.[s.name];
-    if (day && day >= own && day <= periodEnd(unit, own) && day < chartEnd) {
-      s.data_through = day;
-      s.data_through_precision = "day";
-    } else if (own < chartPeriod) {
-      s.data_through = own;
-      s.data_through_precision = unit === "Day" ? "day" : "period";
+    const ownEnd = periodEnd(unit, own);
+    if (probed === undefined) {
+      // Not resources: the realm has data through the chart's end, so a
+      // count's empty periods up to there are 0.
+      fillThrough(s.points, last, chartPeriod);
+      continue;
     }
+    const day = probed?.days[s.name];
+    if (probed && day && day >= own) {
+      // The resource has data through `day`: empty periods up to it are 0.
+      fillThrough(s.points, last, periodStartOf(unit, day < chartEnd ? day : chartEnd));
+      if (day < chartEnd) {
+        s.data_through = day;
+        s.data_through_precision = "day";
+        s.data_through_source = "resource";
+      }
+      continue;
+    }
+    if (own >= chartPeriod) continue;
+    s.data_through = own;
+    s.data_through_precision = unit === "Day" ? "day" : "period";
+    // Absent from a probe that covers the end of its last period, the
+    // resource has had no data since; otherwise why it stops is unknown.
+    s.data_through_source = probed && !day && ownEnd >= dayBefore(probed.since) ? "resource" : "series";
   }
+}
+
+function dayBefore(s: string): string {
+  const { y, m, d } = parseDate(s);
+  return new Date(Date.UTC(y, m - 1, d - 1)).toISOString().slice(0, 10);
 }

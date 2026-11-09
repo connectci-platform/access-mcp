@@ -22,6 +22,7 @@ import {
   type ChartDataParams,
   type ChartInfo,
   type ChartPayload,
+  type ResourceDays,
 } from "./chart-payload.js";
 
 export { timeseriesPoints };
@@ -302,7 +303,7 @@ type DimensionItem = { id?: string; name?: string; short_name?: string };
 
 /** A filter value resolved to XDMoD ids, or nothing XDMoD has. */
 type FilterMatch =
-  | { ids: string[]; names: string[]; note: string }
+  | { ids: string[]; names: string[]; note: string; label: string }
   | { unmatched: true; dimension: string; value: string; closest: string[] };
 
 const normalizeName = (s: string) =>
@@ -375,6 +376,39 @@ function noMatchText(
   );
 }
 
+const DIMENSION_NOUNS: Record<string, string> = {
+  resource: "resources",
+  resource_type: "resource types",
+  fieldofscience: "fields of science",
+  parentscience: "parent sciences",
+  nsfdirectorate: "NSF directorates",
+  institution: "institutions",
+  provider: "service providers",
+  queue: "queues",
+  person: "users",
+  username: "users",
+  pi: "PIs",
+};
+
+const dimensionNoun = (dimension: string) => DIMENSION_NOUNS[dimension] ?? `${dimension} values`;
+
+const MAX_FILTER_LABEL = 60;
+
+/**
+ * "Expanse + 3 Bridges-2 resources, Genetics": each value's match, joined
+ * per dimension. Too long, a dimension becomes a count ("5 resources").
+ */
+function filterLabel(labels: { dimension: string; parts: string[]; ids: number }[]): string {
+  const full = labels.filter((l) => l.parts.length > 0);
+  const join = (byDimension: string[]) => byDimension.join(", ");
+  const long = join(full.map((l) => l.parts.join(" + ")));
+  if (long.length <= MAX_FILTER_LABEL) return long;
+  const short = join(
+    full.map((l) => (l.ids === 1 ? l.parts[0] : `${l.ids} ${dimensionNoun(l.dimension)}`))
+  );
+  return short.length <= MAX_FILTER_LABEL ? short : `${short.slice(0, MAX_FILTER_LABEL - 1).trimEnd()}…`;
+}
+
 /** Names the one series or bar of a group_by none chart. */
 function relabelWhole(chartInfo: ChartInfo, name: string, aggregate: boolean): ChartInfo {
   const store = chartInfo.hc_jsonstore;
@@ -404,11 +438,13 @@ export class XDMoDMetricsServer extends BaseAccessServer {
   private static readonly CHART_CACHE_MAX_ENTRIES = 100;
   private dimensionOrderCache = new Map<string, { names: string[]; complete: boolean; expires: number }>();
   private static readonly DIMENSION_ORDER_TTL = 1000 * 60 * 30; // 30 minutes
-  private latestDayCache = new Map<string, { day: string; expires: number }>();
+  private latestDayCache = new Map<string, { day: string | null; expires: number }>();
   private latestDayInFlight = new Map<string, Promise<string | null>>();
   private static readonly LATEST_DAY_TTL = 1000 * 60 * 60; // 1 hour
-  private resourceDaysCache = new Map<string, { days: Record<string, string>; expires: number }>();
-  private resourceDaysInFlight = new Map<string, Promise<Record<string, string> | null>>();
+  // A failed probe is remembered briefly, so a slow XDMoD isn't probed again per chart.
+  private static readonly PROBE_FAILURE_TTL = 1000 * 60 * 5; // 5 minutes
+  private resourceDaysCache = new Map<string, { days: ResourceDays | null; expires: number }>();
+  private resourceDaysInFlight = new Map<string, Promise<ResourceDays | null>>();
   // The probe only sharpens the payload, so it never holds up the answer for long.
   private probeTimeoutMs = 5000;
   // Grouped by resource, the probe takes 5 to 11 seconds, about as long as a chart.
@@ -505,27 +541,35 @@ export class XDMoDMetricsServer extends BaseAccessServer {
   private async resolveFilterId(realm: string, dimension: string, value: string): Promise<FilterMatch> {
     const list = await this.lookupDimension(realm, dimension);
     if (!list) {
-      return { ids: [value], names: [value], note: `${dimension} "${value}" (not checked against XDMoD's names)` };
+      return { ids: [value], names: [value], label: value, note: `${dimension} "${value}" (not checked against XDMoD's names)` };
     }
-    let { items, complete } = list;
+    const { items } = list;
+    let { complete } = list;
     if (/^\d+$/.test(value)) {
       const byId = items.find((i) => i.id === value);
-      if (byId) return { ids: [value], names: [byId.name ?? value], note: `${dimension} ${byId.name ?? value}` };
+      if (byId) {
+        const name = byId.name ?? value;
+        return { ids: [value], names: [name], label: name, note: `${dimension} ${name}` };
+      }
       // Past the first page, an id can't be searched for, so it's sent as given.
-      if (!complete) return { ids: [value], names: [`id ${value}`], note: `${dimension} id ${value}` };
+      if (!complete) {
+        return { ids: [value], names: [`id ${value}`], label: `${dimension} id ${value}`, note: `${dimension} id ${value}` };
+      }
     }
     let found = matchItems(items, value);
-    if (!found && !complete) {
+    // Past the first page, a partial match there may miss the exact name, so
+    // XDMoD is searched unless the first page already had it.
+    if (!found?.exact && !complete) {
       const searched = await this.lookupDimension(realm, dimension, value);
       if (searched) {
-        items = searched.items;
-        complete = true;
-        found = matchItems(items, value);
+        const better = matchItems(searched.items, value);
+        if (better) found = better;
+        if (!found) complete = true;
       }
     }
     if (!found) {
       if (!complete) {
-        return { ids: [value], names: [value], note: `${dimension} "${value}" (not checked against XDMoD's names)` };
+        return { ids: [value], names: [value], label: value, note: `${dimension} "${value}" (not checked against XDMoD's names)` };
       }
       return { unmatched: true, dimension, value, closest: closestNames(list.items, value) };
     }
@@ -533,7 +577,8 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     const ids = found.items.map((m) => m.id as string);
     // A partial name can include more than was asked for, such as DeltaAI for Delta.
     const note = found.exact ? `${dimension} ${names[0]}` : `${dimension} "${value}" included ${names.join(", ")}`;
-    return { ids, names, note };
+    const label = names.length === 1 ? names[0] : `${names.length} ${value} ${dimensionNoun(dimension)}`;
+    return { ids, names, note, label };
   }
 
   /**
@@ -546,17 +591,19 @@ export class XDMoDMetricsServer extends BaseAccessServer {
   ): Promise<{
     resolved: Record<string, string>;
     notes: string[];
-    names: string[];
+    /** A short name for what the filters leave, for a chart's one series or bar. */
+    label: string;
     unmatched: Extract<FilterMatch, { unmatched: true }>[];
   }> {
     const resolved: Record<string, string> = {};
     const notes: string[] = [];
-    const names: string[] = [];
+    const labels: { dimension: string; parts: string[]; ids: number }[] = [];
     const unmatched: Extract<FilterMatch, { unmatched: true }>[] = [];
     for (const [dimension, value] of Object.entries(filters)) {
       const values = (Array.isArray(value) ? value : [value]).map(String);
       const matches = await Promise.all(values.map((v) => this.resolveFilterId(realm, dimension, v)));
       const ids: string[] = [];
+      const parts: string[] = [];
       for (const m of matches) {
         if ("unmatched" in m) {
           unmatched.push(m);
@@ -564,12 +611,14 @@ export class XDMoDMetricsServer extends BaseAccessServer {
         }
         notes.push(m.note);
         ids.push(...m.ids);
-        for (const n of m.names) if (!names.includes(n)) names.push(n);
+        parts.push(m.label);
       }
       // Overlapping names (Delta and NCSA DELTA CPU) resolve to the same ids.
-      resolved[dimension] = [...new Set(ids)].join(",");
+      const unique = [...new Set(ids)];
+      resolved[dimension] = unique.join(",");
+      labels.push({ dimension, parts, ids: unique.length });
     }
-    return { resolved, notes, names, unmatched };
+    return { resolved, notes, label: filterLabel(labels), unmatched };
   }
 
   // Realms available for public (unauthenticated) queries.
@@ -1037,10 +1086,10 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       if (data.data && data.data.length > 0) {
         ({ chartInfo, hasMore, othersCount } = this.trimToLimit(data.data[0] as ChartInfo, params));
         // XDMoD names a group_by none chart "ACCESS" even when it is filtered.
-        if (params.group_by === "none" && filterMatch && filterMatch.names.length > 0) {
+        if (params.group_by === "none" && filterMatch?.label) {
           chartInfo = relabelWhole(
             chartInfo,
-            filterMatch.names.join(", "),
+            filterMatch.label,
             params.dataset_type === "aggregate"
           );
         }
@@ -1243,7 +1292,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     dimensionOrder: string[] | undefined;
     dimensionComplete: boolean | undefined;
     latestDataDay: string | null;
-    resourceDays: Record<string, string> | null;
+    resourceDays: ResourceDays | null;
   }): ChartPayload | undefined {
     const { params } = input;
     try {
@@ -1283,24 +1332,23 @@ export class XDMoDMetricsServer extends BaseAccessServer {
 
   /** One probe request, cut off after probeTimeoutMs. Null on any failure. */
   private async probeLatestDay(realm: string, statistic: string): Promise<string | null> {
-    const days = await this.probeDays(realm, statistic, "none", this.probeTimeoutMs);
+    const probed = await this.probeDays(realm, statistic, "none", this.probeTimeoutMs);
     let day: string | null = null;
-    for (const d of Object.values(days ?? {})) if (day === null || d > day) day = d;
-    if (day) {
-      this.latestDayCache.set(realm, {
-        day,
-        expires: Date.now() + XDMoDMetricsServer.LATEST_DAY_TTL,
-      });
-    }
+    for (const d of Object.values(probed?.days ?? {})) if (day === null || d > day) day = d;
+    this.latestDayCache.set(realm, {
+      day,
+      expires:
+        Date.now() + (day ? XDMoDMetricsServer.LATEST_DAY_TTL : XDMoDMetricsServer.PROBE_FAILURE_TTL),
+    });
     return day;
   }
 
   /**
    * The last day in the past 120 each resource has data in a realm, by name,
    * so a resource whose data stops early can be called out. Null when unknown;
-   * a failure is not cached.
+   * a failure is remembered for PROBE_FAILURE_TTL.
    */
-  private resourceDataDays(realm: string): Promise<Record<string, string> | null> {
+  private resourceDataDays(realm: string): Promise<ResourceDays | null> {
     const statistic = XDMoDMetricsServer.PROBE_STATISTICS[realm];
     if (!statistic) return Promise.resolve(null);
     const cached = this.resourceDaysCache.get(realm);
@@ -1308,28 +1356,27 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     const running = this.resourceDaysInFlight.get(realm);
     if (running) return running;
     const probe = this.probeDays(realm, statistic, "resource", this.resourceProbeTimeoutMs)
-      .then((days) => {
-        if (days && Object.keys(days).length > 0) {
-          this.resourceDaysCache.set(realm, {
-            days,
-            expires: Date.now() + XDMoDMetricsServer.LATEST_DAY_TTL,
-          });
-          return days;
-        }
-        return null;
+      .then((probed) => {
+        const days = probed && Object.keys(probed.days).length > 0 ? probed : null;
+        this.resourceDaysCache.set(realm, {
+          days,
+          expires:
+            Date.now() + (days ? XDMoDMetricsServer.LATEST_DAY_TTL : XDMoDMetricsServer.PROBE_FAILURE_TTL),
+        });
+        return days;
       })
       .finally(() => this.resourceDaysInFlight.delete(realm));
     this.resourceDaysInFlight.set(realm, probe);
     return probe;
   }
 
-  /** Each trace's last non-zero day over the past 120 days. Null on any failure. */
+  /** Each trace's last non-zero day over the past 120 days, from `since`. Null on any failure. */
   private async probeDays(
     realm: string,
     statistic: string,
     groupBy: string,
     timeoutMs: number
-  ): Promise<Record<string, string> | null> {
+  ): Promise<ResourceDays | null> {
     try {
       const end = new Date().toISOString().slice(0, 10);
       const start = new Date(Date.parse(end) - 119 * 86_400_000).toISOString().slice(0, 10);
@@ -1366,7 +1413,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
           if (p.value !== 0 && (days[name] === undefined || p.start > days[name])) days[name] = p.start;
         }
       }
-      return days;
+      return { since: start, days };
     } catch {
       return null;
     }
