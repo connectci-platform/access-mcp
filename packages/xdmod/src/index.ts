@@ -1020,7 +1020,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
               ? `XDMoD has ${othersCount} more not listed.\n\n`
               : "XDMoD has more not listed.\n\n";
         }
-        resultText += `Open this chart in XDMoD: ${
+        resultText += `Explore this measure in XDMoD (opens with XDMoD's default dates, not this chart's range or filters): ${
           chart?.link ?? portalChartUrl(params.realm, params.group_by, params.statistic)
         }`;
       } else {
@@ -1432,7 +1432,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       `- Realm: ${realm}\n` +
       `- Group By: ${groupBy}\n` +
       `- Statistic: ${statistic}\n\n` +
-      `You can use this URL to view the interactive chart directly in the XDMoD web interface. ` +
+      `You can use this URL to explore this measure in the XDMoD web interface. It opens with XDMoD's default dates, not a specific range, so set the dates in the portal. ` +
       `Use the portal's filtering options to narrow down to specific resources, users, or other criteria.`;
 
     return {

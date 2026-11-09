@@ -974,7 +974,7 @@ describe("XDMoDMetricsServer", () => {
         const text = result.content[0].text;
 
         expect(text).not.toContain("get_chart_link");
-        expect(text).toContain(`Open this chart in XDMoD: ${result.structuredContent!.chart.link}`);
+        expect(text).toContain(`Explore this measure in XDMoD (opens with XDMoD's default dates, not this chart's range or filters): ${result.structuredContent!.chart.link}`);
       });
 
       test("drops XDMoD's Others series and counts what it left out", async () => {
@@ -1358,6 +1358,8 @@ describe("XDMoDMetricsServer", () => {
       expect(text).toContain("realm=Jobs");
       expect(text).toContain("group_by=resource");
       expect(text).toContain("statistic=total_cpu_hours");
+      expect(text).toContain("opens with XDMoD's default dates");
+      expect(text).not.toContain("interactive chart directly");
     });
   });
 
