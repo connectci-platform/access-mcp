@@ -85,6 +85,8 @@ function getText(result: { content: any[] }): string {
 }
 
 // Import the server class (after mocks are in place)
+import type { ChartPayload } from "../chart-payload.js";
+
 const { XDMoDMetricsServer } = await import("../index.js");
 
 describe("XDMoDMetricsServer", () => {
@@ -816,9 +818,162 @@ describe("XDMoDMetricsServer", () => {
 
       const text = getText(result);
       expect(text).toContain("Wait Hours: Per Job by queue");
-      expect(text).toContain("1. gpuA100x4: avg 21.0000 (3 data points)");
-      expect(text).toContain("2. cpu: avg 9.5000 (3 data points)");
+      expect(text).toContain("1. gpuA100x4 (3 data points)");
+      expect(text).toContain("2. cpu (3 data points)");
       expect(text).not.toContain("gap connector");
+    });
+
+    describe("chart payload", () => {
+      const monthStarts = [1785556800000, 1788235200000, 1790827200000];
+      const trace = (name: string) => ({ name, x: monthStarts, y: [1, 2, 3] });
+      const respond = (traces: unknown[]) =>
+        mockResponse({ success: true, data: [{ description: "Core hours used", hc_jsonstore: { data: traces } }] });
+      const run = (extra: Record<string, unknown> = {}) =>
+        server["handleToolCall"]({
+          method: "tools/call",
+          params: {
+            name: "get_chart_data",
+            arguments: {
+              realm: "Jobs",
+              group_by: "resource",
+              statistic: "total_cpu_hours",
+              start_date: "2026-08-01",
+              end_date: "2026-10-31",
+              dataset_type: "timeseries",
+              aggregation_unit: "Month",
+              ...extra,
+            },
+          },
+        }) as Promise<{ content: { text: string }[]; structuredContent?: { chart: ChartPayload } }>;
+      const sentBody = (n = 0) => mockFetch.mock.calls[n][1].body as URLSearchParams;
+
+      beforeEach(() => {
+        mockFetch.mockReset();
+      });
+
+      test("returns the chart payload beside the text", async () => {
+        mockFetch.mockResolvedValueOnce(respond([trace("A")]));
+        const result = await run();
+        const chart = result.structuredContent!.chart;
+
+        expect(chart.version).toBe(1);
+        expect(chart.series).toHaveLength(1);
+        expect(chart.series![0].points.map((p: { start: string }) => p.start)).toEqual([
+          "2026-08-01",
+          "2026-09-01",
+          "2026-10-01",
+        ]);
+        expect(chart.measure.label).toBe("CPU Hours: Total");
+        expect(chart.measure.description).toBe("Core hours used");
+        expect(chart.link).toContain("https://xdmod.access-ci.org/index.php#tg_usage?");
+        expect(chart.link).toContain("statistic=total_cpu_hours");
+        expect(result.content[0].text).toMatch(/^Chart Data for/);
+      });
+
+      test("the text no longer prints a per-series avg", async () => {
+        mockFetch.mockResolvedValueOnce(respond([trace("A")]));
+        const text = (await run()).content[0].text;
+
+        expect(text).not.toMatch(/avg /);
+        expect(text).toContain("  - 2026-08-01: 1.0000");
+        expect(text).toContain("  - 2026-10-01: 3.0000");
+      });
+
+      test("asks XDMoD for one more series than the limit", async () => {
+        mockFetch.mockResolvedValueOnce(respond([trace("A"), trace("B"), trace("C"), trace("D")]));
+        const result = await run({ limit: 3 });
+
+        expect(sentBody().get("limit")).toBe("4");
+        expect(result.structuredContent!.chart.series!.map((s: { name: string }) => s.name)).toEqual(["A", "B", "C"]);
+        expect(result.structuredContent!.chart.has_more).toBe(true);
+        expect(result.content[0].text).toContain("- C (3 data points)");
+        expect(result.content[0].text).not.toContain("- D ");
+      });
+
+      test("has_more is false when no extra series came back", async () => {
+        mockFetch.mockResolvedValueOnce(respond([trace("A"), trace("B"), trace("C")]));
+        const result = await run({ limit: 3 });
+
+        expect(result.structuredContent!.chart.series).toHaveLength(3);
+        expect(result.structuredContent!.chart.has_more).toBe(false);
+      });
+
+      test("trims an aggregate list to the limit", async () => {
+        mockFetch.mockResolvedValueOnce(
+          respond([{ name: "m", x: ["a", "b", "c"], y: [3, 2, 1] }])
+        );
+        const result = await run({ dataset_type: "aggregate", group_by: "queue", limit: 2 });
+
+        expect(result.structuredContent!.chart.categories!.map((c: { name: string }) => c.name)).toEqual(["a", "b"]);
+        expect(result.structuredContent!.chart.has_more).toBe(true);
+        expect(result.content[0].text).not.toContain("- c:");
+      });
+
+      test("ordered dimensions keep XDMoD's bucket order, cached", async () => {
+        const lookup = () =>
+          mockResponse({
+            data: [
+              { id: "1", name: "1 Core" },
+              { id: "2", name: "2 - 4 Cores" },
+              { id: "3", name: "5 - 8 Cores" },
+            ],
+          });
+        const aggregate = () =>
+          respond([{ name: "m", x: ["5 - 8 Cores", "1 Core", "2 - 4 Cores"], y: [9, 5, 1] }]);
+        mockFetch
+          .mockResolvedValueOnce(aggregate())
+          .mockResolvedValueOnce(lookup())
+          .mockResolvedValueOnce(aggregate());
+        const args = { dataset_type: "aggregate", group_by: "jobsize" };
+
+        const first = await run(args);
+        expect(first.structuredContent!.chart.categories!.map((c: { name: string }) => c.name)).toEqual([
+          "1 Core",
+          "2 - 4 Cores",
+          "5 - 8 Cores",
+        ]);
+        expect(sentBody(1).get("dimension_id")).toBe("jobsize");
+
+        await run({ ...args, limit: 11 });
+        // Lookup once, then two chart requests.
+        expect(mockFetch).toHaveBeenCalledTimes(3);
+      });
+
+      test("no data gives no structuredContent", async () => {
+        mockFetch.mockResolvedValueOnce(mockResponse({ success: true, data: [] }));
+        const result = await run();
+
+        expect(result.structuredContent).toBeUndefined();
+        expect(result.content[0].text).toContain("No data available");
+      });
+
+      test("a failed call gives no structuredContent", async () => {
+        mockFetch.mockResolvedValueOnce(mockResponse(null, false, 500));
+
+        await expect(run()).rejects.toThrow();
+      });
+
+      test("keeps the text and warns when XDMoD's periods don't fit the grid", async () => {
+        const warn = vi.spyOn(server["logger"], "warn").mockImplementation(() => {});
+        mockFetch.mockResolvedValueOnce(
+          respond([{ name: "A", x: [1785556800000 + 86_400_000], y: [1] }])
+        );
+        const result = await run();
+
+        expect(result.structuredContent).toBeUndefined();
+        expect(result.content[0].text).toMatch(/^Chart Data for/);
+        expect(warn).toHaveBeenCalled();
+      });
+
+      test("the cached result keeps its structuredContent", async () => {
+        mockFetch.mockResolvedValue(respond([trace("A")]));
+        const first = await run();
+        const second = await run();
+
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+        expect(second.structuredContent).toEqual(first.structuredContent);
+        expect(second.structuredContent).toBeDefined();
+      });
     });
 
     describe("aggregation_unit and per-period values", () => {
@@ -850,18 +1005,26 @@ describe("XDMoDMetricsServer", () => {
 
         expect(sentBody().get("aggregation_unit")).toBe("Month");
         expect(text).toContain("(2026-08-01 to 2026-10-31, by month):");
-        expect(text).toContain("- NCSA DELTA GPU: avg 6295832.8250 (2 data points)");
+        expect(text).toContain("- NCSA DELTA GPU (2 data points)");
         expect(text).toContain("  - 2026-08-01: 5966498.9200\n  - 2026-10-01: 6625166.7300\n");
         expect(text).not.toContain("2026-09-01");
       });
 
-      test("leaves the unit to XDMoD when it is omitted", async () => {
-        mockFetch.mockResolvedValueOnce(timeseries([1, 2, 3]));
-        const text = getText(await chartData());
+      test("sends the resolved unit when it is omitted or Auto", async () => {
+        for (const extra of [{}, { aggregation_unit: "Auto" }]) {
+          mockFetch.mockResolvedValueOnce(timeseries([1, 2, 3]));
+          const text = getText(await chartData(extra));
 
-        expect(sentBody().has("aggregation_unit")).toBe(false);
-        expect(text).toContain("(2026-08-01 to 2026-10-31):");
-        expect(text).toContain("  - 2026-09-01: 2.0000");
+          expect(sentBody().get("aggregation_unit")).toBe("Day");
+          expect(text).toContain("(2026-08-01 to 2026-10-31, by day):");
+        }
+      });
+
+      test("resolves a year-long range to Month", async () => {
+        mockFetch.mockResolvedValueOnce(timeseries([1, 2, 3]));
+        await chartData({ start_date: "2026-01-01", end_date: "2026-12-31" });
+
+        expect(sentBody().get("aggregation_unit")).toBe("Month");
       });
 
       test("summarizes a series too long to list", async () => {
@@ -869,7 +1032,7 @@ describe("XDMoDMetricsServer", () => {
         mockFetch.mockResolvedValueOnce(timeseries(days.map(() => 1), days));
         const text = getText(await chartData({ aggregation_unit: "Day" }));
 
-        expect(text).toContain("- NCSA DELTA GPU: avg 1.0000 (61 data points)");
+        expect(text).toContain("- NCSA DELTA GPU (61 data points)");
         expect(text).not.toContain("  - 2026-08-01");
         expect(text).toContain("set aggregation_unit to Month");
       });
@@ -890,7 +1053,7 @@ describe("XDMoDMetricsServer", () => {
         const text = getText(await chartData({ aggregation_unit: "Day", limit: 6 }));
 
         expect(text.match(/^ {2}- /gm)).toHaveLength(300);
-        expect(text).toContain("- R5: avg 1.0000 (60 data points)");
+        expect(text).toContain("- R5 (60 data points)");
         expect(text).toContain("300 in all, are listed");
       });
 

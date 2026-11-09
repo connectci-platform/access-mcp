@@ -9,7 +9,15 @@ import {
   type ToolWithAccess,
 } from "@access-mcp/shared";
 import { createRequire } from "module";
-import { timeseriesPoints, type ChartDataParams } from "./chart-payload.js";
+import {
+  buildChartPayload,
+  effectiveUnit,
+  ORDERED_DIMENSIONS,
+  timeseriesPoints,
+  type ChartDataParams,
+  type ChartInfo,
+  type ChartPayload,
+} from "./chart-payload.js";
 
 export { timeseriesPoints };
 const require = createRequire(import.meta.url);
@@ -247,12 +255,26 @@ interface MenuEntry {
   [key: string]: unknown;
 }
 
-type ChartResult = { content: { type: "text"; text: string }[] };
+type ChartResult = {
+  content: { type: "text"; text: string }[];
+  structuredContent?: { chart: ChartPayload };
+};
 
 // Per series, enough for ten years of quarters or five of months, so a year of
 // days is summarized. The total keeps a high limit from listing every series.
 const MAX_SERIES_POINTS = 60;
 const MAX_LISTED_POINTS = 300;
+
+// The portal's hash picks a statistic node only; its Usage tab reads no dates from it.
+function portalChartUrl(realm: string, groupBy: string, statistic: string): string {
+  const urlParams = new URLSearchParams({
+    node: "statistic",
+    realm,
+    group_by: groupBy,
+    statistic,
+  });
+  return `https://xdmod.access-ci.org/index.php#tg_usage?${urlParams.toString()}`;
+}
 
 export class XDMoDMetricsServer extends BaseAccessServer {
   private menuCache: { data: MenuEntry[]; timestamp: number } | null = null;
@@ -260,6 +282,8 @@ export class XDMoDMetricsServer extends BaseAccessServer {
   private chartCache = new Map<string, { result: ChartResult; expires: number }>();
   private static readonly CHART_CACHE_TTL = 1000 * 60 * 60; // 1 hour
   private static readonly CHART_CACHE_MAX_ENTRIES = 100;
+  private dimensionOrderCache = new Map<string, { names: string[]; expires: number }>();
+  private static readonly DIMENSION_ORDER_TTL = 1000 * 60 * 30; // 30 minutes
 
   constructor() {
     super("xdmod", version, "https://xdmod.access-ci.org");
@@ -818,10 +842,17 @@ export class XDMoDMetricsServer extends BaseAccessServer {
 
       if (params.display_type) urlParams.append("display_type", params.display_type);
       if (params.combine_type) urlParams.append("combine_type", params.combine_type);
-      if (params.limit !== undefined) urlParams.append("limit", params.limit.toString());
+      // One more than asked for tells us whether the list was cut short.
+      if (params.limit !== undefined) urlParams.append("limit", (params.limit + 1).toString());
       if (params.offset !== undefined) urlParams.append("offset", params.offset.toString());
       if (params.log_scale) urlParams.append("log_scale", params.log_scale);
-      if (params.aggregation_unit) urlParams.append("aggregation_unit", params.aggregation_unit);
+      // Sending the resolved unit keeps the periods XDMoD returns on the grid the payload uses.
+      const unit =
+        params.dataset_type === "timeseries"
+          ? effectiveUnit(params.aggregation_unit, params.start_date, params.end_date)
+          : undefined;
+      const sentUnit = unit ?? params.aggregation_unit;
+      if (sentUnit) urlParams.append("aggregation_unit", sentUnit);
 
       if (resolvedFilters) {
         for (const [key, value] of Object.entries(resolvedFilters)) {
@@ -850,8 +881,10 @@ export class XDMoDMetricsServer extends BaseAccessServer {
         resultText += `**Filters matched:** ${matchNotes.join("; ")}\n\n`;
       }
 
+      let chartInfo: ChartInfo | undefined;
+      let hasMore = false;
       if (data.data && data.data.length > 0) {
-        const chartInfo = data.data[0];
+        ({ chartInfo, hasMore } = this.trimToLimit(data.data[0] as ChartInfo, params));
 
         if (chartInfo.group_description) {
           resultText += `**Group Description:**\n${chartInfo.group_description}\n\n`;
@@ -870,7 +903,11 @@ export class XDMoDMetricsServer extends BaseAccessServer {
         // Aggregate grouped data has one trace with x=categories, y=values.
         // Timeseries grouped data has one trace per category with y=values over time.
         const hcData = chartInfo.hc_jsonstore?.data;
-        const chartTitle = chartInfo.hc_jsonstore?.layout?.annotations?.find(
+        const chartTitle = (
+          chartInfo.hc_jsonstore as
+            | { layout?: { annotations?: { name?: string; text?: string }[] } }
+            | undefined
+        )?.layout?.annotations?.find(
           (a: { name?: string }) => a.name === "title"
         )?.text || params.statistic;
 
@@ -889,18 +926,15 @@ export class XDMoDMetricsServer extends BaseAccessServer {
             }
             resultText += "\n";
           } else if (params.dataset_type === "timeseries") {
-            const unit = params.aggregation_unit && params.aggregation_unit !== "Auto"
-              ? `, by ${params.aggregation_unit.toLowerCase()}`
-              : "";
-            resultText += `**${chartTitle} by ${params.group_by} (${params.start_date} to ${params.end_date}${unit}):**\n`;
+            const unitText = unit ? `, by ${unit.toLowerCase()}` : "";
+            resultText += `**${chartTitle} by ${params.group_by} (${params.start_date} to ${params.end_date}${unitText}):**\n`;
             let listed = 0;
             let summarized = false;
             for (const series of hcData) {
               if (series.name && !series.name.toLowerCase().includes("gap connector")) {
                 const points = timeseriesPoints(series);
                 if (points.length === 0) continue;
-                const avg = points.reduce((sum, p) => sum + p.value, 0) / points.length;
-                resultText += `- ${series.name}: avg ${avg.toFixed(4)} (${points.length} data points)\n`;
+                resultText += `- ${series.name} (${points.length} data points)\n`;
                 if (points.length <= MAX_SERIES_POINTS && listed + points.length <= MAX_LISTED_POINTS) {
                   for (const p of points) resultText += `  - ${p.start}: ${p.value.toFixed(4)}\n`;
                   listed += points.length;
@@ -937,6 +971,10 @@ export class XDMoDMetricsServer extends BaseAccessServer {
         ],
       };
       const today = new Date().toISOString().slice(0, 10);
+      if (chartInfo) {
+        const chart = await this.chartPayload(params, chartInfo, matchNotes, hasMore, today);
+        if (chart) result.structuredContent = { chart };
+      }
       if (data.data?.length > 0 && params.end_date < today) {
         this.cacheChart(cacheKey, result);
       }
@@ -945,6 +983,102 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       throw new Error(
         `Failed to fetch chart data: ${error instanceof Error ? error.message : String(error)}`
       );
+    }
+  }
+
+  /**
+   * XDMoD was asked for one series more than the limit. Drops the extra one
+   * and says whether there was one.
+   */
+  private trimToLimit(
+    chartInfo: ChartInfo,
+    params: ChartDataParams
+  ): { chartInfo: ChartInfo; hasMore: boolean } {
+    const limit = params.limit;
+    const store = chartInfo.hc_jsonstore;
+    const traces = store?.data;
+    if (limit === undefined || !store || !traces) return { chartInfo, hasMore: false };
+
+    if (params.dataset_type === "timeseries") {
+      const real = traces.filter(
+        (t) => t.name && !t.name.toLowerCase().includes("gap connector")
+      );
+      if (real.length <= limit) return { chartInfo, hasMore: false };
+      const kept = real.slice(0, limit);
+      return { chartInfo: { ...chartInfo, hc_jsonstore: { ...store, data: kept } }, hasMore: true };
+    }
+
+    const trace = traces[0];
+    if (!trace?.x || trace.x.length <= limit) return { chartInfo, hasMore: false };
+    const cut = { ...trace, x: trace.x.slice(0, limit), y: (trace.y ?? []).slice(0, limit) };
+    return {
+      chartInfo: { ...chartInfo, hc_jsonstore: { ...store, data: [cut, ...traces.slice(1)] } },
+      hasMore: true,
+    };
+  }
+
+  /** The structured chart, or undefined (with a warning) when XDMoD's data doesn't fit it. */
+  private async chartPayload(
+    params: ChartDataParams,
+    chartInfo: ChartInfo,
+    matchNotes: string[],
+    hasMore: boolean,
+    today: string
+  ): Promise<ChartPayload | undefined> {
+    try {
+      const dimensionOrder = ORDERED_DIMENSIONS.has(params.group_by)
+        ? await this.dimensionOrder(params.realm, params.group_by)
+        : undefined;
+      return buildChartPayload({
+        params,
+        chartInfo,
+        matchNotes,
+        label: REALM_STATISTICS[params.realm]?.statistics[params.statistic] ?? params.statistic,
+        today,
+        hasMore,
+        dimensionOrder,
+        link: portalChartUrl(params.realm, params.group_by, params.statistic),
+      });
+    } catch (error) {
+      this.logger.warn("Could not build chart payload", {
+        realm: params.realm,
+        statistic: params.statistic,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
+  /** XDMoD's own order of a dimension's values, cached. Undefined when the lookup fails. */
+  private async dimensionOrder(realm: string, dimension: string): Promise<string[] | undefined> {
+    const key = `${realm}/${dimension}`;
+    const cached = this.dimensionOrderCache.get(key);
+    if (cached && cached.expires > Date.now()) return cached.names;
+    try {
+      const response = await fetch(`${this.baseURL}/controllers/metric_explorer.php`, {
+        method: "POST",
+        headers: this.getHeaders(),
+        body: new URLSearchParams({
+          operation: "get_dimension",
+          public_user: "true",
+          realm,
+          dimension_id: dimension,
+          start: "0",
+          limit: "200",
+        }),
+      });
+      if (!response.ok) return undefined;
+      const json = await response.json().catch(() => null);
+      const items: { id?: string; name?: string; short_name?: string }[] = json?.data ?? [];
+      const names = items.map((i) => i.name || i.short_name || i.id || "").filter(Boolean);
+      if (names.length === 0) return undefined;
+      this.dimensionOrderCache.set(key, {
+        names,
+        expires: Date.now() + XDMoDMetricsServer.DIMENSION_ORDER_TTL,
+      });
+      return names;
+    } catch {
+      return undefined;
     }
   }
 
@@ -1140,15 +1274,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
   }
 
   private async getChartLink(realm: string, groupBy: string, statistic: string) {
-    // Construct the URL parameters for XDMoD portal
-    const urlParams = new URLSearchParams({
-      node: "statistic",
-      realm: realm,
-      group_by: groupBy,
-      statistic: statistic,
-    });
-
-    const chartUrl = `https://xdmod.access-ci.org/index.php#tg_usage?${urlParams.toString()}`;
+    const chartUrl = portalChartUrl(realm, groupBy, statistic);
 
     const responseText =
       `Direct link to view chart in XDMoD portal:\n\n${chartUrl}\n\n` +
