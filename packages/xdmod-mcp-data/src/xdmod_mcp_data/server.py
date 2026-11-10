@@ -14,7 +14,7 @@ import sys
 import time
 from urllib.parse import urlparse
 from typing import Any, Callable, Dict, List, Optional
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import requests
@@ -24,7 +24,8 @@ from mcp.types import TextContent, Tool, ToolAnnotations
 # Every tool here only reads XDMoD. Clients such as the ACCESS agent use the
 # hint to tell reads from changes, so each tool carries it explicitly.
 _READS_ONLY = ToolAnnotations(readOnlyHint=True)
-from .base_server import BaseAccessServer
+from .base_server import BaseAccessServer, ToolResult, include_structured_content
+from .raw_table import RawQuery, raw_data_result
 
 # xdmod-data sends its requests with no timeout and offers no way to set one,
 # so this deadline is what bounds how long a tool call waits on XDMoD. The
@@ -157,7 +158,7 @@ class XDMoDPythonServer(BaseAccessServer):
                 Tool(
                     name="get_raw_data",
                     annotations=_READS_ONLY,
-                    description="Extract actual XDMoD metrics data with filtering. This is the PRIMARY data extraction tool. Use filters parameter with values discovered via get_smart_filters() or use configuration from get_analysis_template(). Supports timeseries/aggregate modes and progress tracking for large datasets.",
+                    description="Extract actual XDMoD metrics data with filtering. This is the PRIMARY data extraction tool. Use filters parameter with values discovered via get_smart_filters() or use configuration from get_analysis_template(). Supports timeseries/aggregate modes. Returns a summary (row count, columns, totals, first rows); for the ACCESS assistant the full table, up to 50,000 rows, is attached for the user to view and download, so there is no need to page through it.",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -619,11 +620,11 @@ class XDMoDPythonServer(BaseAccessServer):
             
             # Call get_raw_data with the exact matched name (should pass validation)
             result_content = await self._get_raw_data(raw_data_args)
-            raw_result = result_content[0].text
+            raw_result = result_content.content[0].text
             
             # Extract and reformat results
-            if "**Results Summary:**" in raw_result:
-                results_start = raw_result.find("**Results Summary:**")
+            if "**Results:**" in raw_result:
+                results_start = raw_result.find("**Results:**")
                 result += raw_result[results_start:]
             else:
                 result += raw_result
@@ -1194,7 +1195,7 @@ class XDMoDPythonServer(BaseAccessServer):
         except ValueError as e:
             return f"❌ **Date Format Error**: Invalid date format. Use YYYY-MM-DD format. Error: {str(e)}"
 
-    async def _get_raw_data(self, args: Dict[str, Any]) -> List[TextContent]:
+    async def _get_raw_data(self, args: Dict[str, Any]) -> ToolResult:
         """Get raw data from XDMoD with complex filtering and progress tracking"""
         
         realm = args.get("realm", "Jobs")
@@ -1206,11 +1207,12 @@ class XDMoDPythonServer(BaseAccessServer):
         aggregation_unit = args.get("aggregation_unit", "Auto")
         dataset_type = args.get("dataset_type", "timeseries")
         show_progress = args.get("show_progress", False)
-        
+        structured: Optional[Dict[str, Any]] = None
+
         # Validate date range first
         date_error = self._validate_date_range(start_date, end_date)
         if date_error:
-            return [TextContent(type="text", text=date_error)]
+            return ToolResult(content=[TextContent(type="text", text=date_error)])
         
         # Check for common dimension name mistakes
         if dimension:
@@ -1227,7 +1229,7 @@ class XDMoDPythonServer(BaseAccessServer):
                 dimension = corrected
         
         if not self.api_token:
-            return [TextContent(type="text", text="❌ No API token configured")]
+            return ToolResult(content=[TextContent(type="text", text="❌ No API token configured")])
         
         try:
             from xdmod_data.warehouse import DataWarehouse
@@ -1387,7 +1389,7 @@ class XDMoDPythonServer(BaseAccessServer):
                     refusal += "\nUse get_smart_filters() to find the exact names, then try again.\n"
                     if realm == "SUPREMM":
                         refusal += "Some users exist in the Jobs realm but not SUPREMM, so try realm='Jobs' for broader user coverage.\n"
-                    return [TextContent(type="text", text=refusal)]
+                    return ToolResult(content=[TextContent(type="text", text=refusal)])
                 
                 # Display filter warnings with cross-realm suggestions
                 if filter_warnings:
@@ -1438,129 +1440,30 @@ class XDMoDPythonServer(BaseAccessServer):
                         elapsed = time.time() - start_time
                         result += f"✅ Query completed in {elapsed:.2f} seconds\n\n"
                     
-                    # Process and format results based on type
+                    # The full table goes to the user as structuredContent;
+                    # the model gets only a summary of it.
                     if data is not None and not data.empty:
-                        
-                        # Check if we need pagination based on data size
-                        limit_param = args.get("limit", None)
-                        show_full_data = True
-                        data_for_display = data
-                        
-                        if isinstance(data, pd.DataFrame) and len(data) > 50:
-                            # Large timeseries - apply pagination
-                            if limit_param is None:
-                                limit_param = 20  # Default limit for large datasets
-                                show_full_data = False
-                            data_for_display = data.head(limit_param)
-                        elif isinstance(data, pd.Series) and len(data) > 100:
-                            # Large aggregate data - apply pagination  
-                            if limit_param is None:
-                                limit_param = 50  # Default limit for large aggregate data
-                                show_full_data = False
-                            data_for_display = data.head(limit_param)
-                        elif isinstance(data, pd.Series):
-                            # Small Series - apply limit if specified
-                            if limit_param is not None:
-                                data_for_display = data.head(limit_param)
-                        
-                        result += f"**Results Summary:**\n"
-                        
-                        if isinstance(data, pd.DataFrame):
-                            # Timeseries data
-                            result += f"• Total data points: {len(data)}\n"
-                            if not show_full_data:
-                                result += f"• Showing first {len(data_for_display)} rows (use limit parameter to see more)\n"
-                            result += f"• Time range: {data.index[0]} to {data.index[-1]}\n" if not data.empty else ""
-                            result += f"• Columns: {', '.join(data.columns)}\n"
-                            
-                            # Statistical summary (always based on full data)
-                            result += f"\n**Statistical Summary (full dataset):**\n"
-                            numeric_cols = data.select_dtypes(include=['number']).columns
-                            for col in numeric_cols[:3]:  # Limit to first 3 columns for readability
-                                result += f"• {col}:\n"
-                                result += f"  - Total: {data[col].sum():,.2f}\n"
-                                result += f"  - Mean: {data[col].mean():,.2f}\n"
-                                result += f"  - Min: {data[col].min():,.2f}\n"
-                                result += f"  - Max: {data[col].max():,.2f}\n"
-                            if len(numeric_cols) > 3:
-                                result += f"  ... and {len(numeric_cols) - 3} more columns\n"
-                            
-                            # Show sample data (paginated)
-                            sample_rows = min(10, len(data_for_display))
-                            result += f"\n**Sample Data (first {sample_rows} rows):**\n"
-                            result += "```\n"
-                            
-                            # Use more concise formatting
-                            # Note: XDMoD uses nullable Float64Dtype, which requires lambda for float_format
-                            if isinstance(data_for_display, pd.DataFrame):
-                                if len(data_for_display.columns) > 4:
-                                    # Too many columns - show subset
-                                    display_cols = list(data_for_display.columns[:4])
-                                    subset_df = data_for_display[display_cols]
-                                    sample_df = subset_df.head(sample_rows)
-                                    # Use lambda for float formatting to handle nullable Float64Dtype
-                                    display_text = sample_df.to_string(max_colwidth=15, float_format=lambda x: f'{x:.1f}')
-                                    result += display_text
-                                    result += f"\n... and {len(data_for_display.columns) - 4} more columns"
-                                else:
-                                    sample_df = data_for_display.head(sample_rows)
-                                    # Use lambda for float formatting to handle nullable Float64Dtype
-                                    display_text = sample_df.to_string(max_colwidth=20, float_format=lambda x: f'{x:.2f}')
-                                    result += display_text
-                            elif isinstance(data_for_display, pd.Series):
-                                # For Series, just show the values
-                                sample_series = data_for_display.head(sample_rows)
-                                # Use lambda for float formatting to handle nullable Float64Dtype
-                                display_text = sample_series.to_string(float_format=lambda x: f'{x:.2f}')
-                                result += display_text
-                                
-                            result += "\n```\n"
-                            
-                            if not show_full_data:
-                                remaining = len(data) - len(data_for_display)
-                                result += f"\n💡 **{remaining:,} more rows available** - use `limit: {len(data)}` to see all data\n"
-                            
-                        elif isinstance(data, pd.Series):
-                            # Aggregate data 
-                            result += f"• Total entries: {len(data)}\n"
-                            if not show_full_data:
-                                result += f"• Showing top {len(data_for_display)} entries (use limit parameter to see more)\n"
-                            result += f"• Type: Aggregate totals\n"
-                            if data.index.name:
-                                result += f"• Grouped by: {data.index.name}\n"
-                            
-                            result += f"\n**Statistical Summary:**\n"
-                            result += f"• Total: {data.sum():,.2f}\n"
-                            result += f"• Mean: {data.mean():,.2f}\n"
-                            result += f"• Min: {data.min():,.2f}\n"
-                            result += f"• Max: {data.max():,.2f}\n"
-                            
-                            # Show entries - adaptive limit for aggregate data
-                            if len(data) <= 50:
-                                # Show all entries if reasonable number
-                                result += f"\n**All {len(data)} entries (sorted by value):**\n"
-                                result += "```\n"
-                                display_data = data.nlargest(len(data))
-                                for idx, value in display_data.items():
-                                    result += f"{str(idx):<40} {value:>15,.2f}\n"
-                                result += "```\n"
-                            else:
-                                # Show top 30 for larger datasets
-                                result += f"\n**Top 30 of {len(data)} entries:**\n"
-                                result += "```\n"
-                                top_data = data.nlargest(30)
-                                for idx, value in top_data.items():
-                                    result += f"{str(idx):<40} {value:>15,.2f}\n"
-                                result += f"\n... and {len(data) - 30} more entries\n"
-                                result += "```\n"
-                        
-                        # Export format suggestion based on type
-                        if isinstance(data, pd.DataFrame):
-                            result += f"\n💡 **Tip:** Showing {len(data)} time points. "
-                            result += "Try 'aggregation_unit' of Day, Month, Quarter, or Year to adjust granularity.\n"
-                        else:
-                            result += f"\n💡 **Tip:** Showing aggregate totals for {len(data)} entries. "
-                            result += "Use dataset_type='timeseries' to see how values change over time.\n"
+                        query = RawQuery(
+                            realm=realm,
+                            metric=metric,
+                            dimension=kwargs.get("dimension"),
+                            dataset_type=dataset_type,
+                            aggregation_unit=aggregation_unit,
+                            start_date=start_date,
+                            end_date=end_date,
+                            filters=processed_filters,
+                        )
+                        metric_label = None
+                        if isinstance(data, pd.DataFrame) and data.columns.name != "Metric":
+                            metric_label = await self._metric_label(dw, realm, metric)
+                        summary, structured = raw_data_result(
+                            data,
+                            query,
+                            attach=include_structured_content(),
+                            retrieved=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                            metric_label=metric_label,
+                        )
+                        result += summary
                     else:
                         result += "⚠️ No data found for the specified parameters.\n"
                         result += "Try adjusting the date range, filters, or dimension.\n"
@@ -1617,10 +1520,21 @@ class XDMoDPythonServer(BaseAccessServer):
                     
         except ImportError:
             result = "❌ XDMoD data framework not installed. Please install: pip install xdmod-data"
+            structured = None
         except Exception as e:
             result = f"❌ Error: {caller_safe_error(e)}"
-            
-        return [TextContent(type="text", text=result)]
+            structured = None
+
+        return ToolResult(content=[TextContent(type="text", text=result)], structured=structured)
+
+    async def _metric_label(self, dw: Any, realm: str, metric: str) -> Optional[str]:
+        """The metric's readable name, for a grouped timeseries whose frame
+        doesn't carry it, or None to fall back to the metric id."""
+        try:
+            metrics = await self._xdmod_call(dw.describe_metrics, realm)
+            return str(metrics.loc[metric, "label"])
+        except Exception:
+            return None
 
     async def _describe_raw_fields(self, args: Dict[str, Any]) -> List[TextContent]:
         """Discover available fields and dimensions for a realm"""

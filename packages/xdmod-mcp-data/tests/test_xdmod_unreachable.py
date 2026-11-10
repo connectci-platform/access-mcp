@@ -104,4 +104,6 @@ async def test_per_item_loops_stop_after_first_timeout(handler, args):
         result = await getattr(server, handler)(args)
 
     assert CountingHangingWarehouse.calls == 1
-    assert "did not respond within 0.1s" in result[0].text
+    # get_raw_data returns a ToolResult, the others a list of TextContent.
+    content = getattr(result, "content", result)
+    assert "did not respond within 0.1s" in content[0].text
