@@ -810,6 +810,130 @@ describe("XDMoDMetricsServer", () => {
         expect(textOf(result)).toContain('No resource matched "Frontera"');
         expect(mockFetch).toHaveBeenCalledTimes(1);
       });
+
+      describe("against XDMoD's own names (D8-3059)", () => {
+        // XDMoD's Jobs realm names, from public xdmod.access-ci.org on 2026-11-09.
+        const RESOURCES = [
+          "Bridges 2 EM", "Bridges 2 GPU", "Bridges 2 RM", "Bridges2 GPU AI", "Expanse",
+          "Expanse GPU", "JHU Rockfish A100", "JHU Rockfish LM", "JHU Rockfish RM", "KyRIC",
+          "NCSA DELTA CPU", "NCSA DELTA GPU", "NCSA DeltaAI", "OSG", "PSC BRIDGES",
+          "PSC BRIDGES AI", "PSC BRIDGES GPU", "PSC Neocortex", "Purdue Anvil AI",
+          "Purdue Anvil CPU", "Purdue Anvil GPU", "SDSC COMET", "SDSC COMET GPU",
+          "STAMPEDE2 TACC", "TACC STAMPEDE", "TACC STAMPEDE3", "Texas A&M U ACES",
+        ];
+        const FIELDS = [
+          "Analytical and Materials Chemistry", "Biochemistry and Molecular Biology",
+          "Chemical Engineering", "Geophysics and Geochemistry", "Inorganic and Nuclear Chemistry",
+          "Organic Chemistry", "Other Chemical Sciences", "Physical Chemistry", "Genetics",
+        ];
+        const QUEUES = ["ai", "EM", "GPU-AI", "RM", "RM-512", "RM-SHARED", "gpuA100x4", "normal"];
+
+        const resolve = async (names: string[], value: string, dimensionId = "resource") => {
+          mockFetch.mockResolvedValueOnce(dimension(names));
+          const match = await server["resolveFilterId"]("Jobs", dimensionId, value);
+          if ("unmatched" in match) return { names: [] as string[], note: "unmatched" };
+          return { names: match.names, note: match.note };
+        };
+
+        test("a field of science matches whole words, not words that contain it", async () => {
+          const { names, note } = await resolve(FIELDS, "chemistry", "fieldofscience");
+          expect(names).toEqual([
+            "Analytical and Materials Chemistry",
+            "Inorganic and Nuclear Chemistry",
+            "Organic Chemistry",
+            "Physical Chemistry",
+          ]);
+          expect(note).toContain('fieldofscience "chemistry" included');
+        });
+
+        test("an exact name, ignoring case and punctuation, is that one name", async () => {
+          expect((await resolve(RESOURCES, "bridges-2 rm")).names).toEqual(["Bridges 2 RM"]);
+          expect((await resolve(FIELDS, "Organic Chemistry", "fieldofscience")).names).toEqual([
+            "Organic Chemistry",
+          ]);
+          expect((await resolve(RESOURCES, "Expanse")).note).toBe("resource Expanse");
+        });
+
+        test("a family name matches every resource in the family", async () => {
+          const bridges = ["Bridges 2 EM", "Bridges 2 GPU", "Bridges 2 RM", "Bridges2 GPU AI"];
+          expect((await resolve(RESOURCES, "bridges2")).names).toEqual(bridges);
+          expect((await resolve(RESOURCES, "Bridges-2")).names).toEqual(bridges);
+          expect((await resolve(RESOURCES, "Delta")).names).toEqual([
+            "NCSA DELTA CPU",
+            "NCSA DELTA GPU",
+            "NCSA DeltaAI",
+          ]);
+          expect((await resolve(RESOURCES, "Anvil")).names).toEqual([
+            "Purdue Anvil AI",
+            "Purdue Anvil CPU",
+            "Purdue Anvil GPU",
+          ]);
+          expect((await resolve(RESOURCES, "Stampede3")).names).toEqual(["TACC STAMPEDE3"]);
+        });
+
+        test("a site name XDMoD's names don't carry is set aside", async () => {
+          expect((await resolve(RESOURCES, "SDSC Expanse")).names).toEqual(["Expanse", "Expanse GPU"]);
+          expect((await resolve(RESOURCES, "PSC Bridges-2")).names).toEqual([
+            "Bridges 2 EM",
+            "Bridges 2 GPU",
+            "Bridges 2 RM",
+            "Bridges2 GPU AI",
+          ]);
+          expect((await resolve(RESOURCES, "Texas A&M ACES")).names).toEqual(["Texas A&M U ACES"]);
+          // A site name XDMoD does carry still narrows the match.
+          expect((await resolve(RESOURCES, "NCSA Delta")).names).toHaveLength(3);
+        });
+
+        test("a short value matches an exact name or a whole word, never part of a word", async () => {
+          expect((await resolve(QUEUES, "RM", "queue")).names).toEqual(["RM"]);
+          expect((await resolve(QUEUES, "ai", "queue")).names).toEqual(["ai"]);
+          expect((await resolve(QUEUES, "EM", "queue")).names).toEqual(["EM"]);
+          expect((await resolve(RESOURCES, "RM")).names).toEqual([
+            "Bridges 2 RM",
+            "JHU Rockfish RM",
+          ]);
+          // "em" is inside other names but is no word of any resource's name.
+          expect((await resolve(RESOURCES.filter((n) => n !== "Bridges 2 EM"), "EM")).note).toBe(
+            "unmatched"
+          );
+        });
+
+        test("a value found only inside other names is noted as needing confirmation", async () => {
+          const { names, note } = await resolve(FIELDS, "chem", "fieldofscience");
+          expect(names).toContain("Biochemistry and Molecular Biology");
+          expect(names).toContain("Chemical Engineering");
+          expect(note).toContain('fieldofscience "chem" matched only as part of other names:');
+          expect(note).toContain("confirm with the person");
+        });
+
+        test("the confirmation note reaches the chart's Filtered to line", async () => {
+          mockFetch
+            .mockResolvedValueOnce(dimension(["Biochemistry and Molecular Biology", "Genetics"]))
+            .mockResolvedValueOnce(chart);
+
+          const result = await server["handleToolCall"]({
+            method: "tools/call",
+            params: {
+              name: "get_chart_data",
+              arguments: {
+                realm: "Jobs",
+                group_by: "none",
+                statistic: "total_cpu_hours",
+                start_date: "2026-01-01",
+                end_date: "2026-01-31",
+                dataset_type: "aggregate",
+                filters: { fieldofscience: "biochem" },
+              },
+            },
+          });
+
+          expect(textOf(result)).toContain(
+            '**Filtered to:** fieldofscience "biochem" matched only as part of other names: ' +
+              "Biochemistry and Molecular Biology."
+          );
+          expect(payload(result)!.filters.notes[0]).toContain("confirm with the person");
+        });
+      });
     });
 
     describe("caching", () => {

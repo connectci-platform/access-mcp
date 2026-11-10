@@ -335,29 +335,96 @@ function closestNames(items: DimensionItem[], value: string): string[] {
     .map(({ name }) => name);
 }
 
-/** Exact name first, then every name containing the value or contained in it. */
+/**
+ * A name's words, splitting where XDMoD runs them together: "NCSA DeltaAI" ->
+ * ncsa delta ai, "Bridges2 GPU AI" -> bridges 2 gpu ai, "Texas A&M U" -> texas a m u.
+ */
+function nameWords(s: string): string[] {
+  return s
+    .replace(/(?<=[a-z])(?=[A-Z])|(?<=[a-zA-Z])(?=\d)|(?<=\d)(?=[a-zA-Z])/g, " ")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
+
+/** Case, spacing and punctuation dropped: "Bridges-2 RM" -> bridges2rm. */
+const squashName = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/**
+ * Site names a person may put before or after a resource's own name, as in
+ * "SDSC Expanse" or "PSC Bridges-2", which XDMoD's name may not carry.
+ */
+const SITE_WORDS: string[][] = [
+  "anl", "caltech", "cct", "gatech", "iacs", "iu", "jhu", "loni", "lsu", "ncar", "ncsa", "nics",
+  "ornl", "psc", "purdue", "sdsc", "stanford", "tacc", "tamu", "ud",
+].map((w) => [w]).concat([["texas", "a", "m", "u"], ["texas", "a", "m"]]);
+
+function withoutSiteWords(words: string[]): string[] {
+  let rest = words;
+  for (const site of SITE_WORDS) {
+    const kept: string[] = [];
+    for (let i = 0; i < rest.length; i++) {
+      if (site.every((w, j) => rest[i + j] === w)) i += site.length - 1;
+      else kept.push(rest[i]);
+    }
+    rest = kept;
+  }
+  return rest;
+}
+
+const hasWordRun = (words: string[], run: string[]) =>
+  run.length > 0 &&
+  words.some((_, i) => run.every((w, j) => words[i + j] === w));
+
+/** How a filter value matched XDMoD's names, best first. */
+type MatchKind = "exact" | "word" | "substring";
+
+/**
+ * The names a filter value means, trying each rule only when the one before
+ * matched nothing:
+ * - exact: the name, ignoring case, spacing and punctuation ("bridges 2 rm").
+ * - word: names containing the value's words in order, so "chemistry" is
+ *   Organic Chemistry but not Biochemistry, and "Bridges-2" or "Delta" is the
+ *   whole family (Bridges 2 RM, GPU, EM and Bridges2 GPU AI; NCSA DELTA CPU,
+ *   GPU and DeltaAI). A site name XDMoD's names don't carry, as in
+ *   "SDSC Expanse", is set aside if the value matches nothing with it.
+ * - substring: names containing the value, or contained in it, letter for
+ *   letter. Values under 3 letters never match this way, and the note asks
+ *   for the match to be confirmed.
+ */
 function matchItems(
   items: DimensionItem[],
   value: string
-): { items: DimensionItem[]; exact: boolean } | null {
+): { items: DimensionItem[]; kind: MatchKind } | null {
+  const named = items.filter((i) => i.id);
   const lower = value.toLowerCase();
-  const exact = items.find(
-    (i) => i.id && (i.name?.toLowerCase() === lower || i.short_name?.toLowerCase() === lower)
+  const exact = named.find(
+    (i) => i.name?.toLowerCase() === lower || i.short_name?.toLowerCase() === lower
   );
-  if (exact) return { items: [exact], exact: true };
-  const normalized = normalizeName(value);
-  const matches = items.filter((i) => {
-    if (!i.id) return false;
-    const normName = normalizeName(i.name ?? "");
-    return (
-      normName.includes(normalized) ||
-      normalized.includes(normName) ||
-      i.name?.toLowerCase().includes(lower) ||
-      lower.includes(i.name?.toLowerCase() ?? "___")
-    );
+  if (exact) return { items: [exact], kind: "exact" };
+
+  const squashed = squashName(value);
+  if (!squashed) return null;
+  const sameName = named.filter(
+    (i) => squashName(i.name ?? "") === squashed || squashName(i.short_name ?? "") === squashed
+  );
+  if (sameName.length > 0) return { items: sameName, kind: "exact" };
+
+  const words = nameWords(value);
+  for (const run of [words, withoutSiteWords(words)]) {
+    const byWord = named.filter((i) => hasWordRun(nameWords(i.name ?? ""), run));
+    if (byWord.length > 0) return { items: byWord, kind: "word" };
+  }
+
+  if (squashed.length < 3) return null;
+  const bySubstring = named.filter((i) => {
+    const name = squashName(i.name ?? "");
+    return name.includes(squashed) || (name.length >= 3 && squashed.includes(name));
   });
-  return matches.length > 0 ? { items: matches, exact: false } : null;
+  return bySubstring.length > 0 ? { items: bySubstring, kind: "substring" } : null;
 }
+
+const MATCH_RANK: Record<MatchKind, number> = { exact: 0, word: 1, substring: 2 };
 
 const isGapConnector = (name: string) => name.toLowerCase().includes("gap connector");
 
@@ -560,11 +627,11 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     // Past the first page, a partial match there may miss the exact name, so
     // XDMoD is searched unless the first page already had it.
     let unsearched = false;
-    if (!found?.exact && !complete) {
+    if (found?.kind !== "exact" && !complete) {
       const searched = await this.lookupDimension(realm, dimension, value);
       if (searched) {
         const better = matchItems(searched.items, value);
-        if (better) found = better;
+        if (better && (!found || MATCH_RANK[better.kind] <= MATCH_RANK[found.kind])) found = better;
         if (!found) complete = true;
       } else {
         unsearched = true;
@@ -579,10 +646,17 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     const names = found.items.map((m) => m.name ?? m.id ?? "");
     const ids = found.items.map((m) => m.id as string);
     // A partial name can include more than was asked for, such as DeltaAI for Delta.
-    const note = found.exact
-      ? `${dimension} ${names[0]}`
-      : `${dimension} "${value}" included ${names.join(", ")}` +
-        (unsearched ? ` (XDMoD's search failed, so only its first ${items.length} names were checked)` : "");
+    const unsearchedNote = unsearched
+      ? ` (XDMoD's search failed, so only its first ${items.length} names were checked)`
+      : "";
+    const note =
+      found.kind === "exact" && names.length === 1
+        ? `${dimension} ${names[0]}`
+        : found.kind === "substring"
+          ? `${dimension} "${value}" matched only as part of other names: ${names.join(", ")}. ` +
+            "No name has it as a whole word, so confirm with the person these are the ones meant" +
+            unsearchedNote
+          : `${dimension} "${value}" included ${names.join(", ")}` + unsearchedNote;
     const label = names.length === 1 ? names[0] : `${names.length} ${value} ${dimensionNoun(dimension)}`;
     return { ids, names, note, label };
   }
@@ -732,7 +806,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
               description:
                 'Filter by dimension. Keys are dimension names (e.g., "resource", "pi", "fieldofscience"). ' +
                 'Each value is a name, auto-resolved to its ID (e.g., {"resource": "Delta"}), or an id listed by get_dimension_values given as a string. ' +
-                'A partial name can match several (Delta also matches DeltaAI). Pass a list to match any of several (e.g., {"resource": ["Delta", "Anvil"]}).',
+                'An exact name matches just that one. Otherwise a value matches the names that have it as whole words, so a family name matches the family (Delta matches NCSA DELTA CPU, NCSA DELTA GPU and NCSA DeltaAI) and "chemistry" does not match Biochemistry. Pass a list to match any of several (e.g., {"resource": ["Delta", "Anvil"]}).',
               additionalProperties: {
                 anyOf: [{ type: "string" }, { type: "array", items: { type: "string" }, minItems: 1 }],
               },
@@ -834,7 +908,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
               description:
                 'Filter by dimension. Keys are dimension names (e.g., "resource", "pi", "fieldofscience"). ' +
                 'Each value is a name, auto-resolved to its ID (e.g., {"resource": "Delta"}), or an id listed by get_dimension_values given as a string. ' +
-                'A partial name can match several (Delta also matches DeltaAI). Pass a list to match any of several (e.g., {"resource": ["Delta", "Anvil"]}).',
+                'An exact name matches just that one. Otherwise a value matches the names that have it as whole words, so a family name matches the family (Delta matches NCSA DELTA CPU, NCSA DELTA GPU and NCSA DeltaAI) and "chemistry" does not match Biochemistry. Pass a list to match any of several (e.g., {"resource": ["Delta", "Anvil"]}).',
               additionalProperties: {
                 anyOf: [{ type: "string" }, { type: "array", items: { type: "string" }, minItems: 1 }],
               },
