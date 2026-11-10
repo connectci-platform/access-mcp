@@ -14,6 +14,7 @@ import os
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -39,6 +40,33 @@ _request_headers: contextvars.ContextVar[Dict[str, str]] = contextvars.ContextVa
 def get_request_header(name: str) -> Optional[str]:
     """Get a header value from the current request context"""
     return _request_headers.get({}).get(name)
+
+
+# Set only by the REST /tools route, as the TypeScript servers do, so an MCP
+# host never gets structuredContent it might hand to its model.
+_include_structured: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "include_structured_content", default=False
+)
+
+
+def include_structured_content() -> bool:
+    """Whether this call's caller asked for structuredContent with
+    X-Include-Structured-Content: 1. The ACCESS agent does, and keeps it out of
+    its model's context."""
+    return _include_structured.get()
+
+
+@dataclass
+class ToolResult:
+    """A tool's text, plus structuredContent for a caller that asked for it."""
+
+    content: List[TextContent]
+    structured: Optional[Dict[str, Any]] = None
+
+
+def _text_only(result: Any) -> Any:
+    """What an MCP-protocol caller gets: never the structured part."""
+    return result.content if isinstance(result, ToolResult) else result
 
 
 class HeaderCaptureMiddleware(BaseHTTPMiddleware):
@@ -123,7 +151,7 @@ class BaseAccessServer(ABC):
 
         @self.server.call_tool()
         async def handle_call(name: str, arguments: Dict[str, Any]):
-            return await self._record_and_handle(name, arguments)
+            return _text_only(await self._record_and_handle(name, arguments))
 
     async def start(self, http_port: Optional[int] = None):
         """Start the server in HTTP or stdio mode"""
@@ -210,8 +238,12 @@ class BaseAccessServer(ABC):
                     {"error": f"Tool '{tool_name}' not found"}, status_code=404
                 )
 
+            asked = request.headers.get("x-include-structured-content") == "1"
+            flag = _include_structured.set(asked)
             try:
                 result = await self._record_and_handle(tool_name, arguments)
+                structured = result.structured if isinstance(result, ToolResult) else None
+                result = _text_only(result)
 
                 # Format result for REST API
                 if isinstance(result, list) and result and hasattr(result[0], "text"):
@@ -223,10 +255,15 @@ class BaseAccessServer(ABC):
                 else:
                     content = [{"type": "text", "text": json.dumps(result, indent=2)}]
 
-                return JSONResponse({"content": content})
+                body: Dict[str, Any] = {"content": content}
+                if asked and structured:
+                    body["structuredContent"] = structured
+                return JSONResponse(body)
 
             except Exception as e:
                 return JSONResponse({"error": str(e)}, status_code=500)
+            finally:
+                _include_structured.reset(flag)
 
         # Legacy SSE transport for clients that don't support Streamable HTTP.
         # Note: Per-request header propagation (e.g., X-XDMoD-Token) does NOT work
@@ -248,7 +285,7 @@ class BaseAccessServer(ABC):
 
                 @sse_server.call_tool()
                 async def _handle_call(name: str, arguments: Dict[str, Any]):
-                    return await self._record_and_handle(name, arguments)
+                    return _text_only(await self._record_and_handle(name, arguments))
 
                 await sse_server.run(
                     streams[0],

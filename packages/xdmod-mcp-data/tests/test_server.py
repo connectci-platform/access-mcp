@@ -420,7 +420,7 @@ class TestRawDataUnmatchedFilters:
                 "filters": filters, "realm": realm}
         with patch.dict(os.environ, {"XDMOD_API_TOKEN": "t"}), \
              patch("xdmod_data.warehouse.DataWarehouse", return_value=warehouse):
-            text = asyncio.run(server._get_raw_data(args))[0].text
+            text = asyncio.run(server._get_raw_data(args)).content[0].text
         return text, warehouse.data_calls
 
     def test_refuses_when_no_name_matches(self):
@@ -457,3 +457,113 @@ class TestRawDataUnmatchedFilters:
         text, calls = self._run({"resource": "Delta"}, warehouse=warehouse)
         assert calls[0]["filters"] == {"resource": ["Delta"]}
         assert "Could not validate filter resource" in text
+
+
+class TestRawDataTable:
+    """The full table goes to a caller that asked for structured content; the model gets a summary."""
+
+    class Warehouse(TestRawDataUnmatchedFilters.Warehouse):
+        def __init__(self, data):
+            super().__init__()
+            self.data = data
+
+        def get_data(self, **kwargs):
+            self.data_calls.append(kwargs)
+            return self.data
+
+        def describe_metrics(self, realm):
+            import pandas as pd
+            return pd.DataFrame({"label": ["CPU Hours: Total"]}, index=pd.Index(["total_cpu_hours"], name="id"))
+
+    def _run(self, data, asked, attach=None, **args):
+        from xdmod_mcp_data import base_server
+        server = XDMoDPythonServer()
+        server._env_api_token = "t"
+        args = {"start_date": "2025-01-01", "end_date": "2025-12-31", **args}
+        flag = base_server._include_structured.set(asked)
+        try:
+            with patch.dict(os.environ, {"XDMOD_API_TOKEN": "t"}), \
+                 patch("xdmod_data.warehouse.DataWarehouse", return_value=self.Warehouse(data)):
+                return asyncio.run(server._get_raw_data(args, attach=attach))
+        finally:
+            base_server._include_structured.reset(flag)
+
+    def _users(self, n):
+        import pandas as pd
+        series = pd.Series([float(i) for i in range(n)], index=[f"user {i}" for i in range(n)],
+                           name="CPU Hours: Total", dtype="Float64")
+        series.index.name = "User"
+        return series
+
+    def test_attaches_every_row_for_a_caller_that_asked(self):
+        result = self._run(self._users(300), True, dimension="person", dataset_type="aggregate")
+        table = result.structured["table"]
+        assert len(table["rows"]) == 300
+        assert table["dimension"] == "person"
+        assert "all 300 rows, is attached" in result.content[0].text
+        assert "user 289" not in result.content[0].text
+
+    def test_text_only_for_a_caller_that_did_not_ask(self):
+        result = self._run(self._users(300), False, dimension="person", dataset_type="aggregate")
+        assert result.structured is None
+        assert "first 30 of 300 rows" in result.content[0].text
+
+    def test_over_the_cap_asks_for_a_narrower_request(self):
+        from xdmod_mcp_data.raw_table import MAX_TABLE_ROWS
+        result = self._run(self._users(MAX_TABLE_ROWS + 1), True, dimension="person",
+                           dataset_type="aggregate")
+        assert result.structured is None
+        assert "narrow the request" in result.content[0].text
+
+    def test_names_the_metric_of_a_grouped_timeseries(self):
+        import pandas as pd
+        frame = pd.DataFrame({"Delta": [1.0, 2.0]}, index=pd.to_datetime(["2025-01-01", "2025-02-01"]),
+                             dtype="Float64")
+        frame.index.name = "Time"
+        frame.columns.name = "Resource"
+        result = self._run(frame, True, dimension="resource", aggregation_unit="Month")
+        assert result.structured["table"]["columns"][2]["name"] == "CPU Hours: Total"
+
+    def test_keeps_the_query_lines(self):
+        result = self._run(self._users(3), True, dimension="person", dataset_type="aggregate")
+        assert "Realm: Jobs" in result.content[0].text
+
+
+class TestUserDataNeverAttaches:
+    """get_user_data reuses get_raw_data; its summary must not promise a table it drops."""
+
+    def test_the_inner_summary_is_built_without_an_attachment(self):
+        from xdmod_mcp_data import base_server
+
+        server = XDMoDPythonServer()
+        server._env_api_token = "t"
+        seen = {}
+
+        async def fake_raw(args, attach=None):
+            seen["attach"] = attach
+            from mcp.types import TextContent
+
+            return base_server.ToolResult(content=[TextContent(type="text", text="**Results:** 1 rows.")])
+
+        async def fake_find(name, realm="Jobs"):
+            return "Doe, Jane", "found"
+
+        flag = base_server._include_structured.set(True)
+        try:
+            with patch.object(server, "_get_raw_data", fake_raw), \
+                 patch.object(server, "_smart_find_user", fake_find):
+                text = asyncio.run(server._get_user_data_python(
+                    {"access_id": "jdoe", "start_date": "2025-01-01", "end_date": "2025-02-01"}
+                ))[0].text
+        finally:
+            base_server._include_structured.reset(flag)
+        assert seen["attach"] is False
+        assert "**Results:**" in text
+
+    def test_get_raw_data_can_be_told_not_to_attach(self):
+        helper = TestRawDataTable()
+        result = helper._run(
+            helper._users(300), True, attach=False, dimension="person", dataset_type="aggregate"
+        )
+        assert result.structured is None
+        assert "is attached" not in result.content[0].text

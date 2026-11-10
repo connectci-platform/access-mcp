@@ -14,7 +14,12 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from xdmod_mcp_data.base_server import BaseAccessServer, get_request_header
+from xdmod_mcp_data.base_server import (
+    BaseAccessServer,
+    ToolResult,
+    get_request_header,
+    include_structured_content,
+)
 from mcp.types import ToolAnnotations, Tool, TextContent
 
 
@@ -41,6 +46,11 @@ class SimpleTestServer(BaseAccessServer):
                 inputSchema={"type": "object", "properties": {}},
             ),
             Tool(
+                name="with_table",
+                description="Returns text plus structured content when the caller asked for it",
+                inputSchema={"type": "object", "properties": {}},
+            ),
+            Tool(
                 name="check_acting_user",
                 description="Returns the current acting user from request context",
                 inputSchema={"type": "object", "properties": {}},
@@ -54,6 +64,12 @@ class SimpleTestServer(BaseAccessServer):
         elif name == "check_token":
             token = get_request_header("x-xdmod-token")
             return [TextContent(type="text", text=f"token: {token or 'none'}")]
+        elif name == "with_table":
+            asked = include_structured_content()
+            return ToolResult(
+                content=[TextContent(type="text", text=f"asked: {asked}")],
+                structured={"table": {"rows": [[1]]}} if asked else None,
+            )
         elif name == "check_acting_user":
             user = get_request_header("x-acting-user")
             return [TextContent(type="text", text=f"acting_user: {user or 'none'}")]
@@ -187,6 +203,58 @@ class TestToolExecutionEndpoint:
             data = response.json()
             assert data["content"][0]["type"] == "text"
             assert "echo: test" in data["content"][0]["text"]
+
+
+class TestStructuredContent:
+    """structuredContent goes only to a /tools caller that sent X-Include-Structured-Content: 1."""
+
+    async def _post(self, headers):
+        _, app = make_server_and_app()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post("/tools/with_table", json={"arguments": {}}, headers=headers)
+            assert response.status_code == 200
+            return response.json()
+
+    @pytest.mark.asyncio
+    async def test_sent_when_asked(self):
+        data = await self._post({"X-Include-Structured-Content": "1"})
+        assert data["content"][0]["text"] == "asked: True"
+        assert data["structuredContent"] == {"table": {"rows": [[1]]}}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("headers", [{}, {"X-Include-Structured-Content": "true"}])
+    async def test_not_sent_otherwise(self, headers):
+        data = await self._post(headers)
+        assert data["content"][0]["text"] == "asked: False"
+        assert "structuredContent" not in data
+
+    @pytest.mark.asyncio
+    async def test_mcp_callers_get_only_the_text(self):
+        server, app = make_server_and_app()
+        async with server._session_manager.run():
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+                base_url="http://test",
+            ) as client:
+                headers = {**MCP_HEADERS, "X-Include-Structured-Content": "1"}
+                init_resp = await client.post("/mcp", json=INIT_REQUEST, headers=headers)
+                sh = {**headers, "mcp-session-id": init_resp.headers["mcp-session-id"]}
+                await client.post(
+                    "/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"}, headers=sh
+                )
+                call_resp = await client.post(
+                    "/mcp",
+                    json={
+                        "jsonrpc": "2.0", "method": "tools/call", "id": 2,
+                        "params": {"name": "with_table", "arguments": {}},
+                    },
+                    headers=sh,
+                )
+                body = call_resp.text
+                assert "asked: False" in body
+                assert "rows" not in body
 
 
 # ---- Streamable HTTP /mcp endpoint (needs lifespan) ----

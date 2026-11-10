@@ -63,6 +63,8 @@ Get raw data from XDMoD for detailed analysis with complex filtering and progres
 - `dataset_type`: Dataset type (aggregate or timeseries)
 - `show_progress`: Show progress updates for large data retrievals
 
+**Result:** a short summary (row count, columns, totals and the first 10 rows; a caller that gets no table sees up to 50 rows, or the top 30 of a larger aggregate). A REST `/tools` caller that sends `X-Include-Structured-Content: 1`, as the ACCESS agent does, also gets every row as `structuredContent.table`: `columns` (`period`, `label` or `number`) and `rows`, one per group for an aggregate and one per period and group for a timeseries. A result over 50,000 rows attaches nothing and asks for a narrower request. MCP-protocol callers get only the summary.
+
 **Example:**
 ```
 "Get raw CPU hours data grouped by resource for all Delta and Bridges-2 jobs in 2024"
