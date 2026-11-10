@@ -32,6 +32,12 @@ import { callerSafeUpstreamError, describeAxiosFailure, logUpstreamFailure } fro
 import { DrupalApiError } from "./drupal-auth.js";
 import { traceMcpToolCall } from "./telemetry.js";
 import { UsageLogger } from "./usage-logger.js";
+import {
+  ActingUserTokenUnavailableError,
+  ActingUserTokenVerifier,
+  actingUserTokenConfigFromEnv,
+  type ActingUserTokenConfig,
+} from "./acting-user-token.js";
 import { StandardWriteResponse, StandardErrorResponse } from "./types.js";
 import {
   isCallAuthorized,
@@ -52,10 +58,18 @@ export type { Tool, Resource, Prompt, CallToolResult, ReadResourceResult, GetPro
 export interface RequestContext {
   /**
    * The ACCESS ID of the user performing the action.
-   * Passed via X-Acting-User header from the agent.
    * Format: "username@access-ci.org"
+   *
+   * On a server that acts for users (actsForUsers), the /tools route takes it
+   * from a verified acting-user token's sub, or (until MCP_ACTING_USER_AUTH is
+   * "token") from the X-Acting-User header. Elsewhere it is the header, used
+   * only for usage attribution.
    */
   actingUser?: string;
+  /** How actingUser was established on /tools: a verified token, or the header. */
+  actingUserAuth?: "token" | "header";
+  /** The verified acting-user token, forwarded on server-to-server calls. */
+  actingUserToken?: string;
   /** Unique request ID for tracing (from X-Request-ID header) */
   requestId?: string;
   /**
@@ -102,7 +116,18 @@ export interface BaseAccessServerOptions {
    * Enable this for servers that perform write operations on behalf of users.
    */
   requireApiKey?: boolean;
+  /**
+   * The server's tools act as the signed-in researcher (writes and user-scoped
+   * reads), so /tools verifies the acting-user token the agent sends instead of
+   * trusting X-Acting-User. See acting-user-token.ts and MCP_ACTING_USER_AUTH.
+   * Leave it off for servers that act on their own service account (jsm).
+   */
+  actsForUsers?: boolean;
 }
+
+type ActingUserResolution =
+  | { ok: true; actingUser?: string; auth?: "token" | "header"; token?: string }
+  | { ok: false; status: 401 | 503; error: string };
 
 export abstract class BaseAccessServer {
   protected server: Server;
@@ -114,6 +139,9 @@ export abstract class BaseAccessServer {
   private _streamableTransports: Map<string, WebStandardStreamableHTTPServerTransport> = new Map();
   private _sseTransports: Map<string, SSEServerTransport> = new Map();
   private _requireApiKey: boolean;
+  private _actsForUsers: boolean;
+  private _actingUserConfig?: ActingUserTokenConfig;
+  private _actingUserVerifier?: ActingUserTokenVerifier;
   private _nodeServer?: HttpServer;
   private _usageLogger = new UsageLogger(process.env.MCP_USAGE_DB_URL);
 
@@ -124,6 +152,7 @@ export abstract class BaseAccessServer {
     options: BaseAccessServerOptions = {}
   ) {
     this._requireApiKey = options.requireApiKey ?? false;
+    this._actsForUsers = options.actsForUsers ?? false;
     // Note: Telemetry is initialized via --import flag in the Dockerfile
     // This ensures OpenTelemetry is set up BEFORE http modules are imported
     // See packages/shared/src/telemetry-bootstrap.ts
@@ -200,6 +229,10 @@ export abstract class BaseAccessServer {
           const requestId = requestContextStorage.getStore()?.requestId;
           if (requestId) {
             span.setAttribute("mcp.request.id", requestId);
+          }
+          const actingUserAuth = requestContextStorage.getStore()?.actingUserAuth;
+          if (actingUserAuth) {
+            span.setAttribute("mcp.acting_user.auth", actingUserAuth);
           }
 
           const result = await this.handleToolCall(request);
@@ -437,6 +470,10 @@ export abstract class BaseAccessServer {
     // server, not be listed. listToolsForClient is wrapped in try/catch, so a
     // check there would only empty the catalog.
     assertToolMarkers(this.getTools());
+    // A setting that can't work stops the server rather than refusing writes.
+    if (this._actsForUsers) {
+      this.configureActingUserTokens();
+    }
     // Start HTTP service layer if port is specified. Port 0 asks the OS for a
     // free port; read it back from `httpPort` once start() resolves.
     if (options?.httpPort !== undefined) {
@@ -483,9 +520,15 @@ export abstract class BaseAccessServer {
     // Optional Bearer token extraction for OAuth-authenticated MCP clients.
     // If a Bearer token is present, verify it via CILogon userinfo and
     // populate RequestContext.actingUser. Never rejects — lets tools decide.
+    //
+    // Not on /tools: that route builds its own context, and a Bearer there is
+    // the portal's acting-user token, which must never be sent to CILogon.
     const oauthVerifyUrl = process.env.OAUTH_VERIFY_URL;
     if (oauthVerifyUrl) {
       app.use("*", async (c, next) => {
+        if (c.req.path === "/tools" || c.req.path.startsWith("/tools/")) {
+          return next();
+        }
         const authHeader = c.req.header("Authorization");
         if (authHeader?.startsWith("Bearer ")) {
           const token = authHeader.slice(7);
@@ -744,13 +787,6 @@ export abstract class BaseAccessServer {
         }
       }
 
-      // Extract request context from headers
-      const context: RequestContext = {
-        actingUser: c.req.header("X-Acting-User"),
-        requestId: c.req.header("X-Request-ID"),
-        includeStructuredContent: c.req.header("X-Include-Structured-Content") === "1",
-      };
-
       const toolName = c.req.param("toolName");
       const body = await c.req.json().catch(() => ({}));
       const { arguments: args = {} } = body;
@@ -761,6 +797,39 @@ export abstract class BaseAccessServer {
       if (!tool) {
         return c.json({ error: `Tool '${toolName}' not found` }, 404);
       }
+
+      const acting: ActingUserResolution = this._actsForUsers
+        ? await this.resolveActingUser(c.req.header("Authorization"), c.req.header("X-Acting-User"))
+        : { ok: true, actingUser: c.req.header("X-Acting-User") };
+      if (!acting.ok) {
+        this.logger.warn("Acting user refused", {
+          tool: toolName,
+          status: acting.status,
+          reason: acting.error,
+        });
+        const headers: Record<string, string> =
+          acting.status === 401 ? { "WWW-Authenticate": 'Bearer error="invalid_token"' } : {};
+        return c.json({ error: acting.error }, acting.status, headers);
+      }
+      if (this._actsForUsers && acting.actingUser) {
+        // Which path each acting call took, so step 3 (token only) can be
+        // flipped once no "header" lines remain. Writes and header-path calls
+        // log at warn, which production keeps; token-path reads log at info.
+        const level = tool.mutates || acting.auth === "header" ? "warn" : "info";
+        this.logger[level]("Acting user auth", {
+          tool: toolName,
+          path: acting.auth,
+          mutates: tool.mutates,
+        });
+      }
+
+      const context: RequestContext = {
+        actingUser: acting.actingUser,
+        actingUserAuth: acting.auth,
+        actingUserToken: acting.token,
+        requestId: c.req.header("X-Request-ID"),
+        includeStructuredContent: c.req.header("X-Include-Structured-Content") === "1",
+      };
 
       // Run the handler within the request context
       return requestContextStorage.run(context, async () => {
@@ -896,6 +965,10 @@ export abstract class BaseAccessServer {
     if (context?.actingUser) {
       headers["X-Acting-User"] = context.actingUser;
     }
+    // A peer that acts for users needs the verified token once it requires it.
+    if (context?.actingUserToken) {
+      headers["Authorization"] = `Bearer ${context.actingUserToken}`;
+    }
     if (context?.requestId) {
       headers["X-Request-ID"] = context.requestId;
     }
@@ -959,6 +1032,99 @@ export abstract class BaseAccessServer {
       if (classifyTool(tool) === "public") names.add(tool.name);
     }
     return names;
+  }
+
+  /**
+   * Reads the acting-user token settings and builds the verifier, once.
+   * Throws for a setting that can't work.
+   */
+  private configureActingUserTokens(): ActingUserTokenConfig {
+    if (!this._actingUserConfig) {
+      const config = actingUserTokenConfigFromEnv();
+      if (config.issuer) {
+        this._actingUserVerifier = new ActingUserTokenVerifier({
+          ...config,
+          issuer: config.issuer,
+        });
+      }
+      this._actingUserConfig = config;
+      this.logger.info("Acting-user token verification", {
+        mode: config.mode,
+        verifying: !!config.issuer,
+        audience: config.audience,
+      });
+    }
+    return this._actingUserConfig;
+  }
+
+  /**
+   * Decides who a /tools call acts for, on a server that acts for users.
+   *
+   * A Bearer token is verified and its sub is the acting user; a bad token is
+   * refused, never replaced by the header, and X-Acting-User may only repeat
+   * the sub. Without a token, X-Acting-User is accepted only in "either" mode.
+   */
+  private async resolveActingUser(
+    authorization: string | undefined,
+    headerUser: string | undefined
+  ): Promise<ActingUserResolution> {
+    const config = this.configureActingUserTokens();
+    if (authorization !== undefined) {
+      const match = /^Bearer +(\S+)$/i.exec(authorization);
+      if (!match) {
+        return {
+          ok: false,
+          status: 401,
+          error: "Authorization must be a Bearer acting-user token.",
+        };
+      }
+      if (!this._actingUserVerifier) {
+        return {
+          ok: false,
+          status: 401,
+          error: "This server is not configured to verify acting-user tokens.",
+        };
+      }
+      try {
+        const { sub } = await this._actingUserVerifier.verify(match[1]);
+        if (headerUser !== undefined && headerUser !== sub) {
+          return {
+            ok: false,
+            status: 401,
+            error: "X-Acting-User does not match the signed-in user.",
+          };
+        }
+        return { ok: true, actingUser: sub, auth: "token", token: match[1] };
+      } catch (error) {
+        if (error instanceof ActingUserTokenUnavailableError) {
+          this.logger.error("Acting-user token keys unavailable", { reason: error.message });
+          return {
+            ok: false,
+            status: 503,
+            error: "Sign-in verification is unavailable. Try again later.",
+          };
+        }
+        this.logger.warn("Acting-user token refused", {
+          reason: error instanceof Error ? error.message : "invalid",
+        });
+        return {
+          ok: false,
+          status: 401,
+          error: "The acting-user token is not valid.",
+        };
+      }
+    }
+    if (headerUser === undefined || headerUser === "") {
+      return { ok: true };
+    }
+    if (config.mode === "token") {
+      return {
+        ok: false,
+        status: 401,
+        error: "This server requires a signed-in user's token, not X-Acting-User alone.",
+      };
+    }
+    return { ok: true, actingUser: headerUser, auth: "header" };
   }
 
   /** True when the OAuth middleware verified a CILogon token for this request. */

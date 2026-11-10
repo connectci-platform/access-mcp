@@ -155,7 +155,7 @@ export class AnnouncementsServer extends BaseAccessServer {
       "access-announcements",
       version,
       process.env.DRUPAL_API_URL || "https://support.access-ci.org",
-      { requireApiKey: true }
+      { requireApiKey: true, actsForUsers: true }
     );
   }
 

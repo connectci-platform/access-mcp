@@ -15,7 +15,8 @@ const root = resolve(__dirname, "../../../..");
 describe("deploy invariant: ACTING_USER is unset on mixed servers", () => {
   it("docker-compose.yml sets ACTING_USER only to an empty default", () => {
     const compose = readFileSync(resolve(root, "docker-compose.yml"), "utf8");
-    const lines = compose.split("\n").filter((l) => l.includes("ACTING_USER"));
+    // The variable itself, not names that contain it (MCP_ACTING_USER_AUTH).
+    const lines = compose.split("\n").filter((l) => /^\s*ACTING_USER\s*:/.test(l));
     // There must be at least one ACTING_USER line (the servers declare it), and
     // every such line must be the empty-default form `${ACTING_USER:-}` — a bare
     // `ACTING_USER: someuser` fails this invariant.

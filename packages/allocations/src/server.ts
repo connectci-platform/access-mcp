@@ -211,6 +211,7 @@ export class AllocationsServer extends BaseAccessServer {
   constructor() {
     super("access-allocations", version, "https://allocations.access-ci.org", {
       requireApiKey: true,
+      actsForUsers: true,
     });
   }
 

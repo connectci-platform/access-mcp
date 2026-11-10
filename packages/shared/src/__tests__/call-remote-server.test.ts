@@ -75,6 +75,23 @@ describe("BaseAccessServer.callRemoteServer", () => {
     expect(calls[0].headers["X-Acting-User"]).toBe("alice@access-ci.org");
   });
 
+  it("forwards the verified acting-user token, so a peer requiring it still works", async () => {
+    await requestContextStorage.run(
+      { actingUser: "alice@access-ci.org", actingUserAuth: "token", actingUserToken: "tok.en.sig" },
+      () => server.callPeer("events", "search_events", {})
+    );
+    expect(calls[0].headers["Authorization"]).toBe("Bearer tok.en.sig");
+    expect(calls[0].headers["X-Acting-User"]).toBe("alice@access-ci.org");
+  });
+
+  it("sends no Authorization when the call was not token-verified", async () => {
+    await requestContextStorage.run(
+      { actingUser: "alice@access-ci.org", actingUserAuth: "header" },
+      () => server.callPeer("events", "search_events", {})
+    );
+    expect(calls[0].headers["Authorization"]).toBeUndefined();
+  });
+
   it("shows a peer's 4xx error text", async () => {
     vi.spyOn(axios, "post").mockResolvedValue({
       status: 404,

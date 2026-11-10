@@ -116,6 +116,10 @@ services:
       # allocations is keyed (requireApiKey) for its user-scoped rp-account
       # reads; it needs the inter-server key to validate incoming calls.
       MCP_API_KEY: ${MCP_API_KEY}
+      # Acting-user tokens (D8-2946); local portal audience is https://mcp.dev.invalid.
+      MCP_TOKEN_ISSUER: ${MCP_TOKEN_ISSUER:-}
+      MCP_TOKEN_AUDIENCE: ${MCP_TOKEN_AUDIENCE:-https://mcp.dev.invalid}
+      MCP_ACTING_USER_AUTH: ${MCP_ACTING_USER_AUTH:-either}
     deploy:
       resources:
         limits:
@@ -157,6 +161,10 @@ services:
       DRUPAL_PASSWORD: ${DRUPAL_PASSWORD:-}
       ACTING_USER: ${ACTING_USER:-}
       MCP_API_KEY: ${MCP_API_KEY}
+      # Acting-user tokens (D8-2946); local portal audience is https://mcp.dev.invalid.
+      MCP_TOKEN_ISSUER: ${MCP_TOKEN_ISSUER:-}
+      MCP_TOKEN_AUDIENCE: ${MCP_TOKEN_AUDIENCE:-https://mcp.dev.invalid}
+      MCP_ACTING_USER_AUTH: ${MCP_ACTING_USER_AUTH:-either}
     extra_hosts:
       - "accessmatch.ddev.site:host-gateway"
     deploy:
@@ -201,6 +209,10 @@ services:
       DRUPAL_PASSWORD: ${DRUPAL_PASSWORD:-}
       ACTING_USER: ${ACTING_USER:-}
       MCP_API_KEY: ${MCP_API_KEY}
+      # Acting-user tokens (D8-2946); local portal audience is https://mcp.dev.invalid.
+      MCP_TOKEN_ISSUER: ${MCP_TOKEN_ISSUER:-}
+      MCP_TOKEN_AUDIENCE: ${MCP_TOKEN_AUDIENCE:-https://mcp.dev.invalid}
+      MCP_ACTING_USER_AUTH: ${MCP_ACTING_USER_AUTH:-either}
     extra_hosts:
       - "accessmatch.ddev.site:host-gateway"
     deploy:
