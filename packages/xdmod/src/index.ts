@@ -5,10 +5,27 @@ import {
   Resource,
   CallToolResult,
   callerSafeUpstreamError,
+  getRequestContext,
   logUpstreamFailure,
   type ToolWithAccess,
 } from "@access-mcp/shared";
 import { createRequire } from "module";
+import {
+  aggregateDataNote,
+  buildChartPayload,
+  earlyEndNote,
+  offsetNote,
+  partialPeriodNote,
+  effectiveUnit,
+  ORDERED_DIMENSIONS,
+  timeseriesPoints,
+  type ChartDataParams,
+  type ChartInfo,
+  type ChartPayload,
+  type ResourceDays,
+} from "./chart-payload.js";
+
+export { timeseriesPoints };
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
 
@@ -244,30 +261,173 @@ interface MenuEntry {
   [key: string]: unknown;
 }
 
-type ChartResult = { content: { type: "text"; text: string }[] };
+type ChartResult = {
+  content: { type: "text"; text: string }[];
+  structuredContent?: { chart: ChartPayload };
+};
 
 // Per series, enough for ten years of quarters or five of months, so a year of
 // days is summarized. The total keeps a high limit from listing every series.
 const MAX_SERIES_POINTS = 60;
 const MAX_LISTED_POINTS = 300;
 
+// The portal's hash picks a statistic node only; its Usage tab reads no dates from it.
+// The Usage-tab hash can't carry filters, so a filtered chart gets no link.
+function hasFilters(params: ChartDataParams): boolean {
+  return Object.keys(params.filters ?? {}).length > 0;
+}
+
+function portalChartUrl(realm: string, groupBy: string, statistic: string): string {
+  const urlParams = new URLSearchParams({
+    node: "statistic",
+    realm,
+    group_by: groupBy,
+    statistic,
+  });
+  return `https://xdmod.access-ci.org/index.php#tg_usage?${urlParams.toString()}`;
+}
+
 /**
- * Pairs a timeseries trace's period starts with its values, dropping gaps.
- * XDMoD sends each start as epoch milliseconds at local midnight on the
- * US East Coast, so the UTC date is the period's calendar date.
+ * XDMoD's series or bar for everything past the limit: "All 37 Others" for a
+ * sum, "Avg of 7 Others" for an average (also Max of, Min of). Matched by
+ * name wherever it sits, since it is never a resource.
  */
-export function timeseriesPoints(series: { x?: unknown[]; y?: unknown[] }): { start: string; value: number }[] {
-  const xs = series.x ?? [];
-  const ys = series.y ?? [];
-  const points: { start: string; value: number }[] = [];
-  for (let i = 0; i < ys.length; i++) {
-    const value = ys[i];
-    if (typeof value !== "number") continue;
-    const x = xs[i];
-    const start = typeof x === "number" ? new Date(x).toISOString().slice(0, 10) : String(x ?? `period ${i + 1}`);
-    points.push({ start, value });
+const OTHERS = /^(?:\d+\.\s+)?(?:All|Avg of|Sum of|Max of|Min of) ([\d,]+) Others$/i;
+
+function othersIn(name: unknown): number | null {
+  const match = OTHERS.exec(String(name ?? "").trim());
+  return match ? Number(match[1].replace(/,/g, "")) : null;
+}
+
+type DimensionItem = { id?: string; name?: string; short_name?: string };
+
+/** A filter value resolved to XDMoD ids, or nothing XDMoD has. */
+type FilterMatch =
+  | { ids: string[]; names: string[]; note: string; label: string }
+  | { unmatched: true; dimension: string; value: string; closest: string[] };
+
+const normalizeName = (s: string) =>
+  s.toLowerCase().replace(/[-_]/g, " ").replace(/\s+/g, " ").trim();
+
+function editDistance(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
   }
-  return points;
+  return prev[b.length];
+}
+
+/** Up to three names a mistyped value was likely meant to be. */
+function closestNames(items: DimensionItem[], value: string): string[] {
+  const target = normalizeName(value);
+  const limit = Math.max(2, Math.floor(target.length / 3));
+  return items
+    .map((i) => i.name ?? "")
+    .filter(Boolean)
+    .map((name) => ({ name, d: editDistance(target, normalizeName(name)) }))
+    .filter(({ d }) => d <= limit)
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 3)
+    .map(({ name }) => name);
+}
+
+/** Exact name first, then every name containing the value or contained in it. */
+function matchItems(
+  items: DimensionItem[],
+  value: string
+): { items: DimensionItem[]; exact: boolean } | null {
+  const lower = value.toLowerCase();
+  const exact = items.find(
+    (i) => i.id && (i.name?.toLowerCase() === lower || i.short_name?.toLowerCase() === lower)
+  );
+  if (exact) return { items: [exact], exact: true };
+  const normalized = normalizeName(value);
+  const matches = items.filter((i) => {
+    if (!i.id) return false;
+    const normName = normalizeName(i.name ?? "");
+    return (
+      normName.includes(normalized) ||
+      normalized.includes(normName) ||
+      i.name?.toLowerCase().includes(lower) ||
+      lower.includes(i.name?.toLowerCase() ?? "___")
+    );
+  });
+  return matches.length > 0 ? { items: matches, exact: false } : null;
+}
+
+const isGapConnector = (name: string) => name.toLowerCase().includes("gap connector");
+
+/** The answer when a filter value names nothing XDMoD has. */
+function noMatchText(
+  realm: string,
+  unmatched: { dimension: string; value: string; closest: string[] }[]
+): string {
+  const lines = unmatched.map(({ dimension, value, closest }) => {
+    const near = closest.length > 0 ? ` Closest names: ${closest.join(", ")}.` : "";
+    return `No ${dimension} matched "${value}" in XDMoD's ${realm} realm.${near}`;
+  });
+  return (
+    `${lines.join("\n")}\n\nNo chart was made. ` +
+    "Use get_dimension_values to list the names XDMoD has, then try again."
+  );
+}
+
+const DIMENSION_NOUNS: Record<string, string> = {
+  resource: "resources",
+  resource_type: "resource types",
+  fieldofscience: "fields of science",
+  parentscience: "parent sciences",
+  nsfdirectorate: "NSF directorates",
+  institution: "institutions",
+  provider: "service providers",
+  queue: "queues",
+  person: "users",
+  username: "users",
+  pi: "PIs",
+};
+
+const dimensionNoun = (dimension: string) => DIMENSION_NOUNS[dimension] ?? `${dimension} values`;
+
+const MAX_FILTER_LABEL = 60;
+
+/**
+ * "Expanse + 3 Bridges-2 resources, Genetics": each value's match, joined
+ * per dimension. Too long, a dimension becomes a count ("5 resources").
+ */
+function filterLabel(labels: { dimension: string; parts: string[]; ids: number }[]): string {
+  const full = labels.filter((l) => l.parts.length > 0);
+  const join = (byDimension: string[]) => byDimension.join(", ");
+  const long = join(full.map((l) => l.parts.join(" + ")));
+  if (long.length <= MAX_FILTER_LABEL) return long;
+  const short = join(
+    full.map((l) => (l.ids === 1 ? l.parts[0] : `${l.ids} ${dimensionNoun(l.dimension)}`))
+  );
+  return short.length <= MAX_FILTER_LABEL ? short : `${short.slice(0, MAX_FILTER_LABEL - 1).trimEnd()}…`;
+}
+
+/** Names the one series or bar of a group_by none chart. */
+function relabelWhole(chartInfo: ChartInfo, name: string, aggregate: boolean): ChartInfo {
+  const store = chartInfo.hc_jsonstore;
+  if (!store?.data) return chartInfo;
+  const data = store.data.map((t) => {
+    if (aggregate) return t.x ? { ...t, x: t.x.map(() => name) } : t;
+    return t.name && !isGapConnector(t.name) ? { ...t, name } : t;
+  });
+  return { ...chartInfo, hc_jsonstore: { ...store, data } };
+}
+
+/**
+ * structuredContent goes only to callers that asked for it with
+ * X-Include-Structured-Content: 1 (the ACCESS agent, which keeps it out of the
+ * model's context). Other MCP hosts may hand it to their model.
+ */
+function forCaller(result: ChartResult): ChartResult {
+  if (!result.structuredContent || getRequestContext()?.includeStructuredContent) return result;
+  return { content: result.content };
 }
 
 export class XDMoDMetricsServer extends BaseAccessServer {
@@ -276,6 +436,25 @@ export class XDMoDMetricsServer extends BaseAccessServer {
   private chartCache = new Map<string, { result: ChartResult; expires: number }>();
   private static readonly CHART_CACHE_TTL = 1000 * 60 * 60; // 1 hour
   private static readonly CHART_CACHE_MAX_ENTRIES = 100;
+  private dimensionOrderCache = new Map<string, { names: string[]; complete: boolean; expires: number }>();
+  private static readonly DIMENSION_ORDER_TTL = 1000 * 60 * 30; // 30 minutes
+  private latestDayCache = new Map<string, { day: string | null; expires: number }>();
+  private latestDayInFlight = new Map<string, Promise<string | null>>();
+  private static readonly LATEST_DAY_TTL = 1000 * 60 * 60; // 1 hour
+  // A failed probe is remembered briefly, so a slow XDMoD isn't probed again per chart.
+  private static readonly PROBE_FAILURE_TTL = 1000 * 60 * 5; // 5 minutes
+  private resourceDaysCache = new Map<string, { days: ResourceDays | null; expires: number }>();
+  private resourceDaysInFlight = new Map<string, Promise<ResourceDays | null>>();
+  // The probe only sharpens the payload, so it never holds up the answer for long.
+  private probeTimeoutMs = 5000;
+  // Grouped by resource, the probe takes 5 to 11 seconds, about as long as a chart.
+  private resourceProbeTimeoutMs = 12000;
+  // Count statistics that have a value on every day a realm has data.
+  private static readonly PROBE_STATISTICS: Record<string, string> = {
+    Jobs: "job_count",
+    SUPREMM: "job_count",
+    Gateways: "job_count",
+  };
 
   constructor() {
     super("xdmod", version, "https://xdmod.access-ci.org");
@@ -319,114 +498,133 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     return data;
   }
 
-  /**
-   * Resolve a filter value to a numeric XDMoD dimension ID.
-   * If the value is already numeric, returns it as-is.
-   * Otherwise searches the dimension API for a matching entry.
-   */
-  private async resolveFilterId(
+  /** One page of a dimension's values, optionally searched. Null when the lookup fails. */
+  private async lookupDimension(
     realm: string,
     dimension: string,
-    value: string,
-    matchNotes?: string[]
-  ): Promise<string> {
-    // Already numeric — use as-is
-    if (/^\d+$/.test(value)) return value;
-
-    const response = await fetch(
-      `${this.baseURL}/controllers/metric_explorer.php`,
-      {
+    searchText?: string
+  ): Promise<{ items: DimensionItem[]; complete: boolean } | null> {
+    try {
+      const body = new URLSearchParams({
+        operation: "get_dimension",
+        public_user: "true",
+        realm,
+        dimension_id: dimension,
+        start: "0",
+        limit: "200",
+      });
+      if (searchText) body.set("search_text", searchText);
+      const response = await fetch(`${this.baseURL}/controllers/metric_explorer.php`, {
         method: "POST",
         headers: this.getHeaders(),
-        body: new URLSearchParams({
-          operation: "get_dimension",
-          public_user: "true",
-          realm,
-          dimension_id: dimension,
-          start: "0",
-          limit: "200",
-        }),
-      }
-    );
-
-    if (!response.ok) return value; // fallback to original
-
-    const json = await response.json().catch(() => null);
-    if (json === null) return value; // unreadable body: fall back to original
-    const items: { id?: string; name?: string; short_name?: string }[] =
-      json.data ?? [];
-
-    const lower = value.toLowerCase();
-    // Normalize: strip hyphens/extra spaces for fuzzy matching (e.g., "Bridges-2" vs "Bridges 2 RM")
-    const normalize = (s: string) => s.toLowerCase().replace(/[-_]/g, " ").replace(/\s+/g, " ").trim();
-    const normalized = normalize(value);
-
-    // 1. Exact name match
-    const exact = items.find(
-      (i) =>
-        i.name?.toLowerCase() === lower ||
-        i.short_name?.toLowerCase() === lower
-    );
-    if (exact?.id) return exact.id;
-
-    // 2. All items whose name contains the search term (or vice versa)
-    const matches = items.filter(
-      (i) => {
-        const normName = normalize(i.name ?? "");
-        return (
-          normName.includes(normalized) ||
-          normalized.includes(normName) ||
-          i.name?.toLowerCase().includes(lower) ||
-          lower.includes(i.name?.toLowerCase() ?? "___")
-        );
-      }
-    );
-    // A partial name can include more than was asked for, such as DeltaAI for
-    // Delta, so callers can report what it matched.
-    if (matches.length > 0) {
-      matchNotes?.push(
-        `${dimension} "${value}" included ${matches.map((m) => m.name).join(", ")}`
-      );
+        body,
+      });
+      if (!response.ok) return null;
+      const json = await response.json().catch(() => null);
+      if (json === null) return null;
+      const items: DimensionItem[] = Array.isArray(json.data) ? json.data : [];
+      const total = Number(json.totalCount);
+      return {
+        items,
+        complete: Number.isFinite(total) ? total <= items.length : items.length < 200,
+      };
+    } catch {
+      return null;
     }
-    if (matches.length === 1) return matches[0].id ?? value;
-    if (matches.length > 1) {
-      // Multiple matches — return all IDs so XDMoD includes all
-      return matches.map((m) => m.id).filter(Boolean).join(",");
-    }
-
-    return value; // no match found, pass through
   }
 
   /**
-   * Resolve all filter values in a filters object to numeric IDs.
-   * Supports both string values and arrays of strings (for multi-value filters).
+   * Resolve a filter value to XDMoD dimension ids, with a note saying what it
+   * matched, so a chart always says what it was filtered to. A numeric value
+   * is an id. A value XDMoD has nothing for comes back unmatched.
+   */
+  private async resolveFilterId(realm: string, dimension: string, value: string): Promise<FilterMatch> {
+    const list = await this.lookupDimension(realm, dimension);
+    if (!list) {
+      return { ids: [value], names: [value], label: value, note: `${dimension} "${value}" (not checked against XDMoD's names)` };
+    }
+    const { items } = list;
+    let { complete } = list;
+    if (/^\d+$/.test(value)) {
+      const byId = items.find((i) => i.id === value);
+      if (byId) {
+        const name = byId.name ?? value;
+        return { ids: [value], names: [name], label: name, note: `${dimension} ${name}` };
+      }
+      // Past the first page, an id can't be searched for, so it's sent as given.
+      if (!complete) {
+        return { ids: [value], names: [`id ${value}`], label: `${dimension} id ${value}`, note: `${dimension} id ${value}` };
+      }
+    }
+    let found = matchItems(items, value);
+    // Past the first page, a partial match there may miss the exact name, so
+    // XDMoD is searched unless the first page already had it.
+    let unsearched = false;
+    if (!found?.exact && !complete) {
+      const searched = await this.lookupDimension(realm, dimension, value);
+      if (searched) {
+        const better = matchItems(searched.items, value);
+        if (better) found = better;
+        if (!found) complete = true;
+      } else {
+        unsearched = true;
+      }
+    }
+    if (!found) {
+      if (!complete) {
+        return { ids: [value], names: [value], label: value, note: `${dimension} "${value}" (not checked against XDMoD's names)` };
+      }
+      return { unmatched: true, dimension, value, closest: closestNames(list.items, value) };
+    }
+    const names = found.items.map((m) => m.name ?? m.id ?? "");
+    const ids = found.items.map((m) => m.id as string);
+    // A partial name can include more than was asked for, such as DeltaAI for Delta.
+    const note = found.exact
+      ? `${dimension} ${names[0]}`
+      : `${dimension} "${value}" included ${names.join(", ")}` +
+        (unsearched ? ` (XDMoD's search failed, so only its first ${items.length} names were checked)` : "");
+    const label = names.length === 1 ? names[0] : `${names.length} ${value} ${dimensionNoun(dimension)}`;
+    return { ids, names, note, label };
+  }
+
+  /**
+   * Resolve every filter value to XDMoD ids. Each value gets a note, and the
+   * names it matched label a group_by none chart in place of "ACCESS".
    */
   private async resolveFilters(
     realm: string,
-    filters: Record<string, unknown>,
-    matchNotes?: string[]
-  ): Promise<Record<string, string>> {
+    filters: Record<string, unknown>
+  ): Promise<{
+    resolved: Record<string, string>;
+    notes: string[];
+    /** A short name for what the filters leave, for a chart's one series or bar. */
+    label: string;
+    unmatched: Extract<FilterMatch, { unmatched: true }>[];
+  }> {
     const resolved: Record<string, string> = {};
+    const notes: string[] = [];
+    const labels: { dimension: string; parts: string[]; ids: number }[] = [];
+    const unmatched: Extract<FilterMatch, { unmatched: true }>[] = [];
     for (const [dimension, value] of Object.entries(filters)) {
-      if (Array.isArray(value)) {
-        // Multi-value filter: resolve each and join with commas
-        const ids = await Promise.all(
-          value.map((v: unknown) =>
-            this.resolveFilterId(realm, dimension, String(v), matchNotes)
-          )
-        );
-        // Overlapping names (Delta and NCSA DELTA CPU) resolve to the same ids.
-        resolved[dimension] = [...new Set(ids.join(",").split(","))].join(",");
-      } else {
-        resolved[dimension] = await this.resolveFilterId(
-          realm,
-          dimension,
-          String(value),
-          matchNotes
-        );
+      const values = (Array.isArray(value) ? value : [value]).map(String);
+      const matches = await Promise.all(values.map((v) => this.resolveFilterId(realm, dimension, v)));
+      const ids: string[] = [];
+      const parts: string[] = [];
+      for (const m of matches) {
+        if ("unmatched" in m) {
+          unmatched.push(m);
+          continue;
+        }
+        notes.push(m.note);
+        ids.push(...m.ids);
+        parts.push(m.label);
       }
+      // Overlapping names (Delta and NCSA DELTA CPU) resolve to the same ids.
+      const unique = [...new Set(ids)];
+      resolved[dimension] = unique.join(",");
+      labels.push({ dimension, parts, ids: unique.length });
     }
-    return resolved;
+    return { resolved, notes, label: filterLabel(labels), unmatched };
   }
 
   // Realms available for public (unauthenticated) queries.
@@ -804,33 +1002,23 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     }
   }
 
-  private async getChartData(params: {
-    realm: string;
-    group_by: string;
-    statistic: string;
-    start_date: string;
-    end_date: string;
-    dataset_type: string;
-    display_type?: string;
-    combine_type?: string;
-    limit?: number;
-    offset?: number;
-    log_scale?: string;
-    aggregation_unit?: string;
-    filters?: Record<string, string | string[]>;
-  }): Promise<ChartResult> {
+  private async getChartData(params: ChartDataParams): Promise<ChartResult> {
     // Queries can take over 45 seconds. Charts are public data, so results can
     // be shared between callers, and a range that has ended no longer moves.
     const cacheKey = JSON.stringify(params);
     const cached = this.chartCache.get(cacheKey);
-    if (cached && cached.expires > Date.now()) return cached.result;
+    if (cached && cached.expires > Date.now()) return forCaller(cached.result);
 
     try {
       // Resolve text filter values to numeric IDs
-      const matchNotes: string[] = [];
-      const resolvedFilters = params.filters
-        ? await this.resolveFilters(params.realm, params.filters, matchNotes)
+      const filterMatch = hasFilters(params)
+        ? await this.resolveFilters(params.realm, params.filters!)
         : undefined;
+      if (filterMatch && filterMatch.unmatched.length > 0) {
+        return forCaller({ content: [{ type: "text", text: noMatchText(params.realm, filterMatch.unmatched) }] });
+      }
+      const matchNotes = filterMatch?.notes ?? [];
+      const resolvedFilters = filterMatch?.resolved;
 
       const urlParams = new URLSearchParams({
         operation: "get_charts",
@@ -848,10 +1036,17 @@ export class XDMoDMetricsServer extends BaseAccessServer {
 
       if (params.display_type) urlParams.append("display_type", params.display_type);
       if (params.combine_type) urlParams.append("combine_type", params.combine_type);
-      if (params.limit !== undefined) urlParams.append("limit", params.limit.toString());
+      // One more than asked for tells us whether the list was cut short.
+      if (params.limit !== undefined) urlParams.append("limit", (params.limit + 1).toString());
       if (params.offset !== undefined) urlParams.append("offset", params.offset.toString());
       if (params.log_scale) urlParams.append("log_scale", params.log_scale);
-      if (params.aggregation_unit) urlParams.append("aggregation_unit", params.aggregation_unit);
+      // Sending the resolved unit keeps the periods XDMoD returns on the grid the payload uses.
+      const unit =
+        params.dataset_type === "timeseries"
+          ? effectiveUnit(params.aggregation_unit, params.start_date, params.end_date)
+          : undefined;
+      const sentUnit = unit ?? params.aggregation_unit;
+      if (sentUnit) urlParams.append("aggregation_unit", sentUnit);
 
       if (resolvedFilters) {
         for (const [key, value] of Object.entries(resolvedFilters)) {
@@ -859,11 +1054,20 @@ export class XDMoDMetricsServer extends BaseAccessServer {
         }
       }
 
-      const response = await fetch(`${this.baseURL}/controllers/user_interface.php`, {
+      const chartRequest = fetch(`${this.baseURL}/controllers/user_interface.php`, {
         method: "POST",
         headers: this.getHeaders(),
         body: urlParams,
       });
+      // Started beside the chart request, so they add no time of their own.
+      // Neither rejects: each falls back to undefined or null.
+      const dimensionOrder = ORDERED_DIMENSIONS.has(params.group_by)
+        ? this.dimensionOrder(params.realm, params.group_by)
+        : Promise.resolve(undefined);
+      const latestDataDay = this.latestDataDay(params.realm);
+      const resourceDays =
+        params.group_by === "resource" ? this.resourceDataDays(params.realm) : Promise.resolve(null);
+      const response = await chartRequest;
 
       // Any response may not be JSON, and the parser's error quotes the body.
       const data = await response.json().catch(() => null);
@@ -877,11 +1081,43 @@ export class XDMoDMetricsServer extends BaseAccessServer {
 
       let resultText = `Chart Data for ${params.statistic} (${params.realm}):\n\n`;
       if (matchNotes.length > 0) {
-        resultText += `**Filters matched:** ${matchNotes.join("; ")}\n\n`;
+        resultText += `**Filtered to:** ${matchNotes.join("; ")}\n\n`;
       }
 
+      let chartInfo: ChartInfo | undefined;
+      let hasMore = false;
+      let othersCount: number | null = 0;
+      let chart: ChartPayload | undefined;
+      let probeFailed = false;
+      const filtered = hasFilters(params);
       if (data.data && data.data.length > 0) {
-        const chartInfo = data.data[0];
+        ({ chartInfo, hasMore, othersCount } = this.trimToLimit(data.data[0] as ChartInfo, params));
+        // XDMoD names a group_by none chart "ACCESS" even when it is filtered.
+        if (params.group_by === "none" && filterMatch?.label) {
+          chartInfo = relabelWhole(
+            chartInfo,
+            filterMatch.label,
+            params.dataset_type === "aggregate"
+          );
+        }
+        const order = await dimensionOrder;
+        const latestDay = await latestDataDay;
+        const days = await resourceDays;
+        // A chart built while a probe was failing mustn't outlive the failure.
+        const probes = XDMoDMetricsServer.PROBE_STATISTICS[params.realm] !== undefined;
+        probeFailed = probes && (latestDay === null || (params.group_by === "resource" && days === null));
+        chart = this.chartPayload({
+          params,
+          chartInfo,
+          matchNotes,
+          hasMore,
+          othersCount,
+          today: new Date().toISOString().slice(0, 10),
+          dimensionOrder: order?.names,
+          dimensionComplete: order?.complete,
+          latestDataDay: latestDay,
+          resourceDays: days,
+        });
 
         if (chartInfo.group_description) {
           resultText += `**Group Description:**\n${chartInfo.group_description}\n\n`;
@@ -900,7 +1136,11 @@ export class XDMoDMetricsServer extends BaseAccessServer {
         // Aggregate grouped data has one trace with x=categories, y=values.
         // Timeseries grouped data has one trace per category with y=values over time.
         const hcData = chartInfo.hc_jsonstore?.data;
-        const chartTitle = chartInfo.hc_jsonstore?.layout?.annotations?.find(
+        const chartTitle = (
+          chartInfo.hc_jsonstore as
+            | { layout?: { annotations?: { name?: string; text?: string }[] } }
+            | undefined
+        )?.layout?.annotations?.find(
           (a: { name?: string }) => a.name === "title"
         )?.text || params.statistic;
 
@@ -917,20 +1157,23 @@ export class XDMoDMetricsServer extends BaseAccessServer {
                 resultText += `- ${label}: ${value}\n`;
               }
             }
+            const dataNote = chart && aggregateDataNote(chart);
+            if (dataNote) resultText += `${dataNote}\n`;
+            const early = chart && earlyEndNote(chart);
+            if (early) resultText += `${early}\n`;
+            const paged = chart && offsetNote(chart, chart.categories?.length ?? 0);
+            if (paged) resultText += `${paged}\n`;
             resultText += "\n";
           } else if (params.dataset_type === "timeseries") {
-            const unit = params.aggregation_unit && params.aggregation_unit !== "Auto"
-              ? `, by ${params.aggregation_unit.toLowerCase()}`
-              : "";
-            resultText += `**${chartTitle} by ${params.group_by} (${params.start_date} to ${params.end_date}${unit}):**\n`;
+            const unitText = unit ? `, by ${unit.toLowerCase()}` : "";
+            resultText += `**${chartTitle} by ${params.group_by} (${params.start_date} to ${params.end_date}${unitText}):**\n`;
             let listed = 0;
             let summarized = false;
             for (const series of hcData) {
               if (series.name && !series.name.toLowerCase().includes("gap connector")) {
                 const points = timeseriesPoints(series);
                 if (points.length === 0) continue;
-                const avg = points.reduce((sum, p) => sum + p.value, 0) / points.length;
-                resultText += `- ${series.name}: avg ${avg.toFixed(4)} (${points.length} data points)\n`;
+                resultText += `- ${series.name} (${points.length} data points)\n`;
                 if (points.length <= MAX_SERIES_POINTS && listed + points.length <= MAX_LISTED_POINTS) {
                   for (const p of points) resultText += `  - ${p.start}: ${p.value.toFixed(4)}\n`;
                   listed += points.length;
@@ -944,6 +1187,12 @@ export class XDMoDMetricsServer extends BaseAccessServer {
                 "Each date is the start of a whole period. XDMoD counts the whole first and last period, " +
                 "even when start_date or end_date falls partway through it.\n";
             }
+            const partial = chart && partialPeriodNote(chart);
+            if (partial) resultText += `${partial}\n`;
+            const early = chart && earlyEndNote(chart);
+            if (early) resultText += `${early}\n`;
+            const paged = chart && offsetNote(chart, chart.series?.length ?? 0);
+            if (paged) resultText += `${paged}\n`;
             if (summarized) {
               resultText +=
                 `Only series of up to ${MAX_SERIES_POINTS} points, ${MAX_LISTED_POINTS} in all, are listed. ` +
@@ -953,7 +1202,15 @@ export class XDMoDMetricsServer extends BaseAccessServer {
           }
         }
 
-        resultText += `*Use get_chart_image or get_chart_link for visual charts.*`;
+        if (hasMore) {
+          resultText +=
+            othersCount !== null
+              ? `XDMoD has ${othersCount} more not listed.\n\n`
+              : "XDMoD has more not listed.\n\n";
+        }
+        resultText += filtered
+          ? "XDMoD's public portal can't link to this filtered chart."
+          : `Explore this measure in XDMoD (opens with XDMoD's default dates, not this chart's range or filters): ${portalChartUrl(params.realm, params.group_by, params.statistic)}`;
       } else {
         resultText += "No data available for the specified parameters.";
       }
@@ -967,15 +1224,239 @@ export class XDMoDMetricsServer extends BaseAccessServer {
         ],
       };
       const today = new Date().toISOString().slice(0, 10);
+      if (chart) result.structuredContent = { chart };
       if (data.data?.length > 0 && params.end_date < today) {
-        this.cacheChart(cacheKey, result);
+        this.cacheChart(
+          cacheKey,
+          result,
+          probeFailed ? XDMoDMetricsServer.PROBE_FAILURE_TTL : XDMoDMetricsServer.CHART_CACHE_TTL
+        );
       }
-      return result;
+      return forCaller(result);
     } catch (error) {
       throw new Error(
         `Failed to fetch chart data: ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+
+  /**
+   * XDMoD was asked for one series more than the limit, and may add an
+   * "All N Others" series after it. Drops both, and series with no values
+   * (they draw nothing and shouldn't take a place in the top N), and says how
+   * many were left out: null when there were more but XDMoD didn't say how many.
+   */
+  private trimToLimit(
+    chartInfo: ChartInfo,
+    params: ChartDataParams
+  ): { chartInfo: ChartInfo; hasMore: boolean; othersCount: number | null } {
+    const limit = params.limit;
+    const store = chartInfo.hc_jsonstore;
+    const traces = store?.data;
+    const none = { chartInfo, hasMore: false, othersCount: 0 };
+    if (!store || !traces) return none;
+    let others: number | null = null;
+    const leftOut = (total: number, kept: number) => {
+      const cut = total - kept;
+      const hasMore = cut > 0 || (others ?? 0) > 0;
+      return { hasMore, othersCount: !hasMore ? 0 : others === null ? null : cut + others };
+    };
+
+    if (params.dataset_type === "timeseries") {
+      const real = traces.filter((t) => {
+        if (!t.name || isGapConnector(t.name)) return false;
+        const n = othersIn(t.name);
+        if (n !== null) {
+          others = n;
+          return false;
+        }
+        return timeseriesPoints(t).length > 0;
+      });
+      const kept = limit === undefined ? real : real.slice(0, limit);
+      return {
+        chartInfo: { ...chartInfo, hc_jsonstore: { ...store, data: kept } },
+        ...leftOut(real.length, kept.length),
+      };
+    }
+
+    const trace = traces[0];
+    if (!trace?.x) return none;
+    const ys = trace.y ?? [];
+    const pairs = trace.x
+      .map((x, i) => ({ x, y: ys[i] }))
+      .filter(({ x }) => {
+        const n = othersIn(x);
+        if (n !== null) others = n;
+        return n === null;
+      });
+    const kept = limit === undefined ? pairs : pairs.slice(0, limit);
+    const cut = { ...trace, x: kept.map((p) => p.x), y: kept.map((p) => p.y) };
+    return {
+      chartInfo: { ...chartInfo, hc_jsonstore: { ...store, data: [cut, ...traces.slice(1)] } },
+      ...leftOut(pairs.length, kept.length),
+    };
+  }
+
+  /** The structured chart, or undefined (with a warning) when XDMoD's data doesn't fit it. */
+  private chartPayload(input: {
+    params: ChartDataParams;
+    chartInfo: ChartInfo;
+    matchNotes: string[];
+    hasMore: boolean;
+    othersCount: number | null;
+    today: string;
+    dimensionOrder: string[] | undefined;
+    dimensionComplete: boolean | undefined;
+    latestDataDay: string | null;
+    resourceDays: ResourceDays | null;
+  }): ChartPayload | undefined {
+    const { params } = input;
+    try {
+      return buildChartPayload({
+        ...input,
+        label: REALM_STATISTICS[params.realm]?.statistics[params.statistic] ?? params.statistic,
+        link: hasFilters(params) ? null : portalChartUrl(params.realm, params.group_by, params.statistic),
+      });
+    } catch (error) {
+      this.logger.warn("Could not build chart payload", {
+        realm: params.realm,
+        statistic: params.statistic,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
+  /**
+   * The last day in the past 120 with data in a realm, since public data can
+   * stop weeks before today. Null when unknown; a failure is not cached.
+   */
+  private latestDataDay(realm: string): Promise<string | null> {
+    const statistic = XDMoDMetricsServer.PROBE_STATISTICS[realm];
+    if (!statistic) return Promise.resolve(null);
+    const cached = this.latestDayCache.get(realm);
+    if (cached && cached.expires > Date.now()) return Promise.resolve(cached.day);
+    // Calls that arrive while a probe runs share it.
+    const running = this.latestDayInFlight.get(realm);
+    if (running) return running;
+    const probe = this.probeLatestDay(realm, statistic).finally(() =>
+      this.latestDayInFlight.delete(realm)
+    );
+    this.latestDayInFlight.set(realm, probe);
+    return probe;
+  }
+
+  /** One probe request, cut off after probeTimeoutMs. Null on any failure. */
+  private async probeLatestDay(realm: string, statistic: string): Promise<string | null> {
+    const probed = await this.probeDays(realm, statistic, "none", this.probeTimeoutMs);
+    let day: string | null = null;
+    for (const d of Object.values(probed?.days ?? {})) if (day === null || d > day) day = d;
+    this.latestDayCache.set(realm, {
+      day,
+      expires:
+        Date.now() + (day ? XDMoDMetricsServer.LATEST_DAY_TTL : XDMoDMetricsServer.PROBE_FAILURE_TTL),
+    });
+    return day;
+  }
+
+  /**
+   * The last day in the past 120 each resource has data in a realm, by name,
+   * so a resource whose data stops early can be called out. Null when unknown;
+   * a failure is remembered for PROBE_FAILURE_TTL.
+   */
+  private resourceDataDays(realm: string): Promise<ResourceDays | null> {
+    const statistic = XDMoDMetricsServer.PROBE_STATISTICS[realm];
+    if (!statistic) return Promise.resolve(null);
+    const cached = this.resourceDaysCache.get(realm);
+    if (cached && cached.expires > Date.now()) return Promise.resolve(cached.days);
+    const running = this.resourceDaysInFlight.get(realm);
+    if (running) return running;
+    const probe = this.probeDays(realm, statistic, "resource", this.resourceProbeTimeoutMs)
+      .then((probed) => {
+        const days = probed && Object.keys(probed.days).length > 0 ? probed : null;
+        this.resourceDaysCache.set(realm, {
+          days,
+          expires:
+            Date.now() + (days ? XDMoDMetricsServer.LATEST_DAY_TTL : XDMoDMetricsServer.PROBE_FAILURE_TTL),
+        });
+        return days;
+      })
+      .finally(() => this.resourceDaysInFlight.delete(realm));
+    this.resourceDaysInFlight.set(realm, probe);
+    return probe;
+  }
+
+  /** Each trace's last non-zero day over the past 120 days, from `since`. Null on any failure. */
+  private async probeDays(
+    realm: string,
+    statistic: string,
+    groupBy: string,
+    timeoutMs: number
+  ): Promise<ResourceDays | null> {
+    try {
+      const end = new Date().toISOString().slice(0, 10);
+      const start = new Date(Date.parse(end) - 119 * 86_400_000).toISOString().slice(0, 10);
+      const body = new URLSearchParams({
+        operation: "get_charts",
+        public_user: "true",
+        dataset_type: "timeseries",
+        format: "hc_jsonstore",
+        width: "916",
+        height: "484",
+        realm,
+        group_by: groupBy,
+        statistic,
+        start_date: start,
+        end_date: end,
+        aggregation_unit: "Day",
+      });
+      if (groupBy !== "none") body.set("limit", "200");
+      const response = await fetch(`${this.baseURL}/controllers/user_interface.php`, {
+        method: "POST",
+        headers: this.getHeaders(),
+        body,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!response.ok) return null;
+      const json = await response.json().catch(() => null);
+      const traces: { name?: string; x?: unknown[]; y?: unknown[] }[] | undefined =
+        json?.data?.[0]?.hc_jsonstore?.data;
+      const days: Record<string, string> = {};
+      for (const trace of traces ?? []) {
+        if (!trace.name || isGapConnector(trace.name) || othersIn(trace.name) !== null) continue;
+        const name = trace.name.replace(/^\d+\.\s+/, "");
+        for (const p of timeseriesPoints(trace)) {
+          if (p.value !== 0 && (days[name] === undefined || p.start > days[name])) days[name] = p.start;
+        }
+      }
+      return { since: start, days };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * XDMoD's own order of a dimension's values, cached, and whether that is
+   * every value. Undefined when the lookup fails.
+   */
+  private async dimensionOrder(
+    realm: string,
+    dimension: string
+  ): Promise<{ names: string[]; complete: boolean } | undefined> {
+    const key = `${realm}/${dimension}`;
+    const cached = this.dimensionOrderCache.get(key);
+    if (cached && cached.expires > Date.now()) return cached;
+    const list = await this.lookupDimension(realm, dimension);
+    if (!list) return undefined;
+    const names = list.items.map((i) => i.name || i.short_name || i.id || "").filter(Boolean);
+    if (names.length === 0) return undefined;
+    const entry = {
+      names,
+      complete: list.complete,
+      expires: Date.now() + XDMoDMetricsServer.DIMENSION_ORDER_TTL,
+    };
+    this.dimensionOrderCache.set(key, entry);
+    return entry;
   }
 
   /**
@@ -1014,14 +1495,14 @@ export class XDMoDMetricsServer extends BaseAccessServer {
     return `XDMoD error: ${msg}${hint}`;
   }
 
-  private cacheChart(key: string, result: ChartResult) {
+  private cacheChart(key: string, result: ChartResult, ttl = XDMoDMetricsServer.CHART_CACHE_TTL) {
     if (this.chartCache.size >= XDMoDMetricsServer.CHART_CACHE_MAX_ENTRIES) {
       const oldest = this.chartCache.keys().next().value;
       if (oldest !== undefined) this.chartCache.delete(oldest);
     }
     this.chartCache.set(key, {
       result,
-      expires: Date.now() + XDMoDMetricsServer.CHART_CACHE_TTL,
+      expires: Date.now() + ttl,
     });
   }
 
@@ -1045,9 +1526,13 @@ export class XDMoDMetricsServer extends BaseAccessServer {
   }) {
     try {
       // Resolve text filter values to numeric IDs
-      const resolvedFilters = params.filters
+      const filterMatch = params.filters
         ? await this.resolveFilters(params.realm, params.filters)
         : undefined;
+      if (filterMatch && filterMatch.unmatched.length > 0) {
+        return { content: [{ type: "text" as const, text: noMatchText(params.realm, filterMatch.unmatched) }] };
+      }
+      const resolvedFilters = filterMatch?.resolved;
 
       const urlParams = new URLSearchParams({
         operation: "get_charts",
@@ -1170,15 +1655,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
   }
 
   private async getChartLink(realm: string, groupBy: string, statistic: string) {
-    // Construct the URL parameters for XDMoD portal
-    const urlParams = new URLSearchParams({
-      node: "statistic",
-      realm: realm,
-      group_by: groupBy,
-      statistic: statistic,
-    });
-
-    const chartUrl = `https://xdmod.access-ci.org/index.php#tg_usage?${urlParams.toString()}`;
+    const chartUrl = portalChartUrl(realm, groupBy, statistic);
 
     const responseText =
       `Direct link to view chart in XDMoD portal:\n\n${chartUrl}\n\n` +
@@ -1186,7 +1663,7 @@ export class XDMoDMetricsServer extends BaseAccessServer {
       `- Realm: ${realm}\n` +
       `- Group By: ${groupBy}\n` +
       `- Statistic: ${statistic}\n\n` +
-      `You can use this URL to view the interactive chart directly in the XDMoD web interface. ` +
+      `You can use this URL to explore this measure in the XDMoD web interface. It opens with XDMoD's default dates, not a specific range, so set the dates in the portal. ` +
       `Use the portal's filtering options to narrow down to specific resources, users, or other criteria.`;
 
     return {
