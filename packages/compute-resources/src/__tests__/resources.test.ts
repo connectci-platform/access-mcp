@@ -14,10 +14,10 @@ describe("Compute Resources - Resources", () => {
     // at all — the agent had nothing to cite for resource questions.
     it("should expose see_all_url for list and search contexts", () => {
       expect(server["listingLinks"]("list")?.see_all_url).toBe(
-        "https://allocations.access-ci.org/resources"
+        "https://support.access-ci.org/documentation/resources"
       );
       expect(server["listingLinks"]("search")?.see_all_url).toBe(
-        "https://allocations.access-ci.org/resources"
+        "https://support.access-ci.org/documentation/resources"
       );
       expect(server["listingLinks"]("details")).toBeUndefined();
     });
@@ -87,7 +87,8 @@ describe("Compute Resources - Resources", () => {
       const markdown = result.contents[0].text;
       expect(markdown).toContain("# GPU Resource Selection Guide");
       expect(markdown).toContain("search_resources");
-      expect(markdown).toContain("get_resource_hardware");
+      expect(markdown).toContain("get_resource");
+      expect(markdown).not.toContain("get_resource_hardware");
       // Should reference GPU-related content
       expect(markdown).toContain("GPU");
       expect(markdown).toContain("has_gpu");
@@ -110,12 +111,8 @@ describe("Compute Resources - Resources", () => {
       expect(data).toHaveProperty("resource_types");
       expect(Array.isArray(data.resource_types)).toBe(true);
 
-      // Find GPU Compute type in the array
-      const gpuType = data.resource_types.find(
-        (t: { name: string }) => t.name === "GPU Compute"
-      );
-      expect(gpuType).toBeDefined();
-      expect(gpuType.description).toBeDefined();
+      // The documentation's own types, which search_resources filters on
+      expect(data.resource_types.map((t: { name: string }) => t.name)).toEqual(["Compute", "Storage"]);
 
       // Should not have old-style object keys
       expect(data).not.toHaveProperty("usage_notes");

@@ -2,11 +2,12 @@ const API_URL = "https://support.access-ci.org/api/1.0";
 
 // The site limits regular traffic to 300 requests per 10 minutes.
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const DETAIL_CONCURRENCY = 6;
 
 type HttpGet = (url: string) => Promise<{ status: number; data: unknown }>;
 type Row = Record<string, unknown>;
 
-interface Listing {
+export interface Listing {
   nid: number;
   title: string;
   short_name: string | null;
@@ -20,7 +21,7 @@ interface Listing {
   listed?: boolean;
 }
 
-interface Group {
+export interface Group {
   title: string;
   url: string;
   variants: { nid: number }[];
@@ -34,6 +35,14 @@ interface Catalog {
 interface Cached<T> {
   value: T;
   expires: number;
+}
+
+export interface DocumentedResource {
+  listing: Listing;
+  group: Group | undefined;
+  detail: Row | null;
+  /** The detail page couldn't be read, as opposed to not existing. */
+  failed?: boolean;
 }
 
 export interface ResourceMatch {
@@ -209,6 +218,7 @@ export function buildComparison(resource: ResourceDetails) {
 /** Reads the pages under support.access-ci.org/documentation/resources. */
 export class ResourceDocumentation {
   private catalog?: Cached<Catalog>;
+  private loadingAll?: Promise<DocumentedResource[]>;
   private details = new Map<string, Cached<Row | null>>();
 
   constructor(private readonly get: HttpGet) {}
@@ -240,11 +250,45 @@ export class ResourceDocumentation {
   }
 
   async describe(resource: Listing): Promise<ResourceDetails> {
+    return buildResource(resource, await this.groupOf(resource), await this.loadDetail(resource));
+  }
+
+  /** Every documented resource with its detail, for searching across them. */
+  all(): Promise<DocumentedResource[]> {
+    // Concurrent searches on a cold cache share one load instead of each
+    // requesting every page.
+    this.loadingAll ??= this.loadAll().finally(() => {
+      this.loadingAll = undefined;
+    });
+    return this.loadingAll;
+  }
+
+  private async loadAll(): Promise<DocumentedResource[]> {
+    const { resources, groups } = await this.loadCatalog();
+    const loaded: { detail: Row | null; failed: boolean }[] = new Array(resources.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < resources.length) {
+        const index = next++;
+        // One failed page shouldn't sink a search across all of them. It's reported
+        // as failed, not undocumented, and isn't cached, so the next search retries it.
+        loaded[index] = await this.loadDetail(resources[index]).then(
+          (detail) => ({ detail, failed: false }),
+          () => ({ detail: null, failed: true })
+        );
+      }
+    };
+    await Promise.all(Array.from({ length: DETAIL_CONCURRENCY }, worker));
+    return resources.map((listing, index) => ({
+      listing,
+      group: groups.find(({ variants }) => variants.some((variant) => variant.nid === listing.nid)),
+      ...loaded[index],
+    }));
+  }
+
+  private async groupOf(resource: Listing): Promise<Group | undefined> {
     const { groups } = await this.loadCatalog();
-    const group = groups.find(({ variants }) =>
-      variants.some((variant) => variant.nid === resource.nid)
-    );
-    return buildResource(resource, group, await this.loadDetail(resource));
+    return groups.find(({ variants }) => variants.some((variant) => variant.nid === resource.nid));
   }
 
   private async loadCatalog(): Promise<Catalog> {

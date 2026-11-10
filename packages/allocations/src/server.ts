@@ -649,7 +649,7 @@ export class AllocationsServer extends BaseAccessServer {
             resource_id: {
               type: "string",
               description:
-                "The ACCESS Global Resource ID of the resource provider (e.g. delta-gpu.ncsa.access-ci.org). Get it from the search_resources tool — each result carries its resource ids.",
+                "The ACCESS Global Resource ID of the resource provider (e.g. delta-gpu.ncsa.access-ci.org). Get it from the search_resources tool — each result's id is its global resource ID.",
             },
             live: {
               type: "boolean",

@@ -1,8 +1,6 @@
 import {
   BaseAccessServer,
   handleApiError,
-  sanitizeGroupId,
-  resolveResourceId,
   projectFields,
   FIELDS_OF_SCIENCE,
   Resource,
@@ -19,99 +17,21 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
 import { buildComparison, ResourceDocumentation } from "./resource-documentation.js";
+import { FILTER_KEYS, RESOURCE_TYPES, searchResources, type SearchFilters } from "./resource-search.js";
 
-// Interfaces for search_resources tool arguments
-interface SearchResourcesArgs {
-  resource_id?: string;
-  query?: string;
-  resource_type?: string;
-  has_gpu?: boolean;
-  organization?: string;
-  include_resource_ids?: boolean;
-  fields?: string[];
-}
-
-// Interfaces for API response types
-interface OrganizationResult {
-  organization_id?: number;
-  organization_name?: string;
-}
-
-interface ActiveGroup {
-  info_groupid?: string;
-  group_descriptive_name?: string;
-  group_description?: string;
-  rollup_organization_ids?: number[];
-  rollup_feature_ids?: number[];
-  rollup_info_resourceids?: string[];
-  group_logo_url?: string;
-}
-
-interface ApiFeature {
-  feature_id: number;
-  feature_name: string;
-  feature_category_id: number;
-}
-
-interface ApiFeatureCategory {
-  feature_category_id: number;
-  feature_category_name: string;
-  feature_category_description?: string;
-}
-
-interface HardwareItem {
-  cider_type?: string;
-  resource_descriptive_name?: string;
-  resource_description?: string;
-  short_name?: string;
-  info_resourceid?: string;
-}
-
-interface StructuredHardware {
-  compute_nodes: HardwareEntry[];
-  storage: HardwareEntry[];
-  gpus: HardwareEntry[];
-  memory: HardwareEntry[];
-  other: HardwareEntry[];
-}
-
-interface HardwareEntry {
-  name: string;
-  type: string;
-  details: string;
-}
-
-interface ComputeResource {
-  id?: string;
-  name?: string;
-  description?: string;
-  organization_ids?: number[];
-  organization_names?: string[];
-  features?: number[];
-  feature_names?: string[];
-  resources?: string[];
-  logoUrl?: string;
-  feature_categories?: Record<string, string[]>;
-  accessAllocated?: boolean;
-  hasGpu?: boolean;
-  resourceTypes?: string[];
-  resourceIds?: string[];
-}
+const DOCUMENTATION_URL = "https://support.access-ci.org/documentation/resources";
 
 export class ComputeResourcesServer extends BaseAccessServer {
   private readonly documentation = new ResourceDocumentation((url) => this.httpClient.get(url));
 
   constructor() {
-    super("access-mcp-compute-resources", version, "https://operations-api.access-ci.org");
+    super("access-mcp-compute-resources", version, "https://support.access-ci.org");
   }
 
   protected listingLinks(
     context: "list" | "search" | "details" = "list"
   ): Record<string, string> | undefined {
-    if (context === "list" || context === "search") {
-      return { see_all_url: "https://allocations.access-ci.org/resources" };
-    }
-    return undefined;
+    return context === "details" ? undefined : { see_all_url: DOCUMENTATION_URL };
   }
 
   protected getTools(): ToolWithAccess[] {
@@ -120,56 +40,90 @@ export class ComputeResourcesServer extends BaseAccessServer {
         name: "search_resources",
         mutates: false,
         description:
-          "Search ACCESS-CI compute resources by name, type, or feature (ACCESS OnDemand, " +
-          "Globus, preemption, NAIRR participation). Returns resource IDs for other services. " +
-          "Returns {total, items}. Use it to enumerate or filter the catalog; treat every " +
-          "field as incomplete rather than authoritative. Data comes from CiDeR, which " +
-          "resource providers are responsible for updating and largely do not, so a missing " +
-          "flag does not mean a resource lacks the feature. Verified 2026-09-20: the " +
-          "OnDemand flags and support.access-ci.org/tools/ondemand disagree on five " +
-          "resources, with errors on both sides, so neither settles the question alone. " +
-          "has_gpu is unreliable too — it includes resources whose hardware payload has no " +
-          "GPU block and excludes non-GPU accelerators such as Habana Gaudi. A display name " +
-          "may carry a stale 'COMING SOON' or 'NO NEW ALLOCATIONS' label contradicting its " +
-          "own accessAllocated flag. For hardware specifications prefer the per-resource " +
-          "pages under https://support.access-ci.org/documentation/resources, which are " +
-          "curated and corrected.",
+          "Find ACCESS resources from their documentation at " +
+          "https://support.access-ci.org/documentation/resources. Returns {total, items}, " +
+          "each with id (its global resource ID), accelerators, max_node_memory_gb, " +
+          "max_cores_per_node, max_wall_time_hours, ondemand_url, transfer_methods and " +
+          "citation_url. To find the largest, compare these fields across items. " +
+          "With no filters it lists every documented resource. Hardware filters (has_gpu, " +
+          "gpu_type, min_gpu_memory_gb, min_memory_gb, min_cores_per_node, cpu_type, " +
+          "min_wall_time_hours) must all hold on one queue, and matching_queues shows which " +
+          "queues do and what they have. Resources the documentation doesn't cover for a " +
+          "filter are listed in `unchecked` with the filters it couldn't decide, rather " +
+          "than counted as not matching, and " +
+          "`unavailable` lists any whose page couldn't be read, so never say a resource " +
+          "lacks something because it isn't in items. Only documented resources are " +
+          "searched, so a resource that isn't found may be undocumented or no longer part " +
+          "of ACCESS; don't describe its hardware from its name, point to the resource " +
+          "provider instead. Query words match whole words and must all appear, so prefer filters for " +
+          "hardware. Use get_resource for one resource's full detail and compare_resources " +
+          "to set two or three side by side.",
         inputSchema: {
           type: "object",
           properties: {
-            id: {
-              type: "string",
-              description: "Get specific resource (e.g., 'delta.ncsa.access-ci.org')",
-            },
             query: {
               type: "string",
               description:
-                "Search names, descriptions, organizations, and features. For specific hardware models (e.g., 'A100'), use get_resource_hardware instead.",
+                "Words that must all appear, as whole words or word beginnings, in a resource's name, group, organization, description, CPU or GPU models, queue names, datasets or top software (e.g. 'Delta', 'H100', 'AlphaFold'). Prefer the hardware filters to describing hardware in words.",
             },
             type: {
               type: "string",
-              enum: ["Cloud", "GPU Compute", "Innovative / Novel Compute", "CPU Compute", "Service / Other", "Storage", "Commercial Cloud", "Sensors / Instruments"],
-              description: "Filter by resource type",
+              description: "Resource type: 'Compute' or 'Storage'",
+            },
+            organization: {
+              type: "string",
+              description: "Organization name or abbreviation (e.g. 'NCSA', 'Purdue', 'TACC')",
+            },
+            status: {
+              type: "string",
+              description: "'production', 'pre-production' or 'post-production'",
             },
             has_gpu: {
               type: "boolean",
               description:
-                "Filter by GPU: true = only GPU resources, false = only non-GPU resources. Omit to include all resources.",
+                "true: a queue has GPUs or other accelerators (Habana Gaudi, NEC Vector Engine). false: queues are documented and none has one.",
             },
-            organization: {
+            gpu_type: {
               type: "string",
-              description: "Filter by org (NCSA, PSC, Purdue, SDSC, TACC)",
+              description: "Accelerator model text on a queue, e.g. 'H100', 'A100', 'Gaudi'",
             },
-            include_ids: {
+            min_gpu_memory_gb: {
+              type: "number",
+              description: "Minimum memory per GPU, in GB, on a GPU queue",
+            },
+            min_memory_gb: {
+              type: "number",
+              description: "Minimum RAM per node, in GB",
+            },
+            min_cores_per_node: {
+              type: "number",
+              description: "Minimum CPU cores per node",
+            },
+            cpu_type: {
+              type: "string",
+              description: "CPU model text on a queue, e.g. 'EPYC', 'Sapphire Rapids', 'Grace'",
+            },
+            min_wall_time_hours: {
+              type: "number",
+              description: "Minimum maximum job length a queue allows, in hours",
+            },
+            dataset: {
+              type: "string",
+              description: "Name of a dataset hosted on the resource, e.g. 'AlphaFold', 'COCO'",
+            },
+            ondemand: {
               type: "boolean",
-              description: "Include resource IDs for other services",
-              default: true,
+              description: "true keeps resources with a documented Open OnDemand portal",
+            },
+            transfer_method: {
+              type: "string",
+              description: "Documented file transfer method, e.g. 'Globus', 'rsync', 'S3'",
             },
             fields: {
               type: "array",
               items: { type: "string" },
               description:
-                "Project the response down to only these fields. Dotted path syntax: 'total', 'items[].name', 'items[].resource_ids', 'metadata.pagination.has_more', etc. Use to reduce payload size when you only need specific fields. Omit to receive the full response. Only applies to listing results, not single-resource lookups.",
+                "Project the response down to only these fields. Dotted path syntax: 'total', 'items[].name', 'items[].max_cores_per_node', 'items[].matching_queues', 'unchecked'. Omit to receive the full response.",
             },
           },
         },
@@ -178,39 +132,13 @@ export class ComputeResourcesServer extends BaseAccessServer {
         },
       },
       {
-        name: "get_resource_hardware",
-        mutates: false,
-        description:
-          "Get a resource's hardware description from CiDeR (CPU, GPU, memory, storage). " +
-          "KNOWN STALE — prefer https://support.access-ci.org/documentation/resources, which " +
-          "is curated and corrected. CiDeR is updated by resource providers and often is not: " +
-          "verified 2026-09-20, it reports Delta at 124 CPU nodes (actually 132), omits the " +
-          "MI210 in Delta's AMD node, lists Bridges-2 as H100-only (it also has L40S and " +
-          "V100), and returns no specifications at all for Stampede3, KyRIC, Voyager or " +
-          "Neocortex. Where it does carry detail it can be the richer source, so treat what " +
-          "it returns as one input rather than authoritative, and never fill a missing figure " +
-          "from general knowledge of the hardware model.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            id: {
-              type: "string",
-              description:
-                "Resource name (e.g., 'Anvil', 'Delta') or full ID (e.g., 'anvil.purdue.access-ci.org')",
-            },
-          },
-          required: ["id"],
-        },
-      },
-      {
         name: "get_resource",
         mutates: false,
         description:
           "Get a resource's documented details from " +
           "https://support.access-ci.org/documentation/resources: login, file transfer, " +
-          "storage, queues, datasets, software and support links. This is the curated source, " +
-          "so prefer it to search_resources and get_resource_hardware for these details, and " +
-          "cite citation_url. Accepts a name or global resource ID. A name covering several " +
+          "storage, queues, datasets, software and support links. Use it after search_resources " +
+          "for the full detail on one resource, and cite citation_url. Accepts a name or global resource ID. A name covering several " +
           "resources, such as 'Delta', returns `matches` instead; call again with one of " +
           "them. A null value means the documentation doesn't cover it, not that the resource " +
           "lacks it or that anything is wrong. Resources work in different ways (batch " +
@@ -342,17 +270,7 @@ export class ComputeResourcesServer extends BaseAccessServer {
     try {
       switch (name) {
         case "search_resources":
-          return await this.searchResourcesRouter({
-            resource_id: toolArgs.id as string | undefined,
-            query: toolArgs.query as string | undefined,
-            resource_type: toolArgs.type as string | undefined,
-            has_gpu: toolArgs.has_gpu as boolean | undefined,
-            organization: toolArgs.organization as string | undefined,
-            include_resource_ids: toolArgs.include_ids as boolean | undefined,
-            fields: toolArgs.fields as string[] | undefined,
-          });
-        case "get_resource_hardware":
-          return await this.getResourceHardware(toolArgs.id as string);
+          return await this.search(toolArgs);
         case "get_resource":
           return await this.getResource(
             toolArgs.resource as string | undefined,
@@ -368,6 +286,55 @@ export class ComputeResourcesServer extends BaseAccessServer {
     }
   }
 
+  private async search(args: Record<string, unknown>): Promise<CallToolResult> {
+    if (args.ondemand === false) {
+      return this.errorResponse(
+        "ondemand only accepts true: the documentation can't show that a resource has no OnDemand portal"
+      );
+    }
+    const filters = Object.fromEntries(
+      FILTER_KEYS.flatMap((key) => {
+        const value = args[key];
+        return value === undefined || value === null || value === "" ? [] : [[key, value]];
+      })
+    ) as SearchFilters;
+
+    const result = searchResources(await this.documentation.all(), filters);
+    const unknownType =
+      filters.type && !RESOURCE_TYPES.some((type) => type.toLowerCase() === filters.type!.trim().toLowerCase());
+    const hint = result.items.length > 0
+      ? undefined
+      : unknownType
+        ? `type is one of ${RESOURCE_TYPES.join(" or ")}. For GPU or CPU systems use has_gpu.`
+        : filters.query
+          ? "No documented resource matches every word in query. If it names a resource, " +
+            "ACCESS has no documentation for it: it may not be documented yet or may no longer " +
+            "be an ACCESS resource. Say so and point to the resource provider rather than " +
+            "describing its hardware. To search by hardware, use fewer words or filters such " +
+            "as has_gpu, gpu_type or min_memory_gb."
+          : undefined;
+
+    const envelope = {
+      total: result.items.length,
+      items: result.items,
+      unchecked: result.unchecked,
+      ...(result.unavailable.length > 0 && { unavailable: result.unavailable }),
+      ...(hint && { hint }),
+      metadata: {
+        filters_applied: Object.fromEntries(FILTER_KEYS.map((key) => [key, filters[key] ?? null])),
+      },
+      documentation: { links: this.listingLinks(Object.keys(filters).length ? "search" : "list") },
+    };
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify(projectFields(envelope, args.fields as string[] | undefined)),
+        },
+      ],
+    };
+  }
+
   private async getResource(input: string | undefined, fields?: string[]) {
     if (!input?.trim()) {
       return this.errorResponse("Provide a resource name or global resource ID");
@@ -376,7 +343,7 @@ export class ComputeResourcesServer extends BaseAccessServer {
     const { resource, matches } = await this.documentation.resolve(input);
     if (matches?.length === 0) {
       return this.errorResponse(`Resource not found: '${input}'`, {
-        hint: "Use the name shown at https://support.access-ci.org/documentation/resources",
+        hint: `Use search_resources, or the name shown at ${DOCUMENTATION_URL}`,
       });
     }
 
@@ -414,40 +381,13 @@ export class ComputeResourcesServer extends BaseAccessServer {
     };
   }
 
-  /**
-   * Router for consolidated search_resources tool
-   * Routes to appropriate handler based on parameters
-   */
-  private async searchResourcesRouter(args: SearchResourcesArgs): Promise<CallToolResult> {
-    // Get specific resource details by ID (lookup — fields ignored, not enveloped)
-    if (args.resource_id) {
-      return await this.getComputeResource(args.resource_id);
-    }
-
-    // No parameters = list all resources.
-    // has_gpu uses explicit-undefined: `has_gpu: false` is a real filter
-    // (find CPU-only resources) and must NOT fall through to the
-    // unfiltered listing.
-    if (
-      !args.query &&
-      !args.resource_type &&
-      args.has_gpu === undefined &&
-      !args.organization
-    ) {
-      return await this.listComputeResources(args.fields);
-    }
-
-    // Search/filter resources
-    return await this.searchResources(args);
-  }
-
   async handleResourceRead(request: ReadResourceRequest): Promise<ReadResourceResult> {
     const { uri } = request.params;
 
     if (uri === "accessci://compute-resources") {
       return this.createTextResource(
         uri,
-        "ACCESS-CI Compute Resources API - Use the available tools to query compute resources, hardware specifications, and software availability."
+        "ACCESS-CI resource documentation - Use search_resources, get_resource and compare_resources to find resources and read their queues, storage, login and transfer details."
       );
     }
 
@@ -501,8 +441,8 @@ export class ComputeResourcesServer extends BaseAccessServer {
           step_1:
             "Identify your primary computational pattern (CPU-bound, GPU-accelerated, memory-intensive, data-intensive)",
           step_2: "Match to resource type using the comparison matrix above",
-          step_3: "Use search_resources tool to find specific systems with those capabilities",
-          step_4: "Review hardware specs with get_resource_hardware tool",
+          step_3: "Use search_resources to find systems with those capabilities, e.g. has_gpu or min_memory_gb",
+          step_4: "Review a system's queues, storage and login details with get_resource, or set candidates side by side with compare_resources",
           step_5: "Check software availability with software-discovery service",
         },
       };
@@ -512,20 +452,19 @@ export class ComputeResourcesServer extends BaseAccessServer {
     if (uri === "accessci://compute-resources/gpu-guide") {
       const guide = `# GPU Resource Selection Guide
 
-GPU hardware changes as ACCESS-CI systems are upgraded, and this server's catalog data
-lags behind it — resource providers maintain their own CiDeR records and largely do not.
-For GPU models and memory, read the curated per-resource pages at
-https://support.access-ci.org/documentation/resources, which are maintained against the
-providers' own documentation.
+GPU details come from the per-resource pages at
+https://support.access-ci.org/documentation/resources, where each resource documents its
+queues with accelerator model, count and memory.
 
 ## Finding GPU Resources
 
-1. **search_resources** with \`has_gpu: true\` — lists GPU-enabled systems with their
-   feature categories. The filter is imprecise: it includes resources whose hardware
-   payload carries no GPU block, and excludes non-GPU accelerators such as Habana Gaudi.
-2. **get_resource_hardware** with a resource ID — returns the catalog's hardware
-   description. Verified stale on several resources (see the server README), so confirm
-   models and memory against the documentation before relying on them.
+1. **search_resources** with \`has_gpu: true\` — lists resources with an accelerator on at
+   least one queue, including non-NVIDIA ones such as Habana Gaudi. Add \`gpu_type\` (e.g.
+   'H100') or \`min_gpu_memory_gb\` to narrow it, and read \`matching_queues\` for the
+   partitions that qualify. Resources listed under \`unchecked\` have no queue
+   documentation, which doesn't mean they have no GPUs.
+2. **get_resource** — the full queue table, login and storage details for one resource.
+3. **compare_resources** — two or three candidates side by side.
 
 ## General GPU Selection Guidance
 
@@ -542,25 +481,19 @@ Most ACCESS GPU systems support:
 - **Model parallelism**: Split model layers across GPUs
 - **Pipeline parallelism**: Different model stages on different GPUs
 
-Use **search_resources** with **has_gpu: true** to find candidate systems, then confirm
-GPU models, memory and per-node counts against
-https://support.access-ci.org/documentation/resources.
+Use **search_resources** with **has_gpu: true** to find candidate systems, then
+**get_resource** for the queues that have the GPUs, and cite its citation_url.
 `;
       return this.createMarkdownResource(uri, guide);
     }
 
     if (uri === "accessci://compute-resources/resource-types") {
       return this.createJsonResource(uri, {
-        description: "ACCESS-CI resource types derived from the Resource Type feature category in the API. Each resource may have multiple types.",
+        description:
+          "Resource types used by the ACCESS resource documentation. Filter search_resources by type, then by hardware within it.",
         resource_types: [
-          { name: "Cloud", description: "Cloud computing environments for flexible, on-demand workloads" },
-          { name: "GPU Compute", description: "Systems with GPU accelerators for parallel workloads" },
-          { name: "Innovative / Novel Compute", description: "Specialized or experimental computing architectures" },
-          { name: "CPU Compute", description: "Traditional CPU-based high-performance computing clusters" },
-          { name: "Service / Other", description: "Supporting services, gateways, and other infrastructure" },
-          { name: "Storage", description: "Large-scale data storage and management systems" },
-          { name: "Commercial Cloud", description: "Commercial cloud provider resources available through ACCESS" },
-          { name: "Sensors / Instruments", description: "Sensor networks and scientific instruments" },
+          { name: "Compute", description: "Batch clusters, cloud and VM platforms, and other systems that run jobs" },
+          { name: "Storage", description: "Data storage and archive systems" },
         ],
       });
     }
@@ -617,8 +550,8 @@ ${contextSections.join("\n\n")}
 To answer this request, use the following tools to gather live data:
 
 1. **search_resources** — list all available ACCESS-CI resources and their types
-2. **search_resources** with \`has_gpu: true\` — if GPU resources are relevant
-3. **get_resource_hardware** — get detailed hardware specs for promising systems
+2. **search_resources** with filters such as \`has_gpu\`, \`min_gpu_memory_gb\` or \`min_memory_gb\` — to narrow to systems with the hardware I need
+3. **get_resource** or **compare_resources** — for queue, storage and access details on promising systems
 
 Based on the live data and my requirements, please:
 
@@ -648,558 +581,5 @@ Consider:
     }
 
     throw new Error(`Unknown prompt: ${name}`);
-  }
-
-  /**
-   * Static mapping of known organization IDs to names.
-   * This serves as a fallback when the API doesn't return organization info.
-   *
-   * These names are fetched from /wh2/cider/v1/organizations/ endpoint.
-   * Mapping updated: 2025-10-21 via scripts/fetch-organizations-working-endpoint.js
-   *
-   * Note: API should be preferred (see listComputeResources method), this is only
-   * used if API fetch fails. Allows new organizations to be discovered automatically.
-   */
-  private readonly KNOWN_ORGANIZATIONS: Record<number, string> = {
-    // Major HPC Centers
-    844: "National Center for Supercomputing Applications",
-    856: "San Diego Supercomputer Center",
-    848: "Pittsburgh Supercomputing Center",
-    2058: "Texas Advanced Computing Center",
-
-    // Universities
-    467: "Texas A&M University",
-    476: "University of Texas at Austin",
-    561: "Indiana University",
-    563: "University of Kentucky",
-    1869: "Purdue University",
-    178: "Northwestern University",
-    471: "Texas Tech University",
-    14449: "Institute for Advanced Computational Science at Stony Brook University",
-
-    // Research Infrastructure & Projects
-    2000: "Renaissance Computing Institute",
-    653: "NSF National Center for Atmospheric Research",
-    2440: "OSG Consortium",
-    4659: "Science Gateways Center of Excellence",
-    12964: "Open Storage Network",
-    16235: "ACCESS Support",
-    19169: "CloudBank",
-  };
-
-  /**
-   * Common organization abbreviations for better search UX
-   * Includes HPC centers, universities, and research institutions
-   */
-  private readonly ORG_ABBREVIATIONS: Record<string, string[]> = {
-    // Major HPC/Supercomputing Centers
-    NCSA: ["National Center for Supercomputing Applications", "Illinois"],
-    SDSC: ["San Diego Supercomputer Center"],
-    PSC: ["Pittsburgh Supercomputing Center"],
-    TACC: ["Texas Advanced Computing Center"],
-    NCAR: [
-      "NSF National Center for Atmospheric Research",
-      "National Center for Atmospheric Research",
-    ],
-    NERSC: ["National Energy Research Scientific Computing Center"],
-    ALCF: ["Argonne Leadership Computing Facility"],
-    OLCF: ["Oak Ridge Leadership Computing Facility"],
-
-    // Universities (common abbreviations)
-    IU: ["Indiana University"],
-    UK: ["University of Kentucky"],
-    TAMU: ["Texas A&M University", "Texas A&M"],
-    UT: ["University of Texas at Austin"],
-    TTU: ["Texas Tech University"],
-    OSU: ["Ohio State University"],
-    ASU: ["Arizona State University"],
-    FSU: ["Florida State University"],
-    PSU: ["Pennsylvania State University", "Penn State"],
-    MSU: ["Michigan State University"],
-    USC: ["University of Southern California"],
-    UCLA: ["University of California, Los Angeles"],
-    UIUC: ["University of Illinois at Urbana-Champaign", "Illinois"],
-    MIT: ["Massachusetts Institute of Technology"],
-    CU: ["University of Colorado"],
-    "CU Boulder": ["University of Colorado Boulder"],
-    UChicago: ["University of Chicago"],
-
-    // Research Computing Consortia & Networks
-    OSG: ["OSG Consortium", "Open Science Grid"],
-    OSN: ["Open Storage Network"],
-    SGCI: ["Science Gateways Center of Excellence", "Science Gateways Community Institute"],
-    RENCI: ["Renaissance Computing Institute"],
-    ACCESS: ["ACCESS Support", "Advanced Cyberinfrastructure Coordination Ecosystem"],
-    XSEDE: ["Extreme Science and Engineering Discovery Environment"], // Legacy
-  };
-
-  private buildFeatureLookups(apiResults: {
-    features?: ApiFeature[];
-    feature_categories?: ApiFeatureCategory[];
-  }): {
-    featureMap: Map<number, { name: string; categoryName: string }>;
-  } {
-    const categoryMap = new Map<number, string>();
-    for (const cat of apiResults.feature_categories || []) {
-      categoryMap.set(cat.feature_category_id, cat.feature_category_name);
-    }
-    const featureMap = new Map<number, { name: string; categoryName: string }>();
-    for (const feat of apiResults.features || []) {
-      const categoryName = categoryMap.get(feat.feature_category_id) || "Unknown";
-      featureMap.set(feat.feature_id, { name: feat.feature_name, categoryName });
-    }
-    return { featureMap };
-  }
-
-  private resolveFeatures(
-    featureIds: number[],
-    featureMap: Map<number, { name: string; categoryName: string }>
-  ): { names: string[]; categories: Record<string, string[]> } {
-    const names: string[] = [];
-    const categories: Record<string, string[]> = {};
-    for (const id of featureIds) {
-      const feat = featureMap.get(id);
-      if (feat) {
-        names.push(feat.name);
-        if (!categories[feat.categoryName]) {
-          categories[feat.categoryName] = [];
-        }
-        categories[feat.categoryName].push(feat.name);
-      }
-    }
-    return { names, categories };
-  }
-
-  private deriveResourceTypes(
-    featureIds: number[],
-    featureMap: Map<number, { name: string; categoryName: string }>
-  ): string[] {
-    return featureIds
-      .filter((id) => {
-        const feat = featureMap.get(id);
-        return feat?.categoryName === "Resource Type";
-      })
-      .map((id) => featureMap.get(id)!.name);
-  }
-
-  private async listComputeResources(fields?: string[]) {
-    // Get all active resource groups
-    const response = await this.httpClient.get(
-      "/wh2/cider/v1/access-active-groups/type/resource-catalog.access-ci.org/"
-    );
-
-    // Also try to get organization information
-    const orgMapping: Map<number, string> = new Map();
-
-    // First, add known static mappings as fallback
-    Object.entries(this.KNOWN_ORGANIZATIONS).forEach(([id, name]) => {
-      orgMapping.set(parseInt(id), name);
-    });
-
-    // Then try to fetch live organization data (will override static mappings)
-    // NOTE: Using /organizations/ endpoint (not /access-active-groups/type/organizations.access-ci.org/
-    // which returns 0 results). See ACCESS_CI_API_ISSUE_ORGANIZATIONS.md for details.
-    try {
-      const orgResponse = await this.httpClient.get("/wh2/cider/v1/organizations/");
-      if (orgResponse.status === 200 && orgResponse.data?.results) {
-        orgResponse.data.results.forEach((org: OrganizationResult) => {
-          if (org.organization_id && org.organization_name) {
-            orgMapping.set(org.organization_id, org.organization_name);
-          }
-        });
-      }
-    } catch (e) {
-      // If organizations endpoint fails, we'll use the static mapping
-      console.warn("Could not fetch organization names from API, using fallback mapping");
-    }
-
-    // Check if the response has the expected structure
-    if (!response.data || !response.data.results || !response.data.results.active_groups) {
-      throw new Error(`Unexpected API response structure. Got: ${JSON.stringify(response.data)}`);
-    }
-
-    const { featureMap } = this.buildFeatureLookups(response.data.results);
-
-    const computeResources = response.data.results.active_groups
-      .filter((group: ActiveGroup) => {
-        // Filter for compute resources (category 1 = "Compute & Storage Resources")
-        return (
-          group.rollup_info_resourceids &&
-          group.rollup_feature_ids &&
-          !group.rollup_feature_ids.includes(137)
-        );
-      })
-      .map((group: ActiveGroup) => {
-        // Map organization IDs to names if available
-        const organizationNames = (group.rollup_organization_ids || []).map(
-          (id: number) => orgMapping.get(id) || id.toString()
-        );
-
-        const featureIds = group.rollup_feature_ids || [];
-        const resolved = this.resolveFeatures(featureIds, featureMap);
-        const resourceTypes = this.deriveResourceTypes(featureIds, featureMap);
-
-        return {
-          id: group.info_groupid,
-          name: group.group_descriptive_name,
-          description: group.group_description,
-          organization_ids: group.rollup_organization_ids,
-          organization_names: organizationNames,
-          features: group.rollup_feature_ids,
-          feature_names: resolved.names,
-          feature_categories: resolved.categories,
-          resources: group.rollup_info_resourceids,
-          logoUrl: group.group_logo_url,
-          accessAllocated: group.rollup_feature_ids?.includes(139) ?? false,
-          // Add computed fields for easier filtering
-          hasGpu: this.detectGpuCapability(group),
-          resourceTypes,
-          // Include the actual resource IDs that other ACCESS-CI services can use
-          resourceIds: group.rollup_info_resourceids || [],
-        };
-      });
-
-    const envelope = {
-      total: computeResources.length,
-      items: computeResources,
-      metadata: {
-        pagination: {
-          limit: computeResources.length,
-          offset: 0,
-          has_more: false,
-        },
-      },
-      documentation: {
-        links: this.listingLinks("list"),
-      },
-    };
-
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(projectFields(envelope, fields)),
-        },
-      ],
-    };
-  }
-
-  private async getComputeResource(resourceId: string) {
-    const sanitizedId = sanitizeGroupId(resourceId);
-
-    // Get detailed resource information
-    const response = await this.httpClient.get(
-      `/wh2/cider/v1/access-active/info_groupid/${sanitizedId}/?format=json`
-    );
-
-    // Check for errors
-    if (response.status !== 200) {
-      return this.errorResponse(
-        `Resource not found: '${resourceId}'`,
-        { hint: "Use 'search_resources' to find valid resource IDs. Resource IDs typically look like 'delta.ncsa.access-ci.org' or 'bridges2.psc.access-ci.org'" }
-      );
-    }
-
-    // Check if results exist and are valid
-    if (!response.data || !response.data.results || response.data.results.length === 0) {
-      return this.errorResponse(
-        `Resource not found: '${resourceId}'`,
-        { hint: "Use 'search_resources' to find valid resource IDs" }
-      );
-    }
-
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(response.data.results, null, 2),
-        },
-      ],
-    };
-  }
-
-  private async getResourceHardware(inputId: string) {
-    // Resolve human-readable name to full resource ID if needed
-    const resolved = await resolveResourceId(inputId, async (query) => {
-      const result = await this.searchResources({ query });
-      const content = result.content[0];
-      if (content.type !== "text") return [];
-      const data = JSON.parse(content.text);
-      return (data.items || []).map((item: ComputeResource) => ({
-        id: item.id || "",
-        name: item.name || "",
-      }));
-    });
-
-    if (!resolved.success) {
-      return this.errorResponse(resolved.error, { hint: resolved.suggestion });
-    }
-    const resourceId = resolved.id;
-
-    const resourceData = await this.getComputeResource(resourceId);
-
-    // Check if getComputeResource returned an error
-    // Parse the content to check if it's an error response
-    const firstContent = resourceData.content[0];
-    if (firstContent.type !== "text") {
-      return resourceData; // Return as-is if not text content
-    }
-    const parsedData = JSON.parse(firstContent.text);
-    if (parsedData.error) {
-      return resourceData; // Return the error response as-is
-    }
-
-    // Extract hardware-related information
-    const fullData = parsedData;
-    const hardwareInfo = fullData.filter(
-      (item: HardwareItem) =>
-        item.cider_type === "Compute" ||
-        item.cider_type === "Storage" ||
-        item.resource_descriptive_name?.toLowerCase().includes("node") ||
-        item.resource_descriptive_name?.toLowerCase().includes("core") ||
-        item.resource_descriptive_name?.toLowerCase().includes("memory") ||
-        item.resource_descriptive_name?.toLowerCase().includes("gpu")
-    );
-
-    // Structure the hardware data for easier consumption
-    const structuredHardware = this.structureHardwareInfo(hardwareInfo);
-
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(
-            {
-              resource_id: resourceId,
-              hardware: structuredHardware,
-              raw_hardware_items: hardwareInfo, // Keep raw data for reference
-              documentation: {
-                note: "Hardware specifications are derived from the resource catalog API",
-                details_url: `https://operations-api.access-ci.org/wh2/cider/v1/access-active/info_groupid/${resourceId}`,
-              },
-            },
-            null,
-            2
-          ),
-        },
-      ],
-    };
-  }
-
-  /**
-   * Structure raw hardware items into organized categories.
-   *
-   * Uses short_name and info_resourceid for reliable categorization since these
-   * fields follow consistent naming conventions (e.g., "Bridges-2 GPU",
-   * "bridges2-gpu.psc.access-ci.org").
-   */
-  private structureHardwareInfo(hardwareItems: HardwareItem[]): Partial<StructuredHardware> {
-    const structured: StructuredHardware = {
-      compute_nodes: [],
-      storage: [],
-      gpus: [],
-      memory: [],
-      other: [],
-    };
-
-    for (const item of hardwareItems) {
-      // Use short_name and info_resourceid for categorization - these are more reliable
-      // than resource_descriptive_name which can have ambiguous text like "CPU/GPU cluster"
-      const shortName = item.short_name?.toLowerCase() || "";
-      const resourceId = item.info_resourceid?.toLowerCase() || "";
-      const type = item.cider_type;
-
-
-      const entry: HardwareEntry = {
-        name: item.resource_descriptive_name || "",
-        type: item.cider_type || "",
-        details: item.resource_description || "",
-      };
-
-      // Categorize using the reliable short_name and resource ID patterns
-      // GPU: short_name contains "GPU" (e.g., "Bridges-2 GPU", "Delta GPU")
-      //      or resourceId contains "-gpu" (e.g., "bridges2-gpu.psc.access-ci.org")
-      if (shortName.includes("gpu") || resourceId.includes("-gpu")) {
-        structured.gpus.push(entry);
-      }
-      // Memory: short_name ends with "EM" or contains "Memory"
-      //         or resourceId contains "-em" (Extreme Memory)
-      else if (
-        shortName.endsWith(" em") ||
-        shortName.includes("memory") ||
-        resourceId.includes("-em.")
-      ) {
-        structured.memory.push(entry);
-      }
-      // Storage: cider_type is Storage, or short_name/resourceId indicates storage
-      else if (
-        type === "Storage" ||
-        shortName.includes("storage") ||
-        shortName.includes("ocean") ||
-        resourceId.includes("-ocean") ||
-        resourceId.includes("storage")
-      ) {
-        structured.storage.push(entry);
-      }
-      // Compute: cider_type is Compute (covers RM/regular compute nodes)
-      else if (type === "Compute") {
-        structured.compute_nodes.push(entry);
-      }
-      // Other: anything that doesn't fit above
-      else {
-        structured.other.push(entry);
-      }
-    }
-
-    // Remove empty categories and return
-    const result: Partial<StructuredHardware> = {};
-    for (const [key, value] of Object.entries(structured)) {
-      if (value.length > 0) {
-        result[key as keyof StructuredHardware] = value;
-      }
-    }
-
-    return result;
-  }
-
-  private detectGpuCapability(group: ActiveGroup): boolean {
-    if (group.rollup_feature_ids?.includes(134)) {
-      return true;
-    }
-    const description = (group.group_description || "").toLowerCase();
-    return description.includes("gpu");
-  }
-
-  private async searchResources(args: {
-    query?: string;
-    resource_type?: string;
-    has_gpu?: boolean;
-    organization?: string;
-    include_resource_ids?: boolean;
-    fields?: string[];
-  }) {
-    const { query, resource_type, has_gpu, organization, include_resource_ids = true, fields } = args;
-
-    // Get all resources first
-    const allResourcesResult = await this.listComputeResources();
-    const firstContent = allResourcesResult.content[0];
-    if (firstContent.type !== "text") {
-      return allResourcesResult; // Return as-is if not text content
-    }
-    const allResourcesData = JSON.parse(firstContent.text);
-    let resources = allResourcesData.items || [];
-
-    // Apply filters
-    if (query) {
-      const searchTerm = query.toLowerCase();
-      resources = resources.filter(
-        (resource: ComputeResource) =>
-          resource.name?.toLowerCase().includes(searchTerm) ||
-          resource.description?.toLowerCase().includes(searchTerm) ||
-          (Array.isArray(resource.organization_names) &&
-            resource.organization_names.some(
-              (org: string) => typeof org === "string" && org.toLowerCase().includes(searchTerm)
-            )) ||
-          (Array.isArray(resource.feature_names) &&
-            resource.feature_names.some(
-              (feat: string) => typeof feat === "string" && feat.toLowerCase().includes(searchTerm)
-            ))
-      );
-    }
-
-    if (resource_type) {
-      resources = resources.filter(
-        (resource: ComputeResource) => resource.resourceTypes?.includes(resource_type) ?? false
-      );
-    }
-
-    // Only filter by GPU when has_gpu is explicitly true or false (not null/undefined)
-    if (has_gpu === true || has_gpu === false) {
-      resources = resources.filter((resource: ComputeResource) => resource.hasGpu === has_gpu);
-    }
-
-    // Organization filter (ENHANCED: works with partial names, abbreviations, and searches known orgs)
-    if (organization) {
-      const orgLower = organization.toLowerCase();
-      const orgUpper = organization.toUpperCase();
-
-      // Check if input is an abbreviation and expand it to full names
-      const searchTerms = [orgLower];
-      if (this.ORG_ABBREVIATIONS[orgUpper]) {
-        searchTerms.push(...this.ORG_ABBREVIATIONS[orgUpper].map((n) => n.toLowerCase()));
-      }
-
-      // Find matching organization IDs from known organizations using all search terms
-      const matchingKnownOrgIds = Object.entries(this.KNOWN_ORGANIZATIONS)
-        .filter(([_, name]) => searchTerms.some((term) => name.toLowerCase().includes(term)))
-        .map(([id, _]) => parseInt(id));
-
-      resources = resources.filter((resource: ComputeResource) => {
-        if (!Array.isArray(resource.organization_names)) {
-          return false;
-        }
-
-        // Check if any organization name matches any of our search terms
-        const nameMatch = resource.organization_names.some(
-          (org: string) =>
-            typeof org === "string" && searchTerms.some((term) => org.toLowerCase().includes(term))
-        );
-
-        if (nameMatch) {
-          return true;
-        }
-
-        // Also check if the organization IDs match known organizations
-        // (This handles cases where organization_names contains IDs as strings)
-        if (matchingKnownOrgIds.length > 0 && resource.organization_ids) {
-          const hasMatchingId = matchingKnownOrgIds.some((knownId) =>
-            resource.organization_ids?.includes(knownId)
-          );
-          if (hasMatchingId) {
-            return true;
-          }
-        }
-
-        return false;
-      });
-    }
-
-    // Add resource IDs if requested
-    if (include_resource_ids) {
-      resources = resources.map((resource: ComputeResource) => ({
-        ...resource,
-        resource_ids: resource.resourceIds,
-      }));
-    }
-
-    const envelope = {
-      total: resources.length,
-      items: resources,
-      metadata: {
-        pagination: {
-          limit: resources.length,
-          offset: 0,
-          has_more: false,
-        },
-        filters_applied: {
-          query: query ?? null,
-          type: resource_type ?? null,
-          has_gpu: has_gpu ?? null,
-          organization: organization ?? null,
-        },
-      },
-      documentation: {
-        links: this.listingLinks("search"),
-      },
-    };
-
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(projectFields(envelope, fields)),
-        },
-      ],
-    };
   }
 }

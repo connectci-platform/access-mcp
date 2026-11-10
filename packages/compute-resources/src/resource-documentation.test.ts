@@ -481,3 +481,32 @@ describe("Resource Documentation tools", () => {
     );
   });
 });
+
+describe("ResourceDocumentation.all", () => {
+  it("loads every page at most six at a time and keeps each detail with its listing", async () => {
+    const { ResourceDocumentation } = await import("./resource-documentation.js");
+    const resources = Array.from({ length: 20 }, (_, index) =>
+      listing(1000 + index, `R${index}`, { rid: String(1000 + index) })
+    );
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const docs = new ResourceDocumentation(async (url) => {
+      if (url.endsWith("/resources")) return { status: 200, data: { resources } };
+      if (url.endsWith("/resource-groups")) return { status: 200, data: { groups: [] } };
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      const id = url.split("/").pop()!;
+      // Later pages answer first, so results arrive out of order.
+      await new Promise((resolve) => setTimeout(resolve, 30 - (Number(id) % 20)));
+      inFlight--;
+      return { status: 200, data: { title: `detail ${id}` } };
+    });
+
+    const all = await docs.all();
+
+    expect(maxInFlight).toBeLessThanOrEqual(6);
+    expect(all.map(({ listing, detail }) => [listing.resource_id, detail?.title])).toEqual(
+      resources.map(({ resource_id }) => [resource_id, `detail ${resource_id}`])
+    );
+  });
+});

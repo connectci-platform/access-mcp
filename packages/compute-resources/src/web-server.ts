@@ -20,20 +20,16 @@ export function startWebServer(port: number = 3000) {
       version: "0.3.0",
       tools: [
         {
-          name: "list_compute_resources",
-          description: "List all ACCESS-CI compute resources",
+          name: "search_resources",
+          description: "Find ACCESS resources by name, hardware, datasets or access method",
         },
         {
-          name: "get_compute_resource",
-          description: "Get detailed information about a specific compute resource",
+          name: "get_resource",
+          description: "Get a resource's documented login, storage, queue and support details",
         },
         {
-          name: "get_resource_hardware",
-          description: "Get hardware specifications for a compute resource",
-        },
-        {
-          name: "get_resource_software",
-          description: "Get available software for a compute resource",
+          name: "compare_resources",
+          description: "Compare two or three resources from their documentation",
         },
       ],
       resources: [

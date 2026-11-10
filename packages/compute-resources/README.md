@@ -1,38 +1,20 @@
 # Compute Resources MCP Server
 
-MCP server for ACCESS-CI compute resources including hardware specifications, capabilities, and configurations.
-
-## Data source and its limits
-
-This server reads CiDeR, the ACCESS resource catalog, via the operations API. Resource
-providers are responsible for keeping their CiDeR records current and largely do not, so
-treat what it returns as incomplete rather than authoritative. Verified 2026-09-20:
-
-- `get_resource_hardware` reports Delta at 124 CPU nodes where it has 132, omits the
-  MI210 in Delta's AMD node, and lists Bridges-2 as H100-only when it also has L40S and
-  V100. NCSA's and PSC's own user guides agree with the curated documentation, not with
-  CiDeR.
-- It returns no hardware specifications at all for Stampede3, KyRIC, Voyager or
-  Neocortex — the description is prose with no node counts or memory.
-- `has_gpu` includes resources whose hardware payload has no GPU block and excludes
-  non-GPU accelerators such as Habana Gaudi.
-- A resource's display name may carry a hand-typed `COMING SOON` or `NO NEW ALLOCATIONS`
-  label that contradicts its own `accessAllocated` flag.
-
-**For hardware specifications, prefer the curated per-resource pages under
-https://support.access-ci.org/documentation/resources**, which are maintained against
-the resource providers' own documentation. `get_resource` and `compare_resources` read
-those pages. Use `search_resources` to enumerate and filter the catalog, and to resolve
-resource IDs for other ACCESS services.
+MCP server for ACCESS resources, read from the curated per-resource documentation at
+https://support.access-ci.org/documentation/resources through its Resource Documentation
+API. Responses are cached for 10 minutes, since the site limits regular traffic to 300
+requests per 10 minutes.
 
 ## Usage Examples
 
 ### Discovery & Search
 ```
-"List all GPU resources"
-"Resources at NCSA"
-"Cloud computing systems"
-"Delta hardware specifications"
+"Which resources have H100s?"
+"I need GPUs with at least 80 GB each and a terabyte of node memory"
+"Where can I run a seven-day job?"
+"Which resources host the AlphaFold databases?"
+"Storage I can reach with Globus"
+"Resources at NCSA with Open OnDemand"
 ```
 
 ### Recommendations
@@ -46,49 +28,69 @@ resource IDs for other ACCESS services.
 
 ### `search_resources`
 
-Search and filter ACCESS-CI compute resources. Returns resource IDs usable by other ACCESS-CI services.
+Find resources by what their documentation says. With no filters it lists every documented
+resource. Each item has its global resource ID (`null` for resources outside CiDeR, such as
+Fabric and Sage), group, accelerator models, largest node memory, most cores per node,
+longest wall time, OnDemand URL, transfer methods and `citation_url`.
+
+Hardware filters are checked per queue, and a resource matches only when one queue meets
+all of them at once. `matching_queues` names those queues with a one-line summary of
+their hardware, so an answer can cite the partition rather than combine figures from
+different ones. Any accelerator counts for `has_gpu`, including Habana Gaudi and NEC
+Vector Engines.
+
+The documentation doesn't cover every field for every resource. A resource that can't be
+checked against a filter is listed in `unchecked` with the filters it couldn't be
+checked against, rather than treated as not matching. A resource whose page couldn't be
+read is listed in `unavailable` instead, including for a query its name doesn't match. Storage systems are left out of hardware
+searches. A system whose description mentions an accelerator its queues don't list,
+such as Neocortex's Cerebras engines, counts as unknown for `has_gpu`.
+
+Only documented resources are searched. A query that matches none of them, such as
+Rockfish, which has left ACCESS, gets a `hint` saying the resource may be undocumented or
+no longer part of ACCESS, so the answer points to the provider rather than guessing.
+
+Query words, and the text filters, match whole words or the start of a word, so `AI`
+doesn't match "available" and `L4` doesn't match L40S. "Bridges 2" and "Stampede 3"
+match Bridges-2 and Stampede3, and a plural such as "H100s" matches H100. Words such as
+"cluster", "resources" and "which" are ignored, and a query made only of them filters
+nothing. When nothing matches, `hint` says why.
 
 **Parameters:**
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `id` | string | Get specific resource (e.g., "delta.ncsa.access-ci.org") |
-| `query` | string | Search names, descriptions, organizations |
-| `type` | enum | Filter: `compute`, `storage`, `cloud`, `gpu`, `cpu` |
-| `has_gpu` | boolean | Filter for GPU resources |
-| `organization` | string | Filter by org: `NCSA`, `PSC`, `Purdue`, `SDSC`, `TACC` |
-| `limit` | number | Max results (default: 50) |
+| `query` | string | Words that must all appear in the name, group, organization, description, CPU or GPU models, datasets or top software |
+| `type` | string | `Compute` or `Storage` |
+| `organization` | string | Organization name or abbreviation (`NCSA`, `PSC`, `SDSC`, `TACC`, `IU`, `TAMU`…) |
+| `status` | string | `production`, `pre-production` or `post-production` |
+| `has_gpu` | boolean | `true`: a queue has an accelerator. `false`: queues are documented and none has one |
+| `gpu_type` | string | Accelerator model text, such as `H100` or `Gaudi` (per queue) |
+| `min_gpu_memory_gb` | number | Minimum memory per GPU (per queue) |
+| `min_memory_gb` | number | Minimum RAM per node (per queue) |
+| `min_cores_per_node` | number | Minimum CPU cores per node (per queue) |
+| `cpu_type` | string | CPU model text, such as `EPYC` or `Grace` (per queue) |
+| `min_wall_time_hours` | number | Minimum job length a queue allows (per queue) |
+| `dataset` | string | Hosted dataset name, such as `AlphaFold` |
+| `ondemand` | boolean | `true` keeps resources with a documented Open OnDemand portal |
+| `transfer_method` | string | File transfer method, such as `Globus` or `rsync` |
+| `fields` | string[] | Limit the response to these fields, such as `items[].id` |
 
 **Examples:**
 ```javascript
-// List all resources
+// List all documented resources
 search_resources({})
 
-// Get specific resource
-search_resources({ id: "expanse.sdsc.access-ci.org" })
+// H100 queues with 80 GB per GPU
+search_resources({ gpu_type: "H100", min_gpu_memory_gb: 80 })
 
-// Find GPU resources at NCSA
-search_resources({ has_gpu: true, organization: "NCSA" })
-```
-
-### `get_resource_hardware`
-
-Get detailed hardware specs (CPU, GPU, memory, storage) for a resource.
-
-**Parameters:**
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `id` | string | Resource ID (required) |
-
-**Example:**
-```javascript
-get_resource_hardware({ id: "delta.ncsa.access-ci.org" })
+// Large-memory CPU nodes with long jobs
+search_resources({ has_gpu: false, min_memory_gb: 1000, min_wall_time_hours: 96 })
 ```
 
 ### `get_resource`
 
 Get a resource's documented login, file transfer, storage, queue, dataset, software and
-support details from https://support.access-ci.org/documentation/resources. Responses
-are cached for 10 minutes.
+support details.
 
 `citation_url` is the page to cite. A value is `null` when the documentation doesn't
 cover it, which doesn't mean the resource lacks it, since resources range from batch
@@ -160,7 +162,7 @@ npm install -g @access-mcp/compute-resources
 
 ## Resources
 
-- `accessci://compute-resources` - All compute resources
+- `accessci://compute-resources` - Overview of the tools
 - `accessci://compute-resources/capabilities-matrix` - Resource comparison matrix
 - `accessci://compute-resources/gpu-guide` - GPU selection guide
 - `accessci://compute-resources/resource-types` - Resource type taxonomy
