@@ -64,7 +64,8 @@ describe("Compute Resources - Prompts", () => {
 
       // Should reference live tools instead of hardcoded system names
       expect(promptText).toContain("search_resources");
-      expect(promptText).toContain("get_resource_hardware");
+      expect(promptText).toContain("get_resource");
+      expect(promptText).not.toContain("get_resource_hardware");
 
       // Should include GPU reference
       expect(promptText).toContain("GPU");
@@ -198,7 +199,8 @@ describe("Compute Resources - Prompts", () => {
       // Should reference tools for finding GPU resources
       expect(promptText).toContain("search_resources");
       expect(promptText).toContain("has_gpu");
-      expect(promptText).toContain("get_resource_hardware");
+      expect(promptText).toContain("get_resource");
+      expect(promptText).not.toContain("get_resource_hardware");
     });
 
     it("should include tool instructions for non-GPU requests too", async () => {
@@ -216,7 +218,8 @@ describe("Compute Resources - Prompts", () => {
 
       // Should still reference tools
       expect(promptText).toContain("search_resources");
-      expect(promptText).toContain("get_resource_hardware");
+      expect(promptText).toContain("get_resource");
+      expect(promptText).not.toContain("get_resource_hardware");
     });
   });
 });
