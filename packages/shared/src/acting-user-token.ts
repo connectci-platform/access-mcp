@@ -44,6 +44,12 @@ export interface ActingUserTokenConfig {
   jwksUrl?: string;
   audience: string;
   allowedAzp: string[];
+  /**
+   * The kids of the portal's exchange key. The same JWKS publishes the agent
+   * key, so only these may sign an acting-user token. List two while a key
+   * rotates.
+   */
+  kids: string[];
 }
 
 /**
@@ -54,6 +60,8 @@ export interface ActingUserTokenConfig {
  * MCP_TOKEN_JWKS_URL    default <issuer>/.well-known/exchange-jwks.json
  * MCP_TOKEN_AUDIENCE    default https://mcp.access-ci.org
  * MCP_TOKEN_ALLOWED_AZP comma-separated, default access-assistant
+ * MCP_TOKEN_KIDS        comma-separated kids of the portal's exchange key;
+ *                       required with MCP_TOKEN_ISSUER
  *
  * Throws for a configuration that can't work, so the server refuses to start
  * rather than refusing every write.
@@ -75,16 +83,25 @@ export function actingUserTokenConfigFromEnv(
   if (jwksUrl && !/^https?:\/\//.test(jwksUrl)) {
     throw new Error("MCP_TOKEN_JWKS_URL must be an http(s) URL");
   }
-  const allowedAzp = (env.MCP_TOKEN_ALLOWED_AZP || DEFAULT_ALLOWED_AZP)
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const list = (value: string) =>
+    value
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  const allowedAzp = list(env.MCP_TOKEN_ALLOWED_AZP || DEFAULT_ALLOWED_AZP);
+  const kids = list(env.MCP_TOKEN_KIDS || "");
+  if (issuer && kids.length === 0) {
+    throw new Error(
+      "MCP_TOKEN_ISSUER requires MCP_TOKEN_KIDS, the kid of the portal's exchange key"
+    );
+  }
   return {
     mode,
     issuer,
     jwksUrl,
     audience: env.MCP_TOKEN_AUDIENCE?.trim() || DEFAULT_ACTING_USER_AUDIENCE,
     allowedAzp,
+    kids,
   };
 }
 
@@ -102,6 +119,7 @@ export interface VerifiedActingUser {
 
 export class ActingUserTokenVerifier {
   private readonly getKey: JWTVerifyGetKey;
+  private readonly remote?: ReturnType<typeof createRemoteJWKSet>;
   private readonly now: () => number;
 
   constructor(
@@ -114,9 +132,35 @@ export class ActingUserTokenVerifier {
     // jose caches the set, refetches on an unknown kid at most every 30s,
     // and pins the key to ES256 below, so an HS256 token signed with the
     // public JWK, or alg none, never verifies.
-    this.getKey =
-      options.getKey ?? createRemoteJWKSet(new URL(config.jwksUrl!), { timeoutDuration: 5000 });
+    if (!options.getKey) {
+      this.remote = createRemoteJWKSet(new URL(config.jwksUrl!), { timeoutDuration: 5000 });
+    }
+    const inner = options.getKey ?? this.remote!;
+    // Only the exchange key may sign: a token without a kid, or with any
+    // other kid in the set (the agent key's), is refused before key lookup.
+    this.getKey = (header, token) => {
+      if (typeof header.kid !== "string" || !config.kids.includes(header.kid)) {
+        throw new InvalidActingUserTokenError("kid is not the portal's exchange key");
+      }
+      return inner(header, token);
+    };
     this.now = options.now ?? (() => Date.now() / 1000);
+  }
+
+  /**
+   * Fetches the key set now, for a startup check. Returns what is wrong, or
+   * null if every pinned kid is in the set.
+   */
+  async checkKeys(): Promise<string | null> {
+    if (!this.remote) return null;
+    try {
+      await this.remote.reload();
+    } catch (error) {
+      return error instanceof Error ? `${error.name}: ${error.message}` : "fetch failed";
+    }
+    const published = (this.remote.jwks()?.keys ?? []).map((k) => k.kid);
+    const missing = this.config.kids.filter((kid) => !published.includes(kid));
+    return missing.length ? `missing kid ${missing.join(", ")}` : null;
   }
 
   async verify(token: string): Promise<VerifiedActingUser> {
@@ -131,6 +175,9 @@ export class ActingUserTokenVerifier {
         currentDate: new Date(this.now() * 1000),
       }));
     } catch (error) {
+      if (error instanceof InvalidActingUserTokenError) {
+        throw error;
+      }
       if (
         error instanceof errors.JWKSTimeout ||
         error instanceof errors.JWKSInvalid ||

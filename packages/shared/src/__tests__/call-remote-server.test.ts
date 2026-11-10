@@ -84,6 +84,15 @@ describe("BaseAccessServer.callRemoteServer", () => {
     expect(calls[0].headers["X-Acting-User"]).toBe("alice@access-ci.org");
   });
 
+  it("never forwards the token to a peer that doesn't act for users", async () => {
+    process.env.ACCESS_MCP_SERVICES = "nsf-awards=http://mcp-nsf-awards:3000";
+    await requestContextStorage.run(
+      { actingUser: "alice@access-ci.org", actingUserAuth: "token", actingUserToken: "tok.en.sig" },
+      () => server.callPeer("nsf-awards", "search_nsf_awards", {})
+    );
+    expect(calls[0].headers["Authorization"]).toBeUndefined();
+  });
+
   it("sends no Authorization when the call was not token-verified", async () => {
     await requestContextStorage.run(
       { actingUser: "alice@access-ci.org", actingUserAuth: "header" },

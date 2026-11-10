@@ -126,6 +126,7 @@ describe("ActingUserTokenVerifier", () => {
     issuer: ISSUER,
     audience: MCP_AUD,
     allowedAzp: ["access-assistant"],
+    kids: ["exchange-kid"],
   };
   const verifier = () => new ActingUserTokenVerifier(config, { getKey: createLocalJWKSet(jwks()) });
 
@@ -159,6 +160,9 @@ describe("ActingUserTokenVerifier", () => {
     ["alg none", () => unsigned(goodClaims())],
     ["HS256 keyed with the public JWK", () => hs256WithPublicKey(goodClaims())],
     ["garbage", () => "not-a-jwt"],
+    // The agent key is in the same JWKS; only the exchange key may sign these.
+    ["valid MCP claims signed by the agent key", () => mcpToken({}, { key: "agent" })],
+    ["no kid", () => mcpToken({}, { header: { kid: undefined } })],
   ];
 
   it.each(refused)("refuses %s", async (_name, make) => {
@@ -187,12 +191,21 @@ describe("actingUserTokenConfigFromEnv", () => {
       jwksUrl: undefined,
       audience: MCP_AUD,
       allowedAzp: ["access-assistant"],
+      kids: [],
     });
   });
-  it("derives the JWKS URL from the issuer", () => {
-    expect(actingUserTokenConfigFromEnv({ MCP_TOKEN_ISSUER: ISSUER }).jwksUrl).toBe(
-      `${ISSUER}/.well-known/exchange-jwks.json`
+  it("requires the exchange key's kid once an issuer is set", () => {
+    expect(() => actingUserTokenConfigFromEnv({ MCP_TOKEN_ISSUER: ISSUER })).toThrow(
+      /MCP_TOKEN_KIDS/
     );
+    expect(
+      actingUserTokenConfigFromEnv({ MCP_TOKEN_ISSUER: ISSUER, MCP_TOKEN_KIDS: "a, b" }).kids
+    ).toEqual(["a", "b"]);
+  });
+  it("derives the JWKS URL from the issuer", () => {
+    expect(
+      actingUserTokenConfigFromEnv({ MCP_TOKEN_ISSUER: ISSUER, MCP_TOKEN_KIDS: "k" }).jwksUrl
+    ).toBe(`${ISSUER}/.well-known/exchange-jwks.json`);
   });
   it("refuses token mode without an issuer", () => {
     expect(() => actingUserTokenConfigFromEnv({ MCP_ACTING_USER_AUTH: "token" })).toThrow(
@@ -249,6 +262,9 @@ class ActingServer extends BaseAccessServer {
   public get log() {
     return this.logger;
   }
+  public envUser() {
+    return this.envActingUser();
+  }
 }
 
 /** A stand-in for the portal's JWKS and for mcp-auth's /verify, counting hits. */
@@ -286,11 +302,16 @@ describe("/tools on a server that acts for users", () => {
   let baseUrl: string;
   const saved = { ...process.env };
 
-  async function boot(env: Record<string, string | undefined> = {}, actsForUsers = true) {
+  async function boot(
+    env: Record<string, string | undefined> = {},
+    actsForUsers = true,
+    onCreate?: (s: ActingServer) => void
+  ) {
     Object.assign(process.env, {
       MCP_API_KEY: KEY,
       MCP_TOKEN_ISSUER: ISSUER,
       MCP_TOKEN_JWKS_URL: `${sideUrl}/.well-known/exchange-jwks.json`,
+      MCP_TOKEN_KIDS: "exchange-kid",
       OAUTH_VERIFY_URL: `${sideUrl}/verify`,
     });
     for (const [k, v] of Object.entries(env)) {
@@ -298,6 +319,7 @@ describe("/tools on a server that acts for users", () => {
       else process.env[k] = v;
     }
     const s = new ActingServer(actsForUsers);
+    onCreate?.(s);
     await s.start({ httpPort: 0 });
     server = s;
     baseUrl = `http://localhost:${s.httpPort}`;
@@ -427,6 +449,59 @@ describe("/tools on a server that acts for users", () => {
     expect(r.status).toBe(401);
   });
 
+  it("fetches the portal's JWKS at startup, before any call", async () => {
+    await boot();
+    expect(hits.jwks).toBe(1);
+  });
+
+  it("logs an error at startup when the JWKS can't be fetched", async () => {
+    hits.jwksDown = true;
+    let errorSpy: ReturnType<typeof vi.spyOn> | undefined;
+    await boot({}, true, (s) => {
+      errorSpy = vi.spyOn(s.log, "error");
+    });
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Acting-user token keys could not be fetched at startup",
+      expect.anything()
+    );
+  });
+
+  it("logs an error at startup when the pinned kid isn't in the JWKS", async () => {
+    let errorSpy: ReturnType<typeof vi.spyOn> | undefined;
+    await boot({ MCP_TOKEN_KIDS: "rotated-away" }, true, (s) => {
+      errorSpy = vi.spyOn(s.log, "error");
+    });
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Acting-user token kid is not in the portal's JWKS",
+      expect.anything()
+    );
+  });
+
+  it("warns at startup when a server that acts for users can't verify tokens", async () => {
+    let warnSpy: ReturnType<typeof vi.spyOn> | undefined;
+    await boot(
+      { MCP_TOKEN_ISSUER: undefined, MCP_TOKEN_KIDS: undefined, MCP_TOKEN_JWKS_URL: undefined },
+      true,
+      (s) => {
+        warnSpy = vi.spyOn(s.log, "warn");
+      }
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Acting-user tokens are not verified: MCP_TOKEN_ISSUER is not set",
+      expect.anything()
+    );
+  });
+
+  it("ignores ACTING_USER once the HTTP service is running", async () => {
+    process.env.ACTING_USER = "env-user@access-ci.org";
+    const s = new ActingServer();
+    expect(s.envUser()).toBe("env-user@access-ci.org");
+    await boot();
+    expect(server!.envUser()).toBeUndefined();
+    process.env.NODE_ENV = "production";
+    expect(new ActingServer().envUser()).toBeUndefined();
+  });
+
   it("refuses to start in token mode without an issuer", async () => {
     process.env.MCP_ACTING_USER_AUTH = "token";
     delete process.env.MCP_TOKEN_ISSUER;
@@ -434,9 +509,9 @@ describe("/tools on a server that acts for users", () => {
     await expect(s.start({ httpPort: 0 })).rejects.toThrow(/MCP_TOKEN_ISSUER/);
   });
 
-  it("answers 503 when the portal's JWKS can't be fetched", async () => {
-    await boot();
+  it("answers 503 when the portal's JWKS has never been fetched", async () => {
     hits.jwksDown = true;
+    await boot();
     const r = await call("register_for_thing", { authorization: `Bearer ${await mcpToken()}` });
     expect(r.status).toBe(503);
   });

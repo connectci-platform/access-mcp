@@ -258,7 +258,7 @@ export class EventsServer extends BaseAccessServer {
       return context.actingUser;
     }
 
-    const envUser = process.env.ACTING_USER;
+    const envUser = this.envActingUser();
     if (envUser) {
       return envUser;
     }

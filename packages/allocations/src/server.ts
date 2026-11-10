@@ -338,7 +338,7 @@ export class AllocationsServer extends BaseAccessServer {
   }
 
   private getActingUserAccessId(): string {
-    const actingUser = getRequestContext()?.actingUser || process.env.ACTING_USER;
+    const actingUser = getRequestContext()?.actingUser || this.envActingUser();
     if (!actingUser) {
       throw new Error(
         "Authentication required: No acting user specified.\n\n" +

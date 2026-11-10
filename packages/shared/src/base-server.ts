@@ -125,6 +125,13 @@ export interface BaseAccessServerOptions {
   actsForUsers?: boolean;
 }
 
+/** ACCESS_MCP_SERVICES names of the servers constructed with actsForUsers. */
+export const ACTING_USER_SERVICES: ReadonlySet<string> = new Set([
+  "events",
+  "announcements",
+  "allocations",
+]);
+
 type ActingUserResolution =
   | { ok: true; actingUser?: string; auth?: "token" | "header"; token?: string }
   | { ok: false; status: 401 | 503; error: string };
@@ -473,6 +480,7 @@ export abstract class BaseAccessServer {
     // A setting that can't work stops the server rather than refusing writes.
     if (this._actsForUsers) {
       this.configureActingUserTokens();
+      await this.checkActingUserKeys(options?.httpPort !== undefined);
     }
     // Start HTTP service layer if port is specified. Port 0 asks the OS for a
     // free port; read it back from `httpPort` once start() resolves.
@@ -965,8 +973,9 @@ export abstract class BaseAccessServer {
     if (context?.actingUser) {
       headers["X-Acting-User"] = context.actingUser;
     }
-    // A peer that acts for users needs the verified token once it requires it.
-    if (context?.actingUserToken) {
+    // Only a peer that acts for users needs the verified token, so it goes
+    // nowhere else (allocations -> nsf-awards never sees it).
+    if (context?.actingUserToken && ACTING_USER_SERVICES.has(serviceName)) {
       headers["Authorization"] = `Bearer ${context.actingUserToken}`;
     }
     if (context?.requestId) {
@@ -1038,6 +1047,41 @@ export abstract class BaseAccessServer {
    * Reads the acting-user token settings and builds the verifier, once.
    * Throws for a setting that can't work.
    */
+  /**
+   * Startup checks that the token settings will actually work, so a broken
+   * JWKS or a rotated kid shows in the log at boot, not as refused writes.
+   */
+  private async checkActingUserKeys(http: boolean): Promise<void> {
+    const config = this.configureActingUserTokens();
+    if (!this._actingUserVerifier) {
+      this.logger.warn("Acting-user tokens are not verified: MCP_TOKEN_ISSUER is not set", {
+        mode: config.mode,
+      });
+    } else {
+      const problem = await this._actingUserVerifier.checkKeys();
+      if (problem?.startsWith("missing kid")) {
+        this.logger.error("Acting-user token kid is not in the portal's JWKS", { problem });
+      } else if (problem) {
+        this.logger.error("Acting-user token keys could not be fetched at startup", { problem });
+      }
+    }
+    if (http && process.env.ACTING_USER) {
+      this.logger.error("ACTING_USER is ignored while serving HTTP", {});
+    }
+  }
+
+  /**
+   * The ACTING_USER fallback, for a local stdio session only: never once the
+   * HTTP service runs, and never in production, so an anonymous HTTP call
+   * can't act as whoever ACTING_USER names.
+   */
+  protected envActingUser(): string | undefined {
+    if (this._httpPort !== undefined || process.env.NODE_ENV === "production") {
+      return undefined;
+    }
+    return process.env.ACTING_USER || undefined;
+  }
+
   private configureActingUserTokens(): ActingUserTokenConfig {
     if (!this._actingUserConfig) {
       const config = actingUserTokenConfigFromEnv();

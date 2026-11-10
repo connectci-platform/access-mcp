@@ -173,9 +173,12 @@ services:
       # reads; it needs the inter-server key to validate incoming calls.
       - MCP_API_KEY=${MCP_API_KEY}
       # Acting-user tokens (D8-2946). Set MCP_TOKEN_ISSUER to the portal's issuer
-      # to verify the token the agent sends; MCP_ACTING_USER_AUTH=token then
-      # refuses X-Acting-User without one (rollout step 3).
+      # and MCP_TOKEN_KIDS to its exchange key's kid to verify the token the
+      # agent sends; MCP_ACTING_USER_AUTH=token then refuses X-Acting-User
+      # without one. Rollout step 3 also changes the default below to token, so
+      # a fresh .env can't reopen the header path.
       - MCP_TOKEN_ISSUER=${MCP_TOKEN_ISSUER:-}
+      - MCP_TOKEN_KIDS=${MCP_TOKEN_KIDS:-}
       - MCP_TOKEN_AUDIENCE=${MCP_TOKEN_AUDIENCE:-https://mcp.access-ci.org}
       - MCP_ACTING_USER_AUTH=${MCP_ACTING_USER_AUTH:-either}
       - MCP_PATH_PREFIX=/allocations
@@ -241,9 +244,12 @@ services:
       - DRUPAL_PASSWORD=${MCP_SERVICE_DRUPAL_PASSWORD}
       - MCP_API_KEY=${MCP_API_KEY}
       # Acting-user tokens (D8-2946). Set MCP_TOKEN_ISSUER to the portal's issuer
-      # to verify the token the agent sends; MCP_ACTING_USER_AUTH=token then
-      # refuses X-Acting-User without one (rollout step 3).
+      # and MCP_TOKEN_KIDS to its exchange key's kid to verify the token the
+      # agent sends; MCP_ACTING_USER_AUTH=token then refuses X-Acting-User
+      # without one. Rollout step 3 also changes the default below to token, so
+      # a fresh .env can't reopen the header path.
       - MCP_TOKEN_ISSUER=${MCP_TOKEN_ISSUER:-}
+      - MCP_TOKEN_KIDS=${MCP_TOKEN_KIDS:-}
       - MCP_TOKEN_AUDIENCE=${MCP_TOKEN_AUDIENCE:-https://mcp.access-ci.org}
       - MCP_ACTING_USER_AUTH=${MCP_ACTING_USER_AUTH:-either}
       - MCP_PATH_PREFIX=/announcements
@@ -295,9 +301,12 @@ services:
       - DRUPAL_PASSWORD=${MCP_SERVICE_DRUPAL_PASSWORD}
       - MCP_API_KEY=${MCP_API_KEY}
       # Acting-user tokens (D8-2946). Set MCP_TOKEN_ISSUER to the portal's issuer
-      # to verify the token the agent sends; MCP_ACTING_USER_AUTH=token then
-      # refuses X-Acting-User without one (rollout step 3).
+      # and MCP_TOKEN_KIDS to its exchange key's kid to verify the token the
+      # agent sends; MCP_ACTING_USER_AUTH=token then refuses X-Acting-User
+      # without one. Rollout step 3 also changes the default below to token, so
+      # a fresh .env can't reopen the header path.
       - MCP_TOKEN_ISSUER=${MCP_TOKEN_ISSUER:-}
+      - MCP_TOKEN_KIDS=${MCP_TOKEN_KIDS:-}
       - MCP_TOKEN_AUDIENCE=${MCP_TOKEN_AUDIENCE:-https://mcp.access-ci.org}
       - MCP_ACTING_USER_AUTH=${MCP_ACTING_USER_AUTH:-either}
       - MCP_PATH_PREFIX=/events

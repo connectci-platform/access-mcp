@@ -118,6 +118,7 @@ services:
       MCP_API_KEY: ${MCP_API_KEY}
       # Acting-user tokens (D8-2946); local portal audience is https://mcp.dev.invalid.
       MCP_TOKEN_ISSUER: ${MCP_TOKEN_ISSUER:-}
+      MCP_TOKEN_KIDS: ${MCP_TOKEN_KIDS:-}
       MCP_TOKEN_AUDIENCE: ${MCP_TOKEN_AUDIENCE:-https://mcp.dev.invalid}
       MCP_ACTING_USER_AUTH: ${MCP_ACTING_USER_AUTH:-either}
     deploy:
@@ -163,6 +164,7 @@ services:
       MCP_API_KEY: ${MCP_API_KEY}
       # Acting-user tokens (D8-2946); local portal audience is https://mcp.dev.invalid.
       MCP_TOKEN_ISSUER: ${MCP_TOKEN_ISSUER:-}
+      MCP_TOKEN_KIDS: ${MCP_TOKEN_KIDS:-}
       MCP_TOKEN_AUDIENCE: ${MCP_TOKEN_AUDIENCE:-https://mcp.dev.invalid}
       MCP_ACTING_USER_AUTH: ${MCP_ACTING_USER_AUTH:-either}
     extra_hosts:
@@ -211,6 +213,7 @@ services:
       MCP_API_KEY: ${MCP_API_KEY}
       # Acting-user tokens (D8-2946); local portal audience is https://mcp.dev.invalid.
       MCP_TOKEN_ISSUER: ${MCP_TOKEN_ISSUER:-}
+      MCP_TOKEN_KIDS: ${MCP_TOKEN_KIDS:-}
       MCP_TOKEN_AUDIENCE: ${MCP_TOKEN_AUDIENCE:-https://mcp.dev.invalid}
       MCP_ACTING_USER_AUTH: ${MCP_ACTING_USER_AUTH:-either}
     extra_hosts:

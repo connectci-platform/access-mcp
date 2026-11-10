@@ -60,14 +60,25 @@ still required as a second check.
 | `MCP_TOKEN_JWKS_URL` | `<issuer>/.well-known/exchange-jwks.json` | |
 | `MCP_TOKEN_AUDIENCE` | `https://mcp.access-ci.org` | `https://mcp.dev.invalid` off live. |
 | `MCP_TOKEN_ALLOWED_AZP` | `access-assistant` | Comma-separated. |
+| `MCP_TOKEN_KIDS` | unset | Required with `MCP_TOKEN_ISSUER`. The kid of the portal's exchange key, the `kid` in an exchanged token's header; list the old and new kid while it rotates. The agent key is in the same JWKS and is never accepted. |
 | `MCP_ACTING_USER_AUTH` | `either` | `either` also accepts `X-Acting-User` without a token; `token` refuses it. `token` requires `MCP_TOKEN_ISSUER`, or the server won't start. |
+
+The JWKS is fetched at startup, and the log says so loudly if it can't be fetched,
+if a pinned kid isn't in it, or if `MCP_TOKEN_ISSUER` is unset. Tokens are
+checked with no clock leeway on `exp` and up to 60 seconds of leeway on `iat`,
+so server clocks must stay within 60 seconds of the portal's (NTP).
+`ACTING_USER` is only a fallback for a local stdio session; it is ignored once
+the HTTP service runs and always in production.
 
 Each acting call logs `Acting user auth` with `path` `token` or `header` (at
 warn for writes and header-path calls, so production's default level keeps
 them), and the tool span carries `mcp.acting_user.auth`. Rollout: deploy with
 `MCP_TOKEN_ISSUER` set (step 1), turn on token sending in the agent (step 2),
 and once no `path: header` lines remain set `MCP_ACTING_USER_AUTH=token`
-(step 3).
+and change the `MCP_ACTING_USER_AUTH` default in docker-compose.prod.yml to
+`token` (step 3). Deploy this before the agent is set to send tokens: older
+servers ran the CILogon middleware on `/tools` and would post the portal
+token to mcp-auth.
 
 This is separate from the outside-client OAuth path (`OAUTH_VERIFY_URL`), which
 verifies CILogon tokens on `/mcp` and `/messages` only. That middleware skips
