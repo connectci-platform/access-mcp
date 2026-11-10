@@ -19,6 +19,12 @@ import pandas as pd
 # the tool asks for a narrower request instead of attaching part of the data.
 MAX_TABLE_ROWS = 50_000
 SUMMARY_ROWS = 10
+# A caller that gets no table (an MCP host) sees what it saw before the table
+# could be attached: every aggregate row up to 50, else the top 30, and 50
+# rows of a timeseries, about the 10 periods by 4 groups it was shown.
+PREVIEW_ALL_AGGREGATE = 50
+PREVIEW_AGGREGATE = 30
+PREVIEW_TIMESERIES = 50
 TOP_GROUPS = 5
 MAX_NAME_CHARS = 60
 
@@ -189,10 +195,17 @@ def summary_text(table: RawTable, query: RawQuery, *, attach: bool) -> str:
             + ", ".join(f"{_name(k)} ({_fmt(v)})" for k, v in top)
         )
 
-    shown = table.rows[:SUMMARY_ROWS]
+    attached = attach and count <= MAX_TABLE_ROWS
+    if attached or count > MAX_TABLE_ROWS:
+        limit = SUMMARY_ROWS
+    elif table.periods:
+        limit = PREVIEW_TIMESERIES
+    else:
+        limit = count if count <= PREVIEW_ALL_AGGREGATE else PREVIEW_AGGREGATE
+    shown = table.rows[:limit]
     heading = (
         f"All {count} rows"
-        if count <= SUMMARY_ROWS
+        if count <= limit
         else f"First {len(shown)} of {count:,} rows"
     )
     lines += ["", f"{heading}:", " | ".join(names)]
@@ -213,12 +226,23 @@ def summary_text(table: RawTable, query: RawQuery, *, attach: bool) -> str:
             "the data panel and download it as CSV. Answer from this summary and point the user "
             "to the table rather than listing its rows."
         )
-    elif count > SUMMARY_ROWS:
+    elif count > limit:
         lines.append(
             f"Only the first {len(shown)} of {count:,} rows are shown here. Narrow the request "
             "(a filter, a shorter range or a coarser aggregation_unit) to see others."
         )
     return "\n".join(lines) + "\n"
+
+
+def _filter_names(filters: dict[Any, Any]) -> dict[str, list[str]]:
+    """Each filter's values as a list of names. A filter that couldn't be
+    checked is passed on as the model gave it, which may be one value, a
+    number or a list of them."""
+    out: dict[str, list[str]] = {}
+    for key, value in filters.items():
+        values = value if isinstance(value, (list, tuple)) else [value]
+        out[str(key)] = [str(v) for v in values if v is not None]
+    return out
 
 
 def raw_data_result(
@@ -244,7 +268,7 @@ def raw_data_result(
             "dataset_type": query.dataset_type,
             "aggregation_unit": query.aggregation_unit,
             "requested": {"start": query.start_date, "end": query.end_date},
-            "filters": query.filters,
+            "filters": _filter_names(query.filters),
             "columns": table.columns,
             "rows": table.rows,
             "row_count": len(table.rows),

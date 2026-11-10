@@ -619,7 +619,8 @@ class XDMoDPythonServer(BaseAccessServer):
             }
             
             # Call get_raw_data with the exact matched name (should pass validation)
-            result_content = await self._get_raw_data(raw_data_args)
+            # Per-user data is never attached, so the summary mustn't say it is.
+            result_content = await self._get_raw_data(raw_data_args, attach=False)
             raw_result = result_content.content[0].text
             
             # Extract and reformat results
@@ -1195,7 +1196,7 @@ class XDMoDPythonServer(BaseAccessServer):
         except ValueError as e:
             return f"❌ **Date Format Error**: Invalid date format. Use YYYY-MM-DD format. Error: {str(e)}"
 
-    async def _get_raw_data(self, args: Dict[str, Any]) -> ToolResult:
+    async def _get_raw_data(self, args: Dict[str, Any], attach: Optional[bool] = None) -> ToolResult:
         """Get raw data from XDMoD with complex filtering and progress tracking"""
         
         realm = args.get("realm", "Jobs")
@@ -1459,7 +1460,8 @@ class XDMoDPythonServer(BaseAccessServer):
                         summary, structured = raw_data_result(
                             data,
                             query,
-                            attach=include_structured_content(),
+                            # None: attach when the caller asked for it.
+                            attach=include_structured_content() if attach is None else attach,
                             retrieved=datetime.now(timezone.utc).isoformat(timespec="seconds"),
                             metric_label=metric_label,
                         )

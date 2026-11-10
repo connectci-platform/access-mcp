@@ -475,7 +475,7 @@ class TestRawDataTable:
             import pandas as pd
             return pd.DataFrame({"label": ["CPU Hours: Total"]}, index=pd.Index(["total_cpu_hours"], name="id"))
 
-    def _run(self, data, asked, **args):
+    def _run(self, data, asked, attach=None, **args):
         from xdmod_mcp_data import base_server
         server = XDMoDPythonServer()
         server._env_api_token = "t"
@@ -484,7 +484,7 @@ class TestRawDataTable:
         try:
             with patch.dict(os.environ, {"XDMOD_API_TOKEN": "t"}), \
                  patch("xdmod_data.warehouse.DataWarehouse", return_value=self.Warehouse(data)):
-                return asyncio.run(server._get_raw_data(args))
+                return asyncio.run(server._get_raw_data(args, attach=attach))
         finally:
             base_server._include_structured.reset(flag)
 
@@ -506,7 +506,7 @@ class TestRawDataTable:
     def test_text_only_for_a_caller_that_did_not_ask(self):
         result = self._run(self._users(300), False, dimension="person", dataset_type="aggregate")
         assert result.structured is None
-        assert "first 10 of 300 rows" in result.content[0].text
+        assert "first 30 of 300 rows" in result.content[0].text
 
     def test_over_the_cap_asks_for_a_narrower_request(self):
         from xdmod_mcp_data.raw_table import MAX_TABLE_ROWS
@@ -527,3 +527,43 @@ class TestRawDataTable:
     def test_keeps_the_query_lines(self):
         result = self._run(self._users(3), True, dimension="person", dataset_type="aggregate")
         assert "Realm: Jobs" in result.content[0].text
+
+
+class TestUserDataNeverAttaches:
+    """get_user_data reuses get_raw_data; its summary must not promise a table it drops."""
+
+    def test_the_inner_summary_is_built_without_an_attachment(self):
+        from xdmod_mcp_data import base_server
+
+        server = XDMoDPythonServer()
+        server._env_api_token = "t"
+        seen = {}
+
+        async def fake_raw(args, attach=None):
+            seen["attach"] = attach
+            from mcp.types import TextContent
+
+            return base_server.ToolResult(content=[TextContent(type="text", text="**Results:** 1 rows.")])
+
+        async def fake_find(name, realm="Jobs"):
+            return "Doe, Jane", "found"
+
+        flag = base_server._include_structured.set(True)
+        try:
+            with patch.object(server, "_get_raw_data", fake_raw), \
+                 patch.object(server, "_smart_find_user", fake_find):
+                text = asyncio.run(server._get_user_data_python(
+                    {"access_id": "jdoe", "start_date": "2025-01-01", "end_date": "2025-02-01"}
+                ))[0].text
+        finally:
+            base_server._include_structured.reset(flag)
+        assert seen["attach"] is False
+        assert "**Results:**" in text
+
+    def test_get_raw_data_can_be_told_not_to_attach(self):
+        helper = TestRawDataTable()
+        result = helper._run(
+            helper._users(300), True, attach=False, dimension="person", dataset_type="aggregate"
+        )
+        assert result.structured is None
+        assert "is attached" not in result.content[0].text

@@ -172,13 +172,48 @@ class TestRawDataResult:
         assert "attached" not in text.replace("no table is attached", "")
 
     def test_a_caller_that_did_not_ask_gets_only_the_text(self):
-        data = aggregate({f"user {i}": float(i) for i in range(30)})
+        data = aggregate({f"user {i}": float(i) for i in range(80)})
         text, structured = raw_data_result(
             data, query(), attach=False, retrieved=RETRIEVED
         )
         assert structured is None
-        assert "first 10 of 30 rows" in text
+        assert "first 30 of 80 rows" in text
         assert "is attached" not in text
+
+    def test_without_an_attachment_an_aggregate_of_50_lists_every_row(self):
+        # What MCP hosts saw before the table could be attached.
+        data = aggregate({f"user {i}": float(i) for i in range(50)})
+        text, _ = raw_data_result(data, query(), attach=False, retrieved=RETRIEVED)
+        assert "All 50 rows" in text
+
+    def test_without_an_attachment_a_timeseries_shows_50_rows(self):
+        frame = timeseries(
+            {f"r{i}": [float(i)] * 20 for i in range(5)},
+            pd.date_range("2025-01-01", periods=20, freq="D"),
+            "Resource",
+        )
+        text, _ = raw_data_result(
+            frame, query(dataset_type="timeseries"), attach=False, retrieved=RETRIEVED
+        )
+        assert "First 50 of 100 rows" in text
+
+    def test_with_an_attachment_the_model_sees_10_rows(self):
+        data = aggregate({f"user {i}": float(i) for i in range(80)})
+        text, _ = raw_data_result(data, query(), attach=True, retrieved=RETRIEVED)
+        assert "First 10 of 80 rows" in text
+
+    def test_filters_are_names_whatever_the_model_sent(self):
+        _, structured = raw_data_result(
+            aggregate({"a": 1.0}),
+            query(filters={"resource": "Delta", "jobsize": [1, 2.5], 3: ["x"]}),
+            attach=True,
+            retrieved=RETRIEVED,
+        )
+        assert structured["table"]["filters"] == {
+            "resource": ["Delta"],
+            "jobsize": ["1", "2.5"],
+            "3": ["x"],
+        }
 
     def test_a_small_result_lists_every_row(self):
         text, _ = raw_data_result(
