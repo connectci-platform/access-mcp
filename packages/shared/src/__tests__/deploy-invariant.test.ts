@@ -13,17 +13,12 @@ const root = resolve(__dirname, "../../../..");
 // someone sets the env — a bare `ACTING_USER: someuser` would make every write
 // on the mixed servers execute as that user without a gate.
 describe("deploy invariant: ACTING_USER is unset on mixed servers", () => {
-  it("docker-compose.yml sets ACTING_USER only to an empty default", () => {
+  it("docker-compose.yml never passes ACTING_USER to a container", () => {
+    // The HTTP servers ignore it (it is a stdio-only fallback), so passing it
+    // through would only invite someone to rely on it.
     const compose = readFileSync(resolve(root, "docker-compose.yml"), "utf8");
-    // The variable itself, not names that contain it (MCP_ACTING_USER_AUTH).
-    const lines = compose.split("\n").filter((l) => /^\s*ACTING_USER\s*:/.test(l));
-    // There must be at least one ACTING_USER line (the servers declare it), and
-    // every such line must be the empty-default form `${ACTING_USER:-}` — a bare
-    // `ACTING_USER: someuser` fails this invariant.
-    expect(lines.length).toBeGreaterThan(0);
-    for (const line of lines) {
-      expect(line).toMatch(/ACTING_USER:\s*\$\{ACTING_USER:-\}\s*$/);
-    }
+    const lines = compose.split("\n").filter((l) => /^\s*-?\s*ACTING_USER\s*[:=]/.test(l));
+    expect(lines).toEqual([]);
   });
 
   it("repo .env does not set a non-empty ACTING_USER", () => {
@@ -39,15 +34,11 @@ describe("deploy invariant: ACTING_USER is unset on mixed servers", () => {
     expect(active).toEqual([]);
   });
 
-  it("the empty-default regex discriminates (a bare value fails)", () => {
-    // Guards against the assertion being vacuously true: a hardcoded user must
-    // NOT match the empty-default pattern.
-    expect("      ACTING_USER: prod-service-user").not.toMatch(
-      /ACTING_USER:\s*\$\{ACTING_USER:-\}\s*$/
-    );
-    expect("      ACTING_USER: ${ACTING_USER:-}").toMatch(
-      /ACTING_USER:\s*\$\{ACTING_USER:-\}\s*$/
-    );
+  it("the ACTING_USER pattern discriminates (no vacuous pass)", () => {
+    const pattern = /^\s*-?\s*ACTING_USER\s*[:=]/;
+    expect("      ACTING_USER: ${ACTING_USER:-}").toMatch(pattern);
+    expect("      - ACTING_USER=someone").toMatch(pattern);
+    expect("      MCP_ACTING_USER_AUTH: ${MCP_ACTING_USER_AUTH:-either}").not.toMatch(pattern);
   });
 });
 

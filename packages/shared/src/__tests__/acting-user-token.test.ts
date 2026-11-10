@@ -47,7 +47,11 @@ async function keypair(kid: string) {
 }
 
 /** The portal's exchange-jwks.json: the agent key and the exchange key. */
-const jwks = () => ({ keys: [keys.agent.jwk, keys.exchange.jwk] });
+/** Set during a rotation test: the portal has started publishing a new key. */
+let rotatedIn = false;
+const jwks = () => ({
+  keys: [keys.agent.jwk, keys.exchange.jwk, ...(rotatedIn ? [keys.stranger.jwk] : [])],
+});
 
 const now = () => Math.floor(Date.now() / 1000);
 
@@ -339,6 +343,7 @@ describe("/tools on a server that acts for users", () => {
 
   beforeEach(() => {
     hits = { jwks: 0, oauthVerify: 0, jwksDown: false };
+    rotatedIn = false;
   });
   afterEach(async () => {
     await server?.stop();
@@ -500,6 +505,26 @@ describe("/tools on a server that acts for users", () => {
     expect(server!.envUser()).toBeUndefined();
     process.env.NODE_ENV = "production";
     expect(new ActingServer().envUser()).toBeUndefined();
+  });
+
+  it("picks up a pinned kid the portal publishes later (rotation), by refetching", async () => {
+    const verifier = new ActingUserTokenVerifier(
+      {
+        mode: "either",
+        issuer: ISSUER,
+        jwksUrl: `${sideUrl}/.well-known/exchange-jwks.json`,
+        audience: MCP_AUD,
+        allowedAzp: ["access-assistant"],
+        kids: ["exchange-kid", "stranger-kid"],
+      },
+      { cooldownMs: 0 }
+    );
+    expect(await verifier.checkKeys()).toBe("missing kid stranger-kid");
+    const rotated = await mcpToken({}, { key: "stranger" });
+    await expect(verifier.verify(rotated)).rejects.toBeInstanceOf(InvalidActingUserTokenError);
+    rotatedIn = true;
+    expect((await verifier.verify(rotated)).sub).toBe(SUB);
+    expect((await verifier.verify(await mcpToken())).sub).toBe(SUB);
   });
 
   it("refuses to start in token mode without an issuer", async () => {

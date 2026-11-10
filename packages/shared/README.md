@@ -67,6 +67,22 @@ The JWKS is fetched at startup, and the log says so loudly if it can't be fetche
 if a pinned kid isn't in it, or if `MCP_TOKEN_ISSUER` is unset. Tokens are
 checked with no clock leeway on `exp` and up to 60 seconds of leeway on `iat`,
 so server clocks must stay within 60 seconds of the portal's (NTP).
+The portal's kid is the first 16 hex digits of the SHA-256 of the key's public
+PEM. From the exchange private key (or `-pubin -in public.pem` for the public
+one):
+
+```bash
+openssl pkey -in exchange-private.pem -pubout | shasum -a 256 | cut -c1-16
+```
+
+It is also the `kid` in any exchanged token's header. To rotate the exchange
+key without refusing writes: add the new kid to `MCP_TOKEN_KIDS` on all three
+servers (`old,new`) and redeploy them; publish the new key on the portal as
+verify-only, then make it the signing key; once tokens signed with the old key
+have expired (15 minutes), remove the old kid from `MCP_TOKEN_KIDS`. A pinned
+kid the servers haven't seen yet makes them refetch the JWKS, at most every 30
+seconds.
+
 `ACTING_USER` is only a fallback for a local stdio session; it is ignored once
 the HTTP service runs and always in production.
 

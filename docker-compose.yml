@@ -160,7 +160,6 @@ services:
       DRUPAL_API_URL: ${DRUPAL_API_URL:-https://support.access-ci.org}
       DRUPAL_USERNAME: ${DRUPAL_USERNAME:-}
       DRUPAL_PASSWORD: ${DRUPAL_PASSWORD:-}
-      ACTING_USER: ${ACTING_USER:-}
       MCP_API_KEY: ${MCP_API_KEY}
       # Acting-user tokens (D8-2946); local portal audience is https://mcp.dev.invalid.
       MCP_TOKEN_ISSUER: ${MCP_TOKEN_ISSUER:-}
@@ -209,7 +208,6 @@ services:
       DRUPAL_API_URL: ${DRUPAL_API_URL:-https://support.access-ci.org}
       DRUPAL_USERNAME: ${DRUPAL_USERNAME:-}
       DRUPAL_PASSWORD: ${DRUPAL_PASSWORD:-}
-      ACTING_USER: ${ACTING_USER:-}
       MCP_API_KEY: ${MCP_API_KEY}
       # Acting-user tokens (D8-2946); local portal audience is https://mcp.dev.invalid.
       MCP_TOKEN_ISSUER: ${MCP_TOKEN_ISSUER:-}

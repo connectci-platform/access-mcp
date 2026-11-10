@@ -124,7 +124,7 @@ export class ActingUserTokenVerifier {
 
   constructor(
     private readonly config: ActingUserTokenConfig & { issuer: string },
-    options: { getKey?: JWTVerifyGetKey; now?: () => number } = {}
+    options: { getKey?: JWTVerifyGetKey; now?: () => number; cooldownMs?: number } = {}
   ) {
     if (!options.getKey && !config.jwksUrl) {
       throw new Error("A JWKS URL is required to verify acting-user tokens");
@@ -133,7 +133,12 @@ export class ActingUserTokenVerifier {
     // and pins the key to ES256 below, so an HS256 token signed with the
     // public JWK, or alg none, never verifies.
     if (!options.getKey) {
-      this.remote = createRemoteJWKSet(new URL(config.jwksUrl!), { timeoutDuration: 5000 });
+      // A pinned kid the set doesn't have yet (a rotation that just
+      // happened) makes jose refetch, at most once per cooldown.
+      this.remote = createRemoteJWKSet(new URL(config.jwksUrl!), {
+        timeoutDuration: 5000,
+        cooldownDuration: options.cooldownMs ?? 30_000,
+      });
     }
     const inner = options.getKey ?? this.remote!;
     // Only the exchange key may sign: a token without a kid, or with any
