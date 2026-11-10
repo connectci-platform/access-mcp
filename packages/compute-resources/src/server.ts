@@ -19,6 +19,13 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
 import { buildComparison, ResourceDocumentation } from "./resource-documentation.js";
+import {
+  matchesInstitution,
+  ORG_ABBREVIATIONS,
+  organizationAliases,
+  resourceIdInstitutionLabel,
+  type OrganizationRecord,
+} from "./institution-aliases.js";
 
 // Interfaces for search_resources tool arguments
 interface SearchResourcesArgs {
@@ -32,11 +39,6 @@ interface SearchResourcesArgs {
 }
 
 // Interfaces for API response types
-interface OrganizationResult {
-  organization_id?: number;
-  organization_name?: string;
-}
-
 interface ActiveGroup {
   info_groupid?: string;
   group_descriptive_name?: string;
@@ -144,7 +146,7 @@ export class ComputeResourcesServer extends BaseAccessServer {
             query: {
               type: "string",
               description:
-                "Search names, descriptions, organizations, and features. For specific hardware models (e.g., 'A100'), use get_resource_hardware instead.",
+                "Search names, descriptions, provider institutions (full names or short forms like 'TAMU', 'Texas A&M', 'SDSC'), and features. For specific hardware models (e.g., 'A100'), use get_resource_hardware instead.",
             },
             type: {
               type: "string",
@@ -158,7 +160,8 @@ export class ComputeResourcesServer extends BaseAccessServer {
             },
             organization: {
               type: "string",
-              description: "Filter by org (NCSA, PSC, Purdue, SDSC, TACC)",
+              description:
+                "Filter by provider institution, by name or short form (e.g., NCSA, PSC, Purdue, SDSC, TACC, TAMU, Texas A&M)",
             },
             include_ids: {
               type: "boolean",
@@ -687,52 +690,6 @@ Consider:
     19169: "CloudBank",
   };
 
-  /**
-   * Common organization abbreviations for better search UX
-   * Includes HPC centers, universities, and research institutions
-   */
-  private readonly ORG_ABBREVIATIONS: Record<string, string[]> = {
-    // Major HPC/Supercomputing Centers
-    NCSA: ["National Center for Supercomputing Applications", "Illinois"],
-    SDSC: ["San Diego Supercomputer Center"],
-    PSC: ["Pittsburgh Supercomputing Center"],
-    TACC: ["Texas Advanced Computing Center"],
-    NCAR: [
-      "NSF National Center for Atmospheric Research",
-      "National Center for Atmospheric Research",
-    ],
-    NERSC: ["National Energy Research Scientific Computing Center"],
-    ALCF: ["Argonne Leadership Computing Facility"],
-    OLCF: ["Oak Ridge Leadership Computing Facility"],
-
-    // Universities (common abbreviations)
-    IU: ["Indiana University"],
-    UK: ["University of Kentucky"],
-    TAMU: ["Texas A&M University", "Texas A&M"],
-    UT: ["University of Texas at Austin"],
-    TTU: ["Texas Tech University"],
-    OSU: ["Ohio State University"],
-    ASU: ["Arizona State University"],
-    FSU: ["Florida State University"],
-    PSU: ["Pennsylvania State University", "Penn State"],
-    MSU: ["Michigan State University"],
-    USC: ["University of Southern California"],
-    UCLA: ["University of California, Los Angeles"],
-    UIUC: ["University of Illinois at Urbana-Champaign", "Illinois"],
-    MIT: ["Massachusetts Institute of Technology"],
-    CU: ["University of Colorado"],
-    "CU Boulder": ["University of Colorado Boulder"],
-    UChicago: ["University of Chicago"],
-
-    // Research Computing Consortia & Networks
-    OSG: ["OSG Consortium", "Open Science Grid"],
-    OSN: ["Open Storage Network"],
-    SGCI: ["Science Gateways Center of Excellence", "Science Gateways Community Institute"],
-    RENCI: ["Renaissance Computing Institute"],
-    ACCESS: ["ACCESS Support", "Advanced Cyberinfrastructure Coordination Ecosystem"],
-    XSEDE: ["Extreme Science and Engineering Discovery Environment"], // Legacy
-  };
-
   private buildFeatureLookups(apiResults: {
     features?: ApiFeature[];
     feature_categories?: ApiFeatureCategory[];
@@ -782,31 +739,44 @@ Consider:
       .map((id) => featureMap.get(id)!.name);
   }
 
-  private async listComputeResources(fields?: string[]) {
+  /**
+   * The compute resource catalog, each resource paired with the normalized names its
+   * provider institutions go by (see institution-aliases.ts), which search matches on.
+   */
+  private async loadComputeResources(): Promise<
+    Array<{ resource: ComputeResource; institutionAliases: string[] }>
+  > {
     // Get all active resource groups
     const response = await this.httpClient.get(
       "/wh2/cider/v1/access-active-groups/type/resource-catalog.access-ci.org/"
     );
 
-    // Also try to get organization information
-    const orgMapping: Map<number, string> = new Map();
+    // Organization records by ID, from the static fallback first, then the
+    // organizations embedded in the catalog response, then the live
+    // organizations endpoint, each later source overriding the earlier.
+    const orgRecords: Map<number, OrganizationRecord> = new Map();
+    const mergeOrg = (org: OrganizationRecord) => {
+      if (!org.organization_id || !org.organization_name) return;
+      const defined = Object.fromEntries(
+        Object.entries(org).filter(([, value]) => value !== null && value !== undefined)
+      );
+      orgRecords.set(org.organization_id, { ...orgRecords.get(org.organization_id), ...defined });
+    };
 
-    // First, add known static mappings as fallback
     Object.entries(this.KNOWN_ORGANIZATIONS).forEach(([id, name]) => {
-      orgMapping.set(parseInt(id), name);
+      mergeOrg({ organization_id: parseInt(id), organization_name: name });
     });
 
-    // Then try to fetch live organization data (will override static mappings)
+    if (Array.isArray(response.data?.results?.organizations)) {
+      response.data.results.organizations.forEach(mergeOrg);
+    }
+
     // NOTE: Using /organizations/ endpoint (not /access-active-groups/type/organizations.access-ci.org/
     // which returns 0 results). See ACCESS_CI_API_ISSUE_ORGANIZATIONS.md for details.
     try {
       const orgResponse = await this.httpClient.get("/wh2/cider/v1/organizations/");
-      if (orgResponse.status === 200 && orgResponse.data?.results) {
-        orgResponse.data.results.forEach((org: OrganizationResult) => {
-          if (org.organization_id && org.organization_name) {
-            orgMapping.set(org.organization_id, org.organization_name);
-          }
-        });
+      if (orgResponse.status === 200 && Array.isArray(orgResponse.data?.results)) {
+        orgResponse.data.results.forEach(mergeOrg);
       }
     } catch (e) {
       // If organizations endpoint fails, we'll use the static mapping
@@ -820,7 +790,7 @@ Consider:
 
     const { featureMap } = this.buildFeatureLookups(response.data.results);
 
-    const computeResources = response.data.results.active_groups
+    return response.data.results.active_groups
       .filter((group: ActiveGroup) => {
         // Filter for compute resources (category 1 = "Compute & Storage Resources")
         return (
@@ -830,16 +800,27 @@ Consider:
         );
       })
       .map((group: ActiveGroup) => {
+        const orgIds = group.rollup_organization_ids || [];
         // Map organization IDs to names if available
-        const organizationNames = (group.rollup_organization_ids || []).map(
-          (id: number) => orgMapping.get(id) || id.toString()
+        const organizationNames = orgIds.map(
+          (id: number) => orgRecords.get(id)?.organization_name || id.toString()
         );
+
+        const institutionAliases = new Set<string>();
+        for (const id of orgIds) {
+          const org = orgRecords.get(id);
+          if (org) organizationAliases(org).forEach((alias) => institutionAliases.add(alias));
+        }
+        for (const resourceId of [group.info_groupid, ...(group.rollup_info_resourceids || [])]) {
+          const label = resourceIdInstitutionLabel(resourceId);
+          if (label) institutionAliases.add(label);
+        }
 
         const featureIds = group.rollup_feature_ids || [];
         const resolved = this.resolveFeatures(featureIds, featureMap);
         const resourceTypes = this.deriveResourceTypes(featureIds, featureMap);
 
-        return {
+        const resource: ComputeResource = {
           id: group.info_groupid,
           name: group.group_descriptive_name,
           description: group.group_description,
@@ -857,7 +838,12 @@ Consider:
           // Include the actual resource IDs that other ACCESS-CI services can use
           resourceIds: group.rollup_info_resourceids || [],
         };
+        return { resource, institutionAliases: [...institutionAliases] };
       });
+  }
+
+  private async listComputeResources(fields?: string[]) {
+    const computeResources = (await this.loadComputeResources()).map((r) => r.resource);
 
     const envelope = {
       total: computeResources.length,
@@ -1081,19 +1067,13 @@ Consider:
     const { query, resource_type, has_gpu, organization, include_resource_ids = true, fields } = args;
 
     // Get all resources first
-    const allResourcesResult = await this.listComputeResources();
-    const firstContent = allResourcesResult.content[0];
-    if (firstContent.type !== "text") {
-      return allResourcesResult; // Return as-is if not text content
-    }
-    const allResourcesData = JSON.parse(firstContent.text);
-    let resources = allResourcesData.items || [];
+    let entries = await this.loadComputeResources();
 
     // Apply filters
     if (query) {
       const searchTerm = query.toLowerCase();
-      resources = resources.filter(
-        (resource: ComputeResource) =>
+      entries = entries.filter(
+        ({ resource, institutionAliases }) =>
           resource.name?.toLowerCase().includes(searchTerm) ||
           resource.description?.toLowerCase().includes(searchTerm) ||
           (Array.isArray(resource.organization_names) &&
@@ -1103,19 +1083,21 @@ Consider:
           (Array.isArray(resource.feature_names) &&
             resource.feature_names.some(
               (feat: string) => typeof feat === "string" && feat.toLowerCase().includes(searchTerm)
-            ))
+            )) ||
+          // The provider institution by a short form, like "TAMU" or "PSC"
+          matchesInstitution(institutionAliases, query)
       );
     }
 
     if (resource_type) {
-      resources = resources.filter(
-        (resource: ComputeResource) => resource.resourceTypes?.includes(resource_type) ?? false
+      entries = entries.filter(
+        ({ resource }) => resource.resourceTypes?.includes(resource_type) ?? false
       );
     }
 
     // Only filter by GPU when has_gpu is explicitly true or false (not null/undefined)
     if (has_gpu === true || has_gpu === false) {
-      resources = resources.filter((resource: ComputeResource) => resource.hasGpu === has_gpu);
+      entries = entries.filter(({ resource }) => resource.hasGpu === has_gpu);
     }
 
     // Organization filter (ENHANCED: works with partial names, abbreviations, and searches known orgs)
@@ -1125,8 +1107,8 @@ Consider:
 
       // Check if input is an abbreviation and expand it to full names
       const searchTerms = [orgLower];
-      if (this.ORG_ABBREVIATIONS[orgUpper]) {
-        searchTerms.push(...this.ORG_ABBREVIATIONS[orgUpper].map((n) => n.toLowerCase()));
+      if (ORG_ABBREVIATIONS[orgUpper]) {
+        searchTerms.push(...ORG_ABBREVIATIONS[orgUpper].map((n) => n.toLowerCase()));
       }
 
       // Find matching organization IDs from known organizations using all search terms
@@ -1134,7 +1116,11 @@ Consider:
         .filter(([_, name]) => searchTerms.some((term) => name.toLowerCase().includes(term)))
         .map(([id, _]) => parseInt(id));
 
-      resources = resources.filter((resource: ComputeResource) => {
+      entries = entries.filter(({ resource, institutionAliases }) => {
+        if (matchesInstitution(institutionAliases, organization)) {
+          return true;
+        }
+
         if (!Array.isArray(resource.organization_names)) {
           return false;
         }
@@ -1163,6 +1149,8 @@ Consider:
         return false;
       });
     }
+
+    let resources: ComputeResource[] = entries.map(({ resource }) => resource);
 
     // Add resource IDs if requested
     if (include_resource_ids) {

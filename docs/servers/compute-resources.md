@@ -52,10 +52,10 @@ Search and filter ACCESS-CI compute resources. Returns resource IDs usable by ot
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `id` | string | Get specific resource (e.g., "delta.ncsa.access-ci.org") |
-| `query` | string | Search names, descriptions, organizations |
+| `query` | string | Search names, descriptions, provider institutions (including short forms like `TAMU` or `SDSC`), and features |
 | `type` | enum | Filter: `compute`, `storage`, `cloud`, `gpu`, `cpu` |
 | `has_gpu` | boolean | Filter for GPU resources |
-| `organization` | string | Filter by org: `NCSA`, `PSC`, `Purdue`, `SDSC`, `TACC` |
+| `organization` | string | Filter by provider institution, by name or short form: `NCSA`, `PSC`, `Purdue`, `SDSC`, `TACC`, `TAMU`, `Texas A&M` |
 | `limit` | number | Max results (default: 50) |
 
 **Examples:**
