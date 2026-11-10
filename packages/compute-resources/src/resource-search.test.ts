@@ -282,6 +282,18 @@ describe("searchResources", () => {
       expect(orgs("comput")).toEqual(["Longhorn"]);
       expect(orgs("put")).toEqual([]);
     });
+
+    it("matches a center by its university", () => {
+      const psc = resource(listing(55, "Bridges", { org_name: "Pittsburgh Supercomputing Center" }), null);
+      const orgs = (organization: string) =>
+        searchResources([gpuCluster, cpuCluster, psc], { organization }).items.map(({ name }) => name);
+      expect(orgs("University of Illinois")).toEqual(["Big GPU"]);
+      expect(orgs("UIUC")).toEqual(["Big GPU"]);
+      expect(orgs("Carnegie Mellon")).toEqual(["Bridges"]);
+      expect(orgs("the University of Pittsburgh")).toEqual(["Bridges"]);
+      // Only the whole name maps, so a different Illinois institution doesn't.
+      expect(orgs("Illinois Institute of Technology")).toEqual([]);
+    });
   });
 
   describe("accelerators", () => {

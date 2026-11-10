@@ -269,7 +269,7 @@ describe("projectFields", () => {
   });
 
   describe("missing-field handling", () => {
-    test("silently omits keys that do not exist on the response", () => {
+    test("omits keys that do not exist on the response and names them", () => {
       const out = projectFields(sample, [
         "items[].name",
         "items[].fancy_color",
@@ -283,10 +283,11 @@ describe("projectFields", () => {
         ],
         metadata: sample.metadata,
         documentation: sample.documentation,
+        unmatched_fields: ["items[].fancy_color"],
       });
     });
 
-    test("missing top-level branch silently omitted", () => {
+    test("missing top-level branch omitted and named", () => {
       const out = projectFields(sample, [
         "items[].name",
         "experimental.thing",
@@ -300,6 +301,7 @@ describe("projectFields", () => {
         ],
         metadata: sample.metadata,
         documentation: sample.documentation,
+        unmatched_fields: ["experimental.thing"],
       });
       expect(out).not.toHaveProperty("experimental");
     });
@@ -310,7 +312,23 @@ describe("projectFields", () => {
         total: 3,
         metadata: sample.metadata,
         documentation: sample.documentation,
+        unmatched_fields: ["nope", "nada.zilch"],
       });
+    });
+
+    test("leaves unmatched_fields out when every path matches", () => {
+      const out = projectFields(sample, ["items[].name", "metadata.pagination"]);
+      expect(out).not.toHaveProperty("unmatched_fields");
+    });
+
+    test("doesn't report a path into an empty array", () => {
+      const out = projectFields({ total: 0, items: [] }, ["items[].name"]);
+      expect(out).not.toHaveProperty("unmatched_fields");
+    });
+
+    test("names a path below a scalar", () => {
+      const out = projectFields(sample, ["total.value"]);
+      expect(out.unmatched_fields).toEqual(["total.value"]);
     });
   });
 

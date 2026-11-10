@@ -12,7 +12,9 @@
 // Rules (per pre-decisions 2026-05-13):
 //   - fields undefined/null      → return response unchanged (no projection)
 //   - fields empty array []      → only `total` is preserved (if present)
-//   - missing fields             → silently omitted (no error, no null padding)
+//   - missing fields             → omitted (no error, no null padding), and named in a
+//                                  top-level `unmatched_fields` so the caller can fix
+//                                  the path; a path into an empty array isn't reported
 //   - `total` always preserved   → unconditionally re-added at root when present
 //   - paths union                → multiple paths merge; ending at a node = include whole subtree
 //   - non-mentioned `items`      → dropped from output (no empty-array placeholder)
@@ -68,6 +70,23 @@ function buildWantedTree(paths: string[]): WantedNode {
   return root;
 }
 
+// Whether a path names something in the response. An empty array can't say, so it
+// counts as a match rather than reporting a path that may be right.
+function pathMatches(value: unknown, segments: Segment[]): boolean {
+  if (segments.length === 0) return true;
+  if (Array.isArray(value)) {
+    return value.length === 0 || value.some((elem) => pathMatches(elem, segments));
+  }
+  if (value !== null && typeof value === "object") {
+    const [first, ...rest] = segments;
+    return (
+      Object.prototype.hasOwnProperty.call(value, first.name) &&
+      pathMatches((value as Record<string, unknown>)[first.name], rest)
+    );
+  }
+  return false;
+}
+
 function projectValue(value: unknown, node: WantedNode): unknown {
   // includeWhole short-circuits — caller wants this subtree as-is.
   if (node.includeWhole) return value;
@@ -104,7 +123,7 @@ function projectValue(value: unknown, node: WantedNode): unknown {
 export function projectFields<T extends Record<string, unknown>>(
   response: T,
   fields: string[] | undefined | null,
-): T {
+): T & { unmatched_fields?: string[] } {
   if (fields === undefined || fields === null) {
     return response;
   }
@@ -149,9 +168,15 @@ export function projectFields<T extends Record<string, unknown>>(
   }
 
   const root = buildWantedTree(paths);
-  const projected = projectValue(response, root);
+  const projected = (projectValue(response, root) ?? {}) as Record<string, unknown>;
+
+  const unmatched = fields.filter((field) => {
+    const segments = parsePath(field);
+    return segments.length > 0 && !pathMatches(response, segments);
+  });
+  if (unmatched.length > 0) projected.unmatched_fields = unmatched;
 
   // projectValue returns an object when given an object; the cast is safe
   // because the root is always an envelope object.
-  return (projected ?? {}) as T;
+  return projected as T & { unmatched_fields?: string[] };
 }

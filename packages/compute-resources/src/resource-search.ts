@@ -67,6 +67,17 @@ export const ORG_ABBREVIATIONS: Record<string, string[]> = {
   SBU: ["Stony Brook"],
 };
 
+// People name the university or consortium a center belongs to, while the
+// documentation lists the center. Each pattern matches the whole organization asked for.
+const ORG_PARENTS: [RegExp, string][] = [
+  [/^(the )?(university of illinois( urbana[- ]champaign)?|uiuc|illinois)$/, "National Center for Supercomputing Applications"],
+  [/^(carnegie mellon( university)?|cmu|(the )?university of pittsburgh|pitt)$/, "Pittsburgh Supercomputing Center"],
+  [/^(uc san diego|ucsd|(the )?university of california,? san diego)$/, "San Diego Supercomputer Center"],
+  [/^(ut austin|(the )?university of texas( at austin)?)$/, "Texas Advanced Computing Center"],
+  [/^(ucar|(the )?university corporation for atmospheric research)$/, "National Center for Atmospheric Research"],
+  [/^(the )?national research platform$/, "NRP"],
+];
+
 // Words that describe what's being searched for rather than which resource.
 const GENERIC_WORDS = new Set([
   "a", "an", "the", "and", "or", "with", "for", "on", "in", "of", "to", "that", "has", "have",
@@ -187,6 +198,8 @@ const datasetNames = (detail: Row | null): string[] =>
 // An abbreviation matches its expansions only.
 function organizationMatches(orgName: string, organization: string): boolean {
   const wanted = organization.trim();
+  const parent = ORG_PARENTS.find(([pattern]) => pattern.test(wanted.toLowerCase()));
+  if (parent && wordMatch(orgName, parent[1])) return true;
   const expansions = ORG_ABBREVIATIONS[wanted.toUpperCase()];
   if (expansions) {
     return orgName.toLowerCase() === wanted.toLowerCase() || expansions.some((name) => wordMatch(orgName, name));

@@ -99,8 +99,7 @@ async getInfrastructureNews() {
       suggestion: "Use search_resources tool from compute-resources server to find valid resource IDs",
       cross_reference: {
         tool: "search_resources",
-        server: "compute-resources",
-        parameters: { include_resource_ids: true }
+        server: "compute-resources"
       }
     };
   }
