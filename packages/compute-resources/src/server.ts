@@ -72,7 +72,8 @@ export class ComputeResourcesServer extends BaseAccessServer {
             },
             organization: {
               type: "string",
-              description: "Organization name or abbreviation (e.g. 'NCSA', 'Purdue', 'TACC')",
+              description:
+                "Organization name or abbreviation (e.g. 'NCSA', 'Purdue', 'TACC'). A center's university also works, such as 'University of Illinois' for NCSA or 'Carnegie Mellon' for PSC",
             },
             status: {
               type: "string",

@@ -61,7 +61,7 @@ nothing. When nothing matches, `hint` says why.
 |-----------|------|-------------|
 | `query` | string | Words that must all appear in the name, group, organization, description, CPU or GPU models, datasets or top software |
 | `type` | string | `Compute` or `Storage` |
-| `organization` | string | Organization name or abbreviation (`NCSA`, `PSC`, `SDSC`, `TACC`, `IU`, `TAMU`…) |
+| `organization` | string | Organization name or abbreviation (`NCSA`, `PSC`, `SDSC`, `TACC`, `IU`, `TAMU`…), or a center's university, such as `University of Illinois` for NCSA or `Carnegie Mellon` for PSC |
 | `status` | string | `production`, `pre-production` or `post-production` |
 | `has_gpu` | boolean | `true`: a queue has an accelerator. `false`: queues are documented and none has one |
 | `gpu_type` | string | Accelerator model text, such as `H100` or `Gaudi` (per queue) |

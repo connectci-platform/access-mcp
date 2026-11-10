@@ -283,7 +283,6 @@ export const CommonNextSteps = {
     action: "discover_resources",
     description: "Find available compute resources to filter by",
     tool: "search_resources",
-    parameters: { include_resource_ids: true },
   },
 
   narrowResults: (currentCount: number, suggestedFilters: string[]) => ({
