@@ -70,6 +70,11 @@ export interface RequestContext {
   actingUserAuth?: "token" | "header";
   /** The verified acting-user token, forwarded on server-to-server calls. */
   actingUserToken?: string;
+  /**
+   * The signed-in account's email and name from the verified token, when the
+   * portal included them. Only set when actingUserAuth is "token".
+   */
+  actingUserProfile?: { email?: string; name?: string };
   /** Unique request ID for tracing (from X-Request-ID header) */
   requestId?: string;
   /**
@@ -120,7 +125,7 @@ export interface BaseAccessServerOptions {
    * The server's tools act as the signed-in researcher (writes and user-scoped
    * reads), so /tools verifies the acting-user token the agent sends instead of
    * trusting X-Acting-User. See acting-user-token.ts and MCP_ACTING_USER_AUTH.
-   * Leave it off for servers that act on their own service account (jsm).
+   * Leave it off for servers that act only on their own service account.
    */
   actsForUsers?: boolean;
 }
@@ -130,10 +135,17 @@ export const ACTING_USER_SERVICES: ReadonlySet<string> = new Set([
   "events",
   "announcements",
   "allocations",
+  "jsm",
 ]);
 
 type ActingUserResolution =
-  | { ok: true; actingUser?: string; auth?: "token" | "header"; token?: string }
+  | {
+      ok: true;
+      actingUser?: string;
+      auth?: "token" | "header";
+      token?: string;
+      profile?: { email?: string; name?: string };
+    }
   | { ok: false; status: 401 | 503; error: string };
 
 export abstract class BaseAccessServer {
@@ -835,6 +847,7 @@ export abstract class BaseAccessServer {
         actingUser: acting.actingUser,
         actingUserAuth: acting.auth,
         actingUserToken: acting.token,
+        actingUserProfile: acting.ok ? acting.profile : undefined,
         requestId: c.req.header("X-Request-ID"),
         includeStructuredContent: c.req.header("X-Include-Structured-Content") === "1",
       };
@@ -1130,7 +1143,7 @@ export abstract class BaseAccessServer {
         };
       }
       try {
-        const { sub } = await this._actingUserVerifier.verify(match[1]);
+        const { sub, email, name } = await this._actingUserVerifier.verify(match[1]);
         if (headerUser !== undefined && headerUser !== sub) {
           return {
             ok: false,
@@ -1138,7 +1151,13 @@ export abstract class BaseAccessServer {
             error: "X-Acting-User does not match the signed-in user.",
           };
         }
-        return { ok: true, actingUser: sub, auth: "token", token: match[1] };
+        return {
+          ok: true,
+          actingUser: sub,
+          auth: "token",
+          token: match[1],
+          profile: { ...(email && { email }), ...(name && { name }) },
+        };
       } catch (error) {
         if (error instanceof ActingUserTokenUnavailableError) {
           this.logger.error("Acting-user token keys unavailable", { reason: error.message });

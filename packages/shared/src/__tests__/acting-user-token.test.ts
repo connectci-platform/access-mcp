@@ -139,6 +139,19 @@ describe("ActingUserTokenVerifier", () => {
     expect(result.sub).toBe(SUB);
   });
 
+  it("returns the account's email and name when the token names them (D8-3069)", async () => {
+    const result = await verifier().verify(
+      await mcpToken({ email: " jane@example.edu ", name: "Jane Smith" })
+    );
+    expect(result).toMatchObject({ sub: SUB, email: "jane@example.edu", name: "Jane Smith" });
+  });
+
+  it("leaves out an email or name that isn't a non-empty string", async () => {
+    const result = await verifier().verify(await mcpToken({ email: 42, name: "  " }));
+    expect(result).not.toHaveProperty("email");
+    expect(result).not.toHaveProperty("name");
+  });
+
   const refused: Array<[string, () => Promise<string> | string]> = [
     ["the agent's own token (agent audience)", agentToken],
     ["an XDMoD token", () => mcpToken({ aud: XDMOD_AUD, scope: "xdmod:read" })],
@@ -258,6 +271,8 @@ class ActingServer extends BaseAccessServer {
           text: JSON.stringify({
             actingUser: ctx?.actingUser ?? null,
             auth: ctx?.actingUserAuth ?? null,
+            ...(ctx?.actingUserProfile &&
+              Object.keys(ctx.actingUserProfile).length > 0 && { profile: ctx.actingUserProfile }),
           }),
         },
       ],
@@ -363,6 +378,23 @@ describe("/tools on a server that acts for users", () => {
       path: "token",
       mutates: true,
     });
+  });
+
+  it("puts a verified token's email and name on the request context", async () => {
+    await boot();
+    const token = await mcpToken({ email: "jane@example.edu", name: "Jane Smith" });
+    const r = await call("register_for_thing", { authorization: `Bearer ${token}` });
+    expect(r.ran).toEqual({
+      actingUser: SUB,
+      auth: "token",
+      profile: { email: "jane@example.edu", name: "Jane Smith" },
+    });
+  });
+
+  it("never takes an email or name from the header path", async () => {
+    await boot();
+    const r = await call("register_for_thing", { "x-acting-user": SUB });
+    expect(r.ran).toEqual({ actingUser: SUB, auth: "header" });
   });
 
   it("a token with a matching X-Acting-User succeeds", async () => {

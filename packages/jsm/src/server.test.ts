@@ -75,8 +75,10 @@ describe("JsmServer", () => {
             email: "john.smith@university.edu",
             name: "John Smith",
             summary: "Cannot allocate GPUs on Delta",
-            description:
-              "User is unable to submit GPU jobs. Getting error about quota exceeded.",
+            // Not signed in, so the ticket says its requester is unverified (D8-3069).
+            description: expect.stringMatching(
+              /^User is unable to submit GPU jobs\. Getting error about quota exceeded\.\n\nFiled through the ACCESS Assistant by someone who wasn't signed in\./
+            ),
             priority: "medium",
             hasResourceProblem: "No",
           }),
@@ -750,8 +752,9 @@ describe("JsmServer", () => {
 
       expect(supportTool?.inputSchema.required).toContain("summary");
       expect(supportTool?.inputSchema.required).toContain("description");
-      expect(supportTool?.inputSchema.required).toContain("user_email");
-      expect(supportTool?.inputSchema.required).toContain("user_name");
+      // A signed-in user's ticket takes these from their account (D8-3069).
+      expect(supportTool?.inputSchema.required).not.toContain("user_email");
+      expect(supportTool?.inputSchema.required).not.toContain("user_name");
 
       // Check enum values
       const props = supportTool?.inputSchema.properties as Record<
