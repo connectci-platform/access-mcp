@@ -1892,11 +1892,36 @@ describe("AnnouncementsServer", () => {
         expect(desc).toContain("**Affiliation:** [");
         expect(desc).toContain("**Share to:**");
         const lines = desc.split("\n");
-        const shareLine = lines.findIndex((l) => l.startsWith("**Share to:**"));
+        const shareLine = lines.findIndex((l) => l.startsWith("- **Share to:**"));
         const gate = lines.findIndex((l) => l.includes("[If the user is a coordinator or an affinity group is chosen:]"));
         expect(shareLine).toBeGreaterThan(-1);
         expect(gate).toBeGreaterThan(shareLine);
         expect(lines[gate + 1]).toContain("**Affinity Group:**");
+      });
+
+      it("tells the model to link the draft and keep ids out of the reply (D8-3082)", () => {
+        for (const name of ["create_announcement", "update_announcement"]) {
+          const desc = toolByName(name).description;
+          expect(desc).toContain("link data.edit_url");
+          expect(desc).toContain("Don't show the uuid, nid or other ids");
+          expect(desc).not.toContain("ALWAYS display data.edit_url");
+        }
+      });
+
+      it("formats the preview so Markdown keeps each field apart (D8-3082)", () => {
+        const desc = toolByName("create_announcement").description;
+        const start = desc.indexOf("PREVIEW FORMAT");
+        const end = desc.indexOf("After the preview,");
+        const template = desc.slice(start, end);
+        // Single line breaks are joined in Markdown, so every field is a list item.
+        for (const field of ["Title", "Summary", "Tags", "Affiliation", "Share to", "Affinity Group"]) {
+          expect(template).toContain(`- **${field}:**`);
+        }
+        // A --- line under text turns that text into a heading.
+        expect(template).not.toMatch(/^---$/m);
+        expect(template).toContain("never put a --- line directly under text");
+        // The body is its own paragraphs, after a blank line.
+        expect(template).toMatch(/\*\*Body:\*\*\n\n\[/);
       });
 
       it("published_date schema says it is the digest date, not the event date, and to leave it out by default", () => {

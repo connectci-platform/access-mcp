@@ -271,28 +271,29 @@ If user describes what they want conversationally:
 
 IMPORTANT: Always pass the tags parameter when creating. Tags are english NAMES (strings) taken verbatim from the "name" field of suggest_tags — pass them as the tags array. Never pass ids or uuids; the tool resolves names internally.
 
-PREVIEW FORMAT (show before creating):
----
-**Title:** [title]
-**Summary:** [summary]
-**Body:**
-[body content, truncate if very long]
+PREVIEW FORMAT (show before creating). It is Markdown, where single line breaks are joined, so keep each field a list item, put a blank line before and after the body, and never put a --- line directly under text (it turns that text into a heading):
 
-**Tags:** [tag1, tag2, ...] or "None"
-**Publish date:** [YYYY-MM-DD] (only when it is not today; omit this line otherwise)
-**Affiliation:** [chosen affiliation, or "Community" by default]
-**Share to:** [chosen options, or "Announcements page, Bi-Weekly Digest" by default]
-**External Link:** [link text](url) or omit if none
+- **Title:** [title]
+- **Summary:** [summary]
+- **Tags:** [tag1, tag2, ...] or "None"
+- **Publish date:** [YYYY-MM-DD] (only when it is not today; omit this line otherwise)
+- **Affiliation:** [chosen affiliation, or "Community" by default]
+- **Share to:** [chosen options, or "Announcements page, Bi-Weekly Digest" by default]
+- **External Link:** [link text](url) or omit if none
 [If the user is a coordinator or an affinity group is chosen:]
-**Affinity Group:** [group name] or "None"
----
+- **Affinity Group:** [group name] or "None"
+
+**Body:**
+
+[body content as paragraphs, truncate if very long]
+
 After the preview, invite the user to change the affiliation or where it is shared right there, and ask "Does this look correct?" before creating. If the user asks for a change, show the updated preview and ask again. A bare change request still gets an updated preview and a new ask. A bare change request is not confirmation; create only after the user confirms the current preview. The exception: when one reply both requests a change and explicitly says to go ahead, create with that change applied, then tell the user what was saved. An explicit go-ahead is an explicit instruction to create in the same reply, such as "go ahead", "create it" or "post it". Approval words like "looks good" or "sounds good" next to a change are not a go-ahead; they get an updated preview.
 Publish date: leave published_date out unless the user asks for a specific publish date; it defaults to today. It is the date the announcement is dated, listed by (newest first) and picked up by the Bi-Weekly Digest, never the date of an event the announcement describes. A future publish date keeps the announcement out of the Bi-Weekly Digest until that date and pins it to the top of listings. A past publish date, before the current digest window, also keeps it out of the digest. When the preview shows any date other than today, tell the user this.
 Affiliation options: "ACCESS Collaboration" or "Community". Sharing options: "Announcements page" and "Bi-Weekly Digest" are open to everyone. "Affinity Group page" and "Email to Affinity Group" need an affinity group the user is allowed to post to (a coordinator of it, or an administrator or news manager, who can post to any group); the group is chosen in the preview too. get_announcement_context lists only the groups the user coordinates, so an administrator or news manager sees an empty list and names the group directly.
 Pass affiliation and where_to_share exactly as the confirmed preview showed them.
 
 Returns the write envelope {action:"create", status:"created", executed:true, data:{uuid, nid, title, edit_url, moderation_state}} (a "warning" is added when some tags could not be matched; if one is returned, tell the user which tags were skipped). Read "status" and "executed"; the created draft's fields are under "data".
-ALWAYS display data.edit_url to the user so they can review their draft in Drupal.`,
+After creating, tell the user the title and status, and link data.edit_url as the place to review or edit the draft. Don't show the uuid, nid or other ids: they're for later tool calls, not for the user.`,
         inputSchema: {
           type: "object",
           properties: {
@@ -364,7 +365,7 @@ BEFORE CALLING:
 5. Send at most one of affinity_group, add_affinity_group, remove_affinity_group or clear_affinity_groups. Drupal checks that the user may post to every group the announcement ends up with, hidden ones included; if it refuses with not_coordinator, show its message as is
 
 Returns the write envelope {action:"update", status:"updated", executed:true, data:{uuid, title, edit_url, review_required}}. Read "status" and "executed"; the updated fields are under "data". When data.review_required is true, the user may not publish and the announcement is published, so the edit was saved as a draft for review and the live announcement is unchanged. Never tell that user the change is live; tell them it is waiting for review. A "warning" carries that review notice and any tags that could not be matched; if one is returned, pass the review notice on and tell the user which tags were skipped.
-ALWAYS display data.edit_url to the user so they can review changes in Drupal.`,
+After updating, tell the user what changed and link data.edit_url as the place to review it. Don't show the uuid, nid or other ids.`,
         inputSchema: {
           type: "object",
           properties: {
