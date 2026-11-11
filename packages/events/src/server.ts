@@ -300,7 +300,7 @@ export class EventsServer extends BaseAccessServer {
         name: "search_events",
         mutates: false,
         description:
-          "Search ACCESS-CI events (workshops, webinars, training). Returns future events by default. Use date='past' or an absolute date_range for historical events. Returns {total, items}. Each event may carry `access_registration` (native ACCESS registration — when enabled, the user can register through ACCESS itself; manage it with get_event for live availability, register_for_event to sign up, get_my_registrations to list, and cancel_registration to cancel) and/or `registration_url` (an external link to register on the resource provider's own site — ACCESS does not manage these; direct the user to the URL). access_registration.enabled true means act via the ACCESS tools; registration_url means go offsite.",
+          "Search ACCESS-CI events (workshops, webinars, training). Returns future events by default. Use date='past' or an absolute date_range for historical events. Returns {total, items}. Each event has `url`, its page on support.access-ci.org, to link when naming it. Each event may carry `access_registration` (native ACCESS registration — when enabled, the user can register through ACCESS itself; manage it with get_event for live availability, register_for_event to sign up, get_my_registrations to list, and cancel_registration to cancel) and/or `registration_url` (an external link to register on the resource provider's own site — ACCESS does not manage these; direct the user to the URL). access_registration.enabled true means act via the ACCESS tools; registration_url means go offsite.",
         inputSchema: {
           type: "object",
           properties: {
@@ -485,7 +485,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "create_event",
         description:
-          "Create a new event series as a DRAFT (organizer write; acting-user-gated). There is no self-publish path — every created series starts moderation_state:\"draft\" regardless of what you pass. The response's moderation block tells you what to do next: moderation.can_publish (whether the acting user may publish directly) and moderation.next_action (\"send_for_review\" when they cannot — call send_for_review to route it to an editor). Requires title, field_event_type, and field_location — the last two are required by the site's field validation (the same rule the browser form enforces), and creation is refused with code \"validation_error\" naming the field if they are missing or invalid. You must ALSO specify the schedule, exactly one of two ways: for a repeating event pass a recurrence object; for one-off or irregular dates pass recur_type:\"custom\" with custom_dates. The recurrence object describes the pattern with frequency (\"daily\", \"weekly\", \"monthly\", \"yearly\", \"consecutive\"), start_date, end_date, start_time, and either duration_minutes OR ends_at for daily/weekly/monthly/yearly. For monthly, use weekday mode (days + week_positions, e.g. [\"mon\"] + [\"first\"] for first Monday; use monthday mode (days_of_month, e.g. [15] or [-1] for last day) for 'the 15th' or 'last day' patterns. Yearly uses months + days/days_of_month. Consecutive uses window_start/window_end + session_minutes + gap_minutes. Invalid recurrence fields are refused with a coded error (validation_error/over_fill/out_of_vocab) naming the problem field before anything is written. Affinity group is optional: supply field_affinity_group_node only to publish the event to one or more groups the acting user coordinates (creation is refused with code \"not_coordinator\" if they do not coordinate ALL supplied groups); omit it to create an event not published to any group. For recur_type:\"custom\", pass custom_dates as [{start_date, end_date}, …]. Optional content fields: body, field_summary, field_skill_level, field_tags, field_event_speakers, field_event_virtual_meeting_link, field_event_in_person (physical venue vs online). Optional field_event_timezone (IANA name): set only when the user names a timezone different from their own — otherwise omit it and the event uses the acting user's account timezone. WITHOUT confirmed:true this returns a no-write PREVIEW (status:\"preview\", executed:false, with occurrence_count, total_occurrence_count, truncated, and occurrences — truncated is true only when a 1000-occurrence hard cap clipped the set, in which case total_occurrence_count is the real total while occurrence_count/occurrences hold the shown first 1000; report total_occurrence_count to the user) of the occurrence dates the recurrence would produce — show it to the user first. WITH confirmed:true it creates the series. Returns on commit: {series_id, instance_ids, title, moderation_state, moderation}; if a recurrence pattern produces zero occurrences the response also carries recurrence_warning.",
+          "Create a new event series as a DRAFT (organizer write; acting-user-gated). There is no self-publish path — every created series starts moderation_state:\"draft\" regardless of what you pass. The response's moderation block tells you what to do next: moderation.can_publish (whether the acting user may publish directly) and moderation.next_action (\"send_for_review\" when they cannot — call send_for_review to route it to an editor). Requires title, field_event_type, and field_location — the last two are required by the site's field validation (the same rule the browser form enforces), and creation is refused with code \"validation_error\" naming the field if they are missing or invalid. You must ALSO specify the schedule, exactly one of two ways: for a repeating event pass a recurrence object; for one-off or irregular dates pass recur_type:\"custom\" with custom_dates. The recurrence object describes the pattern with frequency (\"daily\", \"weekly\", \"monthly\", \"yearly\", \"consecutive\"), start_date, end_date, start_time, and either duration_minutes OR ends_at for daily/weekly/monthly/yearly. For monthly, use weekday mode (days + week_positions, e.g. [\"mon\"] + [\"first\"] for first Monday; use monthday mode (days_of_month, e.g. [15] or [-1] for last day) for 'the 15th' or 'last day' patterns. Yearly uses months + days/days_of_month. Consecutive uses window_start/window_end + session_minutes + gap_minutes. Invalid recurrence fields are refused with a coded error (validation_error/over_fill/out_of_vocab) naming the problem field before anything is written. Affinity group is optional: supply field_affinity_group_node only to publish the event to one or more groups the acting user coordinates (creation is refused with code \"not_coordinator\" if they do not coordinate ALL supplied groups); omit it to create an event not published to any group. For recur_type:\"custom\", pass custom_dates as [{start_date, end_date}, …]. Optional content fields: body, field_summary, field_skill_level, field_tags, field_event_speakers, field_event_virtual_meeting_link, field_event_in_person (physical venue vs online). Optional field_event_timezone (IANA name): set only when the user names a timezone different from their own — otherwise omit it and the event uses the acting user's account timezone. WITHOUT confirmed:true this returns a no-write PREVIEW (status:\"preview\", executed:false, with occurrence_count, total_occurrence_count, truncated, and occurrences — truncated is true only when a 1000-occurrence hard cap clipped the set, in which case total_occurrence_count is the real total while occurrence_count/occurrences hold the shown first 1000; report total_occurrence_count to the user) of the occurrence dates the recurrence would produce — show it to the user first. WITH confirmed:true it creates the series. Returns on commit: {series_id, instance_ids, title, moderation_state, moderation, event_url, edit_url}; link event_url (the event page) and edit_url (where the organizer edits or publishes it) in your reply. If a recurrence pattern produces zero occurrences the response also carries recurrence_warning.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -638,7 +638,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "update_event",
         description:
-          "Edit an existing event series' CONTENT fields ONLY (title, body, field_summary, field_location, field_event_type, field_skill_level, field_tags, field_event_speakers, field_event_virtual_meeting_link, field_event_timezone, field_event_in_person). This tool NEVER changes dates/recurrence and NEVER changes moderation_state (note: changing field_event_timezone reschedules the event's displayed times, but does not alter the stored recurrence) — it applies immediately, with no preview step and no confirm flag. The API deliberately has NO whole-schedule rebuild operation: schedule changes are per-occurrence only — use edit_occurrence to move one occurrence's date, or add_occurrence/cancel_occurrence to add or remove a date. A series' recurrence pattern itself can never be rebuilt on any surface once it has registrations; the reschedule path there is cancel_occurrence → edit_occurrence (while dark) → restore_occurrence. For a state change (cancel, restore, send for review), use delete_event / restore_event / send_for_review. Edits are validated against the site's field rules (required fields, allowed values, link format); a violation is refused with code \"validation_error\" and a message naming the field — fix that field (or supply it, if the series was created without it) and retry. Returns {series_id, updated_fields}.",
+          "Edit an existing event series' CONTENT fields ONLY (title, body, field_summary, field_location, field_event_type, field_skill_level, field_tags, field_event_speakers, field_event_virtual_meeting_link, field_event_timezone, field_event_in_person). This tool NEVER changes dates/recurrence and NEVER changes moderation_state (note: changing field_event_timezone reschedules the event's displayed times, but does not alter the stored recurrence) — it applies immediately, with no preview step and no confirm flag. The API deliberately has NO whole-schedule rebuild operation: schedule changes are per-occurrence only — use edit_occurrence to move one occurrence's date, or add_occurrence/cancel_occurrence to add or remove a date. A series' recurrence pattern itself can never be rebuilt on any surface once it has registrations; the reschedule path there is cancel_occurrence → edit_occurrence (while dark) → restore_occurrence. For a state change (cancel, restore, send for review), use delete_event / restore_event / send_for_review. Edits are validated against the site's field rules (required fields, allowed values, link format); a violation is refused with code \"validation_error\" and a message naming the field — fix that field (or supply it, if the series was created without it) and retry. Returns {series_id, updated_fields, edit_url}; link edit_url in your reply.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -720,7 +720,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "send_for_review",
         description:
-          "Route a draft (or needs_adjustment) event series to an editor for approval — the author-facing path to publication when the acting user cannot publish directly (see create_event's moderation.next_action). Legal only from draft or needs_adjustment; any other current state (published, archived, ready_for_review already) is refused with code \"invalid_state\". No preview step; no confirm flag. Returns {series_id, moderation_state} with moderation_state now \"ready_for_review\".",
+          "Route a draft (or needs_adjustment) event series to an editor for approval — the author-facing path to publication when the acting user cannot publish directly (see create_event's moderation.next_action). Legal only from draft or needs_adjustment; any other current state (published, archived, ready_for_review already) is refused with code \"invalid_state\". No preview step; no confirm flag. Returns {series_id, moderation_state, edit_url} with moderation_state now \"ready_for_review\"; link edit_url in your reply.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -808,7 +808,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "add_occurrence",
         description:
-          "Add ONE new occurrence directly to an event series — an unregistered, targeted addition (not a schedule rebuild: it touches only the one new row, with no risk to any other occurrence's registrants). The API deliberately has no whole-schedule rebuild operation; this tool, edit_occurrence (move one date), and cancel_occurrence (remove one date) are how a schedule changes — a series' recurrence pattern itself can never be rebuilt once it has registrations, on any surface. Its birth state follows the parent series: adding to a published series creates a published occurrence immediately; adding to an archived series creates an archived one that comes back the normal way when the series is restored. Adding to a DRAFT series is refused with code \"invalid_state\" (a draft's new occurrence would be born archived with no path to visible — publish or send_for_review the series first). Refused with code \"duplicate_date\" if an occurrence already exists at the exact requested start time; if that existing occurrence is itself a cancelled twin, the refusal message points you at restore_occurrence instead — re-adding at that same moment almost always means bringing the cancelled one back, not creating a competing duplicate. No preview step; no confirm flag. Returns {series_id, eventinstance_id, moderation_state}.",
+          "Add ONE new occurrence directly to an event series — an unregistered, targeted addition (not a schedule rebuild: it touches only the one new row, with no risk to any other occurrence's registrants). The API deliberately has no whole-schedule rebuild operation; this tool, edit_occurrence (move one date), and cancel_occurrence (remove one date) are how a schedule changes — a series' recurrence pattern itself can never be rebuilt once it has registrations, on any surface. Its birth state follows the parent series: adding to a published series creates a published occurrence immediately; adding to an archived series creates an archived one that comes back the normal way when the series is restored. Adding to a DRAFT series is refused with code \"invalid_state\" (a draft's new occurrence would be born archived with no path to visible — publish or send_for_review the series first). Refused with code \"duplicate_date\" if an occurrence already exists at the exact requested start time; if that existing occurrence is itself a cancelled twin, the refusal message points you at restore_occurrence instead — re-adding at that same moment almost always means bringing the cancelled one back, not creating a competing duplicate. No preview step; no confirm flag. Returns {series_id, eventinstance_id, moderation_state, event_url, edit_url}.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -1216,8 +1216,10 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       // zoned instant (…Z / +00:00 / offset), which Date parses unambiguously.
       const startNorm = isoInstant(event.start_date) ?? event.start_date;
       const endNorm = isoInstant(event.end_date) ?? event.end_date;
+      const url = this.eventUrl(rest.id);
       return {
         ...rest,
+        ...(url && { url }),
         // Emit zoned instants. /api/2.4 already returns …Z, so isoInstant is a
         // no-op here; the fallback covers any non-zoned value. (get_event also
         // emits zoned instants; get_my_events reads a different jsonapi path and
@@ -1416,10 +1418,13 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
     const events = slicedItems.map((item: any) => {
       const attrs = item.attributes ?? {};
       const dateRange = Array.isArray(attrs.date) ? attrs.date[0] : attrs.date;
+      // item.id is the JSON:API UUID; the page path takes the numeric id.
+      const url = this.eventUrl(attrs.drupal_internal__id);
       return {
         id: item.id,
         type: item.type,
         title: attrs.title,
+        ...(url && { url }),
         // The jsonapi view emits offset-bearing values (e.g. "…-05:00");
         // canonicalize to UTC "…Z" so get_my_events matches search_events /
         // get_event's date form. Correct instant either way — this is uniformity.
@@ -1540,6 +1545,8 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       registration_path = "none";
     }
     detail.registration_path = registration_path;
+    const url = this.eventUrl(detail.id ?? eventinstanceId);
+    if (url) detail.url = url;
     return this.jsonContent(detail);
   }
 
@@ -2003,6 +2010,29 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
     return this.createdEventResponse(outcome.data);
   }
 
+  /** The event's page on the portal: /events/{instance id} (D8-3079). */
+  private eventUrl(instanceId: unknown): string | undefined {
+    if (typeof instanceId !== "string" && typeof instanceId !== "number") return undefined;
+    const id = String(instanceId);
+    return /^\d+$/.test(id) ? new URL(`/events/${id}`, this.baseURL).toString() : undefined;
+  }
+
+  /** The series' edit form, where its organizer manages it (D8-3079). */
+  private seriesEditUrl(seriesId: unknown): string | undefined {
+    if (typeof seriesId !== "string" && typeof seriesId !== "number") return undefined;
+    const id = String(seriesId);
+    return /^\d+$/.test(id)
+      ? new URL(`/events/series/${id}/edit`, this.baseURL).toString()
+      : undefined;
+  }
+
+  /** event_url and edit_url, leaving out any that can't be built. */
+  private eventLinks(seriesId?: unknown, instanceId?: unknown): Record<string, string> {
+    const event_url = this.eventUrl(instanceId);
+    const edit_url = this.seriesEditUrl(seriesId);
+    return { ...(event_url && { event_url }), ...(edit_url && { edit_url }) };
+  }
+
   /** Shared "created" envelope mapping for createEvent's confirmed:true path
    * and its preview-fell-through-to-commit case (Drupal ignored an unknown
    * ?confirmed=false and created anyway). */
@@ -2018,6 +2048,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
         title: data.title,
         moderation_state: data.moderation_state,
         moderation: data.moderation,
+        ...this.eventLinks(data.series_id, Array.isArray(instanceIds) ? instanceIds[0] : undefined),
         ...(Array.isArray(instanceIds) && instanceIds.length === 0
           ? { recurrence_warning: "This recurrence produced no occurrences — verify the day/date-range combination." }
           : {}),
@@ -2057,6 +2088,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       data: {
         series_id: outcome.data.series_id,
         updated_fields: outcome.data.updated_fields,
+        ...this.eventLinks(outcome.data.series_id),
       },
     });
   }
@@ -2135,6 +2167,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       data: {
         series_id: outcome.data.series_id,
         instances_restored: outcome.data.instances_restored ?? 0,
+        ...this.eventLinks(outcome.data.series_id),
         notified: outcome.data.notified ?? 0,
         notifications_disabled: outcome.data.notifications_disabled ?? false,
       },
@@ -2168,6 +2201,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       data: {
         series_id: outcome.data.series_id,
         moderation_state: outcome.data.moderation_state,
+        ...this.eventLinks(outcome.data.series_id),
       },
     });
   }
@@ -2248,6 +2282,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
         notified: outcome.data.notified ?? 0,
         notifications_disabled: outcome.data.notifications_disabled ?? false,
         returns_with_series: outcome.data.returns_with_series,
+        ...this.eventLinks(undefined, outcome.data.eventinstance_id),
       },
     });
   }
@@ -2291,6 +2326,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       data: {
         eventinstance_id: outcome.data.eventinstance_id,
         registrants_affected: outcome.data.registrants_affected,
+        ...this.eventLinks(undefined, outcome.data.eventinstance_id),
       },
     });
   }
@@ -2331,6 +2367,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
         series_id: outcome.data.series_id,
         eventinstance_id: outcome.data.eventinstance_id,
         moderation_state: outcome.data.moderation_state,
+        ...this.eventLinks(outcome.data.series_id, outcome.data.eventinstance_id),
       },
     });
   }
