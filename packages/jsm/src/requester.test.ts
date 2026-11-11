@@ -77,6 +77,22 @@ describe("ticket requester", () => {
     }
   );
 
+  it("never pairs a verified email with a name from chat", async () => {
+    await call(
+      "create_support_ticket",
+      { ...TICKET, user_name: "ACCESS Security Team" },
+      { ...SIGNED_IN, actingUserProfile: { email: "jane.smith@example.edu" } }
+    );
+
+    expect(sent()).toMatchObject({ email: "jane.smith@example.edu", name: "jsmith" });
+  });
+
+  it("files a header-only call as unverified instead of refusing it", () => {
+    // The base server then runs the tool with no acting user (shared tests
+    // cover that over /tools), which lands on the unverified path below.
+    expect(server["_headerOnlyIsUnverified"]).toBe(true);
+  });
+
   it("needs no email or name from a signed-in user", async () => {
     const result = await call("create_support_ticket", TICKET, SIGNED_IN);
 
@@ -92,10 +108,10 @@ describe("ticket requester", () => {
     );
 
     expect(result.isError).toBeFalsy();
-    expect(sent()).toMatchObject({ email: "jane@example.org", name: "Jane", accessId: "jsmith" });
+    expect(sent()).toMatchObject({ email: "jane@example.org", name: "jsmith", accessId: "jsmith" });
     expect(sent().description).toBe(
       "Jobs stay pending.\n\nFiled through the ACCESS Assistant by signed-in ACCESS user jsmith. " +
-        "Their account has no usable email on file, so the email was given in chat."
+        "Their sign-in didn't include an email, so the email was given in chat and isn't verified."
     );
   });
 
@@ -115,7 +131,7 @@ describe("ticket requester", () => {
       login_type: "access_portal",
       user_email: "locked.out@example.edu",
       user_name: "Locked Out",
-      access_id: "lockedout",
+      access_id: "lockedout@access-ci.org",
     });
 
     expect(result.isError).toBeFalsy();

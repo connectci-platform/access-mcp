@@ -166,7 +166,9 @@ export class JsmServer extends BaseAccessServer {
       proxyUrl || "http://unconfigured",
       // Verifies the acting-user token, so a signed-in user's ticket is filed
       // under the account the token names, not under the model's arguments.
-      { requireApiKey: true, actsForUsers: true }
+      // A call with only X-Acting-User (the token exchange failed) still files,
+      // as an unverified ticket, rather than being refused.
+      { requireApiKey: true, actsForUsers: true, headerOnlyIsUnverified: true }
     );
     this.dryRun = dryRun;
 
@@ -416,26 +418,28 @@ export class JsmServer extends BaseAccessServer {
     | { ok: true; email: string; name: string; accessId?: string; description: string }
     | { ok: false; error: string } {
     const given = (value: string | undefined) => value?.trim() || undefined;
+    const bareAccessId = (value: string) => value.replace(/@access-ci\.org$/i, "");
     const context = getRequestContext();
     if (context?.actingUserAuth === "token" && context.actingUser) {
-      const accessId = context.actingUser.replace(/@access-ci\.org$/i, "");
+      const accessId = bareAccessId(context.actingUser);
       const verified = context.actingUserProfile ?? {};
       const email = verified.email ?? given(args.user_email);
       if (!email) {
         return {
           ok: false,
           error:
-            "The signed-in account has no email on file. Ask the user for the email to reply to, then try again.",
+            "The user's sign-in didn't include an email. Ask them for the email to reply to, then try again.",
         };
       }
       const note = verified.email
         ? ""
         : `\n\nFiled through the ACCESS Assistant by signed-in ACCESS user ${accessId}. ` +
-          "Their account has no usable email on file, so the email was given in chat.";
+          "Their sign-in didn't include an email, so the email was given in chat and isn't verified.";
       return {
         ok: true,
         email,
-        name: verified.name ?? given(args.user_name) ?? accessId,
+        // Never a name from chat next to a verified email: the ACCESS ID instead.
+        name: verified.name ?? accessId,
         accessId,
         description: description + note,
       };
@@ -447,14 +451,14 @@ export class JsmServer extends BaseAccessServer {
       return {
         ok: false,
         error:
-          "The user isn't signed in, so ask for their name and email before filing the ticket, or suggest they sign in.",
+          "Who is asking couldn't be confirmed, so ask for their name and email before filing the ticket.",
       };
     }
     return {
       ok: true,
       email,
       name,
-      accessId: given(args.access_id),
+      accessId: given(args.access_id) && bareAccessId(given(args.access_id)!),
       description:
         `${description}\n\nFiled through the ACCESS Assistant by someone who wasn't signed in. ` +
         "The name, email and ACCESS ID were given in chat and aren't verified.",

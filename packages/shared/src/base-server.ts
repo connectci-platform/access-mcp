@@ -128,6 +128,13 @@ export interface BaseAccessServerOptions {
    * Leave it off for servers that act only on their own service account.
    */
   actsForUsers?: boolean;
+  /**
+   * With actsForUsers in token mode, a call carrying X-Acting-User but no
+   * token is treated as unidentified instead of refused, so its tools run
+   * without an acting user. For jsm (D8-3069): a ticket still gets filed, as
+   * unverified, when the portal's token exchange is down.
+   */
+  headerOnlyIsUnverified?: boolean;
 }
 
 /** ACCESS_MCP_SERVICES names of the servers constructed with actsForUsers. */
@@ -159,6 +166,7 @@ export abstract class BaseAccessServer {
   private _sseTransports: Map<string, SSEServerTransport> = new Map();
   private _requireApiKey: boolean;
   private _actsForUsers: boolean;
+  private _headerOnlyIsUnverified: boolean;
   private _actingUserConfig?: ActingUserTokenConfig;
   private _actingUserVerifier?: ActingUserTokenVerifier;
   private _nodeServer?: HttpServer;
@@ -172,6 +180,7 @@ export abstract class BaseAccessServer {
   ) {
     this._requireApiKey = options.requireApiKey ?? false;
     this._actsForUsers = options.actsForUsers ?? false;
+    this._headerOnlyIsUnverified = options.headerOnlyIsUnverified ?? false;
     // Note: Telemetry is initialized via --import flag in the Dockerfile
     // This ensures OpenTelemetry is set up BEFORE http modules are imported
     // See packages/shared/src/telemetry-bootstrap.ts
@@ -1181,6 +1190,10 @@ export abstract class BaseAccessServer {
       return { ok: true };
     }
     if (config.mode === "token") {
+      if (this._headerOnlyIsUnverified) {
+        this.logger.warn("Acting user header without a token treated as unverified");
+        return { ok: true };
+      }
       return {
         ok: false,
         status: 401,

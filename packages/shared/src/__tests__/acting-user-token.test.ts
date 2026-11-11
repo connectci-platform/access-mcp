@@ -237,8 +237,12 @@ describe("actingUserTokenConfigFromEnv", () => {
 // --- The /tools route on a server that acts for users -----------------------
 
 class ActingServer extends BaseAccessServer {
-  constructor(actsForUsers = true) {
-    super("acting-test", "1.0.0", "https://api.example.com", { requireApiKey: true, actsForUsers });
+  constructor(actsForUsers = true, headerOnlyIsUnverified = false) {
+    super("acting-test", "1.0.0", "https://api.example.com", {
+      requireApiKey: true,
+      actsForUsers,
+      headerOnlyIsUnverified,
+    });
   }
   protected getTools(): ToolWithAccess[] {
     const tools: ToolWithAccess[] = [
@@ -324,7 +328,8 @@ describe("/tools on a server that acts for users", () => {
   async function boot(
     env: Record<string, string | undefined> = {},
     actsForUsers = true,
-    onCreate?: (s: ActingServer) => void
+    onCreate?: (s: ActingServer) => void,
+    headerOnlyIsUnverified = false
   ) {
     Object.assign(process.env, {
       MCP_API_KEY: KEY,
@@ -337,7 +342,7 @@ describe("/tools on a server that acts for users", () => {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }
-    const s = new ActingServer(actsForUsers);
+    const s = new ActingServer(actsForUsers, headerOnlyIsUnverified);
     onCreate?.(s);
     await s.start({ httpPort: 0 });
     server = s;
@@ -389,6 +394,19 @@ describe("/tools on a server that acts for users", () => {
       auth: "token",
       profile: { email: "jane@example.edu", name: "Jane Smith" },
     });
+  });
+
+  it("in token mode, a header-only call runs unidentified when the server allows it", async () => {
+    await boot({ MCP_ACTING_USER_AUTH: "token" }, true, undefined, true);
+    const r = await call("register_for_thing", { "x-acting-user": SUB });
+    expect(r.status).toBe(200);
+    expect(r.ran).toEqual({ actingUser: null, auth: null });
+  });
+
+  it("in token mode, a bad token is still refused when header-only calls are allowed", async () => {
+    await boot({ MCP_ACTING_USER_AUTH: "token" }, true, undefined, true);
+    const r = await call("register_for_thing", { authorization: "Bearer not-a-token" });
+    expect(r.status).toBe(401);
   });
 
   it("never takes an email or name from the header path", async () => {
