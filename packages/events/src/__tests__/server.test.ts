@@ -633,6 +633,7 @@ describe("EventsServer", () => {
         expect(responseData.items).toHaveLength(2);
         expect(responseData.documentation.links.see_all_url).toBe("https://support.access-ci.org/events");
         expect(responseData.metadata.query_relevance).toBe("exact");
+        expect(responseData.items[0].url).toBe(`${server["baseURL"]}/events/1`);
       });
 
       it("should tag query_relevance loose_match when full-text query is supplied", async () => {
@@ -2134,6 +2135,7 @@ describe("EventsServer", () => {
       );
       const body = JSON.parse(result.content[0].text);
       expect(body.id).toBe("8504");
+      expect(body.url).toBe(`${server["baseURL"]}/events/8504`);
       expect(body.registration.enabled).toBe(true);
       expect(body.registration.seats_remaining).toBe(18);
     });
@@ -2710,6 +2712,7 @@ describe("EventsServer", () => {
               id: "uuid-1",
               type: "eventinstance--instance",
               attributes: {
+                drupal_internal__id: 9385,
                 title: "Sage Office Hours",
                 date: [{ value: "2026-07-23T20:00:00", end_value: "2026-07-23T21:00:00" }],
                 status: false,
@@ -2739,6 +2742,8 @@ describe("EventsServer", () => {
         expect(item.status).toBe("ready_for_review");
         // the raw publish boolean must not leak back over the mapped status.
         expect(typeof item.status).toBe("string");
+        // The page path takes the numeric id, not the JSON:API UUID (D8-3079).
+        expect(item.url).toBe(`${server["baseURL"]}/events/9385`);
       } finally {
         if (saved.url === undefined) delete process.env.DRUPAL_API_URL;
         else process.env.DRUPAL_API_URL = saved.url;
@@ -3316,6 +3321,24 @@ describe("EventsServer", () => {
         });
       });
 
+      it("links the created event's page and its edit form (D8-3079)", async () => {
+        mockRequestRaw.mockResolvedValue({
+          status: 200,
+          data: { success: true, series_id: 42, instance_ids: [100, 101], title: "GPU Bootcamp", moderation_state: "draft" },
+        });
+        const result = await call("create_event", {
+          title: "GPU Bootcamp",
+          recur_type: "custom",
+          custom_dates: [{ start_date: "2026-09-01T14:00:00", end_date: "2026-09-01T15:00:00" }],
+          confirmed: true,
+        });
+        const base = server["baseURL"];
+        expect(JSON.parse(result.content[0].text).data).toMatchObject({
+          event_url: `${base}/events/100`,
+          edit_url: `${base}/events/series/42/edit`,
+        });
+      });
+
       it("confirmed omitted previews via a query-string flag and writes nothing", async () => {
         const occurrences = [
           { start_date: "2026-09-01T09:00:00+00:00", end_date: "2026-09-01T10:00:00+00:00" },
@@ -3867,7 +3890,11 @@ describe("EventsServer", () => {
           action: "update",
           status: "updated",
           executed: true,
-          data: { series_id: 42, updated_fields: ["title", "field_summary"] },
+          data: {
+            series_id: 42,
+            updated_fields: ["title", "field_summary"],
+            edit_url: `${server["baseURL"]}/events/series/42/edit`,
+          },
         });
       });
 
@@ -4250,7 +4277,13 @@ describe("EventsServer", () => {
           action: "create",
           status: "created",
           executed: true,
-          data: { series_id: 42, eventinstance_id: 950, moderation_state: "published" },
+          data: {
+            series_id: 42,
+            eventinstance_id: 950,
+            moderation_state: "published",
+            event_url: `${server["baseURL"]}/events/950`,
+            edit_url: `${server["baseURL"]}/events/series/42/edit`,
+          },
         });
       });
 
