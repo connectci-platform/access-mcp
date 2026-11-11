@@ -282,6 +282,9 @@ export abstract class BaseAccessServer {
         success: succeeded,
         durationMs: Date.now() - startedAt,
         actingUser: requestContextStorage.getStore()?.actingUser,
+        unverified:
+          this._headerOnlyIsUnverified &&
+          requestContextStorage.getStore()?.actingUserAuth === "header",
       });
     }
   }

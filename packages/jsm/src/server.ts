@@ -445,9 +445,10 @@ export class JsmServer extends BaseAccessServer {
       };
     }
 
-    // The header path: the agent named the user, but their sign-in couldn't
-    // be confirmed (the token exchange failed). Keep its ACCESS ID as a hint.
-    const hinted =
+    // The header path: the caller named an ACCESS ID in X-Acting-User but sent
+    // no verified token. That is only a claim, so it goes in the description,
+    // never in the accessId field staff and reports treat as identity.
+    const claimed =
       context?.actingUserAuth === "header" && context.actingUser
         ? bareAccessId(context.actingUser)
         : undefined;
@@ -455,23 +456,26 @@ export class JsmServer extends BaseAccessServer {
     if (!email) {
       return {
         ok: false,
-        error: hinted
+        error: claimed
           ? "The user's sign-in couldn't be confirmed, so ask them for the email to reply to, then try again."
           : "The user isn't signed in, so ask for their email (and their name, if they'll give it) before filing the ticket.",
       };
     }
+    const name = given(args.user_name);
     const typedId = given(args.access_id);
-    const accessId = hinted ?? (typedId && bareAccessId(typedId));
+    const fromChat = name ? "The name and email were" : "The email was";
     return {
       ok: true,
       email,
-      name: given(args.user_name) ?? accessId ?? "Not given",
-      accessId,
+      // Blank, as the public ticket form sends it, rather than a placeholder
+      // that could become the customer's name in JSM.
+      name: name ?? "",
+      accessId: claimed ? undefined : typedId && bareAccessId(typedId),
       description:
         description +
-        (hinted
-          ? `\n\nFiled through the ACCESS Assistant for ACCESS user ${hinted}, whose sign-in ` +
-            "couldn't be confirmed. The name and email were given in chat and aren't verified."
+        (claimed
+          ? `\n\nFiled through the ACCESS Assistant, which named ACCESS user ${claimed}. ` +
+            `This wasn't verified: their sign-in couldn't be confirmed. ${fromChat} given in chat.`
           : "\n\nFiled through the ACCESS Assistant by someone who wasn't signed in. " +
             "The name, email and ACCESS ID were given in chat and aren't verified."),
     };

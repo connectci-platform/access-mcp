@@ -159,18 +159,30 @@ describe("ticket requester", () => {
     });
   });
 
-  it("keeps a header-only user's ACCESS ID and says their sign-in wasn't confirmed", async () => {
+  it("names a header-only ACCESS ID in the description only, as unverified", async () => {
     await call(
       "create_support_ticket",
       { ...TICKET, user_email: "a@example.edu", access_id: "someoneelse" },
       { actingUser: "jsmith@access-ci.org", actingUserAuth: "header" }
     );
 
-    expect(sent()).toMatchObject({ email: "a@example.edu", name: "jsmith", accessId: "jsmith" });
+    expect(sent()).toMatchObject({ email: "a@example.edu", name: "" });
+    expect(sent()).not.toHaveProperty("accessId");
     expect(sent().description).toBe(
-      "Jobs stay pending.\n\nFiled through the ACCESS Assistant for ACCESS user jsmith, whose " +
-        "sign-in couldn't be confirmed. The name and email were given in chat and aren't verified."
+      "Jobs stay pending.\n\nFiled through the ACCESS Assistant, which named ACCESS user jsmith. " +
+        "This wasn't verified: their sign-in couldn't be confirmed. The email was given in chat."
     );
+  });
+
+  it("says the name came from chat only when it did", async () => {
+    await call(
+      "create_support_ticket",
+      { ...TICKET, user_email: "a@example.edu", user_name: "Jane Smith" },
+      { actingUser: "jsmith@access-ci.org", actingUserAuth: "header" }
+    );
+
+    expect(sent().name).toBe("Jane Smith");
+    expect(sent().description).toContain("The name and email were given in chat.");
   });
 
   it("asks a header-only user for an email only", async () => {
@@ -194,7 +206,7 @@ describe("ticket requester", () => {
     });
 
     expect(result.isError).toBeFalsy();
-    expect(sent()).toMatchObject({ email: "locked.out@example.edu", name: "Not given" });
+    expect(sent()).toMatchObject({ email: "locked.out@example.edu", name: "" });
     expect(sent().description).toContain(UNVERIFIED_NOTE);
   });
 
