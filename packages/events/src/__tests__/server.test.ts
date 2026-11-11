@@ -3321,6 +3321,13 @@ describe("EventsServer", () => {
         });
       });
 
+      it("tells the model to link the event and keep ids out of the reply (D8-3079)", () => {
+        const tools = server["getTools"]();
+        const doc = (name: string) => tools.find((t: { name: string }) => t.name === name)!.description;
+        expect(doc("create_event")).toContain("Don't show series_id or instance_ids");
+        expect(doc("update_event")).toContain("don't show series_id");
+      });
+
       it("links the created event's page and its edit form (D8-3079)", async () => {
         mockRequestRaw.mockResolvedValue({
           status: 200,
