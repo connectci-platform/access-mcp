@@ -62,7 +62,7 @@ search_events({ date_range: { start_date: "2025-01-01", end_date: "2025-06-30" }
 
 Get events created by or associated with the **authenticated user**, including unpublished/draft events. Read-only, scoped to the acting user.
 
-Requires authentication: the acting user is resolved from the `X-Acting-User` header (set by an authenticated MCP connector) or the `ACTING_USER` environment variable. Returns `{ total, items: [{ title, start_date, end_date, status, ... }] }`.
+Requires authentication: the acting user is the signed-in caller, from the ACCESS agent's verified acting-user token (or `X-Acting-User` until the server requires the token) or an OAuth-authenticated MCP connector. Only a local stdio session can name one with the `ACTING_USER` environment variable; the HTTP server ignores it. Returns `{ total, items: [{ title, start_date, end_date, status, ... }] }`.
 
 **Parameters:**
 | Parameter | Type | Description |

@@ -17,3 +17,4 @@ export {
 export * from "./fetch-all-pages.js";
 export * from "./pagination.js";
 export * from "./tool-access.js";
+export * from "./acting-user-token.js";

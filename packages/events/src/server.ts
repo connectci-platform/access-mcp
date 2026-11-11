@@ -214,6 +214,7 @@ export class EventsServer extends BaseAccessServer {
     // registered against the other.
     super("access-mcp-events", version, process.env.DRUPAL_API_URL || "https://support.access-ci.org", {
       requireApiKey: true,
+      actsForUsers: true,
     });
   }
 
@@ -257,7 +258,7 @@ export class EventsServer extends BaseAccessServer {
       return context.actingUser;
     }
 
-    const envUser = process.env.ACTING_USER;
+    const envUser = this.envActingUser();
     if (envUser) {
       return envUser;
     }

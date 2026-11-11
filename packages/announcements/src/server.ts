@@ -155,7 +155,7 @@ export class AnnouncementsServer extends BaseAccessServer {
       "access-announcements",
       version,
       process.env.DRUPAL_API_URL || "https://support.access-ci.org",
-      { requireApiKey: true }
+      { requireApiKey: true, actsForUsers: true }
     );
   }
 
@@ -959,7 +959,7 @@ Which would you like to do?`,
     }
 
     // Fall back to environment variable
-    const envUser = process.env.ACTING_USER;
+    const envUser = this.envActingUser();
     if (envUser) {
       return envUser;
     }
