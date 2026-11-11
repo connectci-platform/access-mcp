@@ -716,10 +716,11 @@ export class XDMoDMetricsServer extends BaseAccessServer {
           "The go-to tool for ACCESS-wide usage statistics, counts, and trends: " +
           "job counts, CPU/GPU hours, utilization, most-used resources, active users/PIs, " +
           "allocation usage — any 'how many / how much / trend over time' usage question " +
-          "(e.g. 'how many jobs ran on Delta last month'). For a trend, use dataset_type timeseries; " +
+          "(e.g. 'how many jobs ran on Delta last month'), including queue wait times over time " +
+          "('how did wait times on Delta change by month': avg_waitduration_hours). For a trend, use dataset_type timeseries; " +
           "each period's value is listed, and aggregation_unit sets the period length. Aggregate data only, not " +
           "per-user extracts. Filters accept names (auto-resolved to IDs). " +
-          "Stats by realm — Jobs: job_count, total_cpu_hours, total_su, active_person_count; " +
+          "Stats by realm — Jobs: job_count, total_cpu_hours, total_su, active_person_count, avg_waitduration_hours; " +
           "Allocations: allocated_ace, used_ace, active_allocation_count; Accounts: unique_account_count; " +
           "Gateways: active_gateway_count, job_count; SUPREMM: gpu_time, short_job_count, avg_flops_per_core, wall_time_accuracy; " +
           "Cloud: cloud_num_sessions_started; ResourceSpecifications: total_avg_number_of_gpus; Requests: project_count.",

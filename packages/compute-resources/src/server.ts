@@ -147,7 +147,10 @@ export class ComputeResourcesServer extends BaseAccessServer {
           "queues, SSH or wait times. Describe what is documented, point to citation_url, and " +
           "never fill a gap from general knowledge. details_available false means only the " +
           "listing could be read. wait_times gives hours per queue and an as_of date when " +
-          "there is reliable data; never estimate one.",
+          "there is reliable data; never estimate one. It is only the latest snapshot: for " +
+          "wait times, job counts or usage over a period or by month, use XDMoD's " +
+          "get_chart_data instead, and don't say a wait-time trend isn't tracked because " +
+          "wait_times is null.",
         inputSchema: {
           type: "object",
           properties: {
@@ -180,7 +183,9 @@ export class ComputeResourcesServer extends BaseAccessServer {
           "several, such as 'Delta'. A null value means the documentation doesn't cover it, " +
           "not that the resource lacks it, so don't present a null next to a value as a " +
           "difference between resources. Resources work in different ways (batch clusters, " +
-          "VMs, containers, storage, networks). Never estimate a wait time. Use get_resource " +
+          "VMs, containers, storage, networks). Never estimate a wait time. Wait times here are " +
+          "the latest snapshot; use XDMoD's get_chart_data to compare wait times or usage " +
+          "over time. Use get_resource " +
           "for the full detail on one resource.",
         inputSchema: {
           type: "object",
