@@ -396,11 +396,18 @@ describe("/tools on a server that acts for users", () => {
     });
   });
 
-  it("in token mode, a header-only call runs unidentified when the server allows it", async () => {
-    await boot({ MCP_ACTING_USER_AUTH: "token" }, true, undefined, true);
+  it("in token mode, a header-only call runs on the header path when the server allows it", async () => {
+    const s = await boot({ MCP_ACTING_USER_AUTH: "token" }, true, undefined, true);
+    const warn = vi.spyOn(s.log, "warn");
     const r = await call("register_for_thing", { "x-acting-user": SUB });
     expect(r.status).toBe(200);
-    expect(r.ran).toEqual({ actingUser: null, auth: null });
+    expect(r.ran).toEqual({ actingUser: SUB, auth: "header" });
+    // Counted per tool, like any header-path call, for the step 3 rollout.
+    expect(warn).toHaveBeenCalledWith("Acting user auth", {
+      tool: "register_for_thing",
+      path: "header",
+      mutates: true,
+    });
   });
 
   it("in token mode, a bad token is still refused when header-only calls are allowed", async () => {

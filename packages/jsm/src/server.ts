@@ -167,7 +167,7 @@ export class JsmServer extends BaseAccessServer {
       // Verifies the acting-user token, so a signed-in user's ticket is filed
       // under the account the token names, not under the model's arguments.
       // A call with only X-Acting-User (the token exchange failed) still files,
-      // as an unverified ticket, rather than being refused.
+      // marked unverified, rather than being refused.
       { requireApiKey: true, actsForUsers: true, headerOnlyIsUnverified: true }
     );
     this.dryRun = dryRun;
@@ -445,23 +445,35 @@ export class JsmServer extends BaseAccessServer {
       };
     }
 
+    // The header path: the agent named the user, but their sign-in couldn't
+    // be confirmed (the token exchange failed). Keep its ACCESS ID as a hint.
+    const hinted =
+      context?.actingUserAuth === "header" && context.actingUser
+        ? bareAccessId(context.actingUser)
+        : undefined;
     const email = given(args.user_email);
-    const name = given(args.user_name);
-    if (!email || !name) {
+    if (!email) {
       return {
         ok: false,
-        error:
-          "Who is asking couldn't be confirmed, so ask for their name and email before filing the ticket.",
+        error: hinted
+          ? "The user's sign-in couldn't be confirmed, so ask them for the email to reply to, then try again."
+          : "The user isn't signed in, so ask for their email (and their name, if they'll give it) before filing the ticket.",
       };
     }
+    const typedId = given(args.access_id);
+    const accessId = hinted ?? (typedId && bareAccessId(typedId));
     return {
       ok: true,
       email,
-      name,
-      accessId: given(args.access_id) && bareAccessId(given(args.access_id)!),
+      name: given(args.user_name) ?? accessId ?? "Not given",
+      accessId,
       description:
-        `${description}\n\nFiled through the ACCESS Assistant by someone who wasn't signed in. ` +
-        "The name, email and ACCESS ID were given in chat and aren't verified.",
+        description +
+        (hinted
+          ? `\n\nFiled through the ACCESS Assistant for ACCESS user ${hinted}, whose sign-in ` +
+            "couldn't be confirmed. The name and email were given in chat and aren't verified."
+          : "\n\nFiled through the ACCESS Assistant by someone who wasn't signed in. " +
+            "The name, email and ACCESS ID were given in chat and aren't verified."),
     };
   }
 

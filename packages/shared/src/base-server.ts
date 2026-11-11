@@ -130,9 +130,10 @@ export interface BaseAccessServerOptions {
   actsForUsers?: boolean;
   /**
    * With actsForUsers in token mode, a call carrying X-Acting-User but no
-   * token is treated as unidentified instead of refused, so its tools run
-   * without an acting user. For jsm (D8-3069): a ticket still gets filed, as
-   * unverified, when the portal's token exchange is down.
+   * token is let through on the header path (actingUserAuth "header")
+   * instead of refused, so the tool can treat the ACCESS ID as an unconfirmed
+   * hint. For jsm (D8-3069): a ticket still gets filed, marked unverified,
+   * when the portal's token exchange is down.
    */
   headerOnlyIsUnverified?: boolean;
 }
@@ -1191,8 +1192,7 @@ export abstract class BaseAccessServer {
     }
     if (config.mode === "token") {
       if (this._headerOnlyIsUnverified) {
-        this.logger.warn("Acting user header without a token treated as unverified");
-        return { ok: true };
+        return { ok: true, actingUser: headerUser, auth: "header" };
       }
       return {
         ok: false,

@@ -87,10 +87,26 @@ describe("ticket requester", () => {
     expect(sent()).toMatchObject({ email: "jane.smith@example.edu", name: "jsmith" });
   });
 
-  it("files a header-only call as unverified instead of refusing it", () => {
-    // The base server then runs the tool with no acting user (shared tests
-    // cover that over /tools), which lands on the unverified path below.
-    expect(server["_headerOnlyIsUnverified"]).toBe(true);
+  it("in token mode, lets a header-only call through on the header path", async () => {
+    const saved = { ...process.env };
+    try {
+      Object.assign(process.env, {
+        MCP_ACTING_USER_AUTH: "token",
+        MCP_TOKEN_ISSUER: "https://support.access-ci.org",
+        MCP_TOKEN_KIDS: "exchange-kid",
+      });
+      const jsm = new JsmServer();
+      // The same resolution /tools runs before the tool (shared tests cover
+      // the route itself, and that a bad token is still refused).
+      const acting = await jsm["resolveActingUser"](undefined, "jsmith@access-ci.org");
+      expect(acting).toMatchObject({
+        ok: true,
+        actingUser: "jsmith@access-ci.org",
+        auth: "header",
+      });
+    } finally {
+      process.env = saved;
+    }
   });
 
   it("needs no email or name from a signed-in user", async () => {
@@ -143,22 +159,50 @@ describe("ticket requester", () => {
     });
   });
 
-  it("treats a header-only acting user as unverified", async () => {
+  it("keeps a header-only user's ACCESS ID and says their sign-in wasn't confirmed", async () => {
     await call(
       "create_support_ticket",
-      { ...TICKET, user_email: "a@example.edu", user_name: "A" },
+      { ...TICKET, user_email: "a@example.edu", access_id: "someoneelse" },
       { actingUser: "jsmith@access-ci.org", actingUserAuth: "header" }
     );
 
-    expect(sent().email).toBe("a@example.edu");
+    expect(sent()).toMatchObject({ email: "a@example.edu", name: "jsmith", accessId: "jsmith" });
+    expect(sent().description).toBe(
+      "Jobs stay pending.\n\nFiled through the ACCESS Assistant for ACCESS user jsmith, whose " +
+        "sign-in couldn't be confirmed. The name and email were given in chat and aren't verified."
+    );
+  });
+
+  it("asks a header-only user for an email only", async () => {
+    const result = await call("create_support_ticket", TICKET, {
+      actingUser: "jsmith@access-ci.org",
+      actingUserAuth: "header",
+    });
+
+    expect(result.isError).toBe(true);
+    const message = (result.content[0] as { text: string }).text;
+    expect(message).toMatch(/email to reply to/);
+    expect(message).not.toMatch(/name/);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("files an anonymous ticket with only an email", async () => {
+    const result = await call("create_login_ticket", {
+      ...TICKET,
+      login_type: "access_portal",
+      user_email: "locked.out@example.edu",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(sent()).toMatchObject({ email: "locked.out@example.edu", name: "Not given" });
     expect(sent().description).toContain(UNVERIFIED_NOTE);
   });
 
-  it("asks an anonymous user for their name and email", async () => {
+  it("asks an anonymous user for an email before filing", async () => {
     const result = await call("create_support_ticket", { ...TICKET, user_name: "No Email" });
 
     expect(result.isError).toBe(true);
-    expect((result.content[0] as { text: string }).text).toMatch(/name and email/);
+    expect((result.content[0] as { text: string }).text).toMatch(/ask for their email/);
     expect(post).not.toHaveBeenCalled();
   });
 
