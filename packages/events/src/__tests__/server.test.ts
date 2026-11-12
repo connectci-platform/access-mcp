@@ -3144,11 +3144,11 @@ describe("EventsServer", () => {
         expect(schema.required).not.toContain("recur_type");
       });
 
-      it("update_event requires only eventseries_id and does NOT expose confirmed (content-only, no preview step)", () => {
+      it("update_event requires only eventseries_id and exposes confirmed (previews until confirmed)", () => {
         const tool = server["getTools"]().find((t) => t.name === "update_event")!;
         const schema = tool.inputSchema as { required?: string[]; properties?: Record<string, unknown> };
         expect(schema.required).toEqual(["eventseries_id"]);
-        expect(schema.properties?.confirmed).toBeUndefined();
+        expect(schema.properties?.confirmed).toBeDefined();
       });
 
       it("delete_event requires eventseries_id and exposes confirmed", () => {
@@ -3158,7 +3158,7 @@ describe("EventsServer", () => {
         expect(schema.properties?.confirmed).toBeDefined();
       });
 
-      it("restore_event and send_for_review require only eventseries_id (no confirm)", () => {
+      it("restore_event and send_for_review require only eventseries_id (confirmed is optional)", () => {
         for (const name of ["restore_event", "send_for_review"]) {
           const tool = server["getTools"]().find((t) => t.name === name)!;
           const schema = tool.inputSchema as { required?: string[] };
@@ -3233,8 +3233,6 @@ describe("EventsServer", () => {
         expect(doc).toContain("delete_event");
         expect(doc).toContain("restore_event");
         expect(doc).toContain("send_for_review");
-        // No stray preview/confirm language — update_event has no preview step.
-        expect(doc).not.toContain("confirmed:true");
         // No update_recurrence reference — that tool doesn't exist (no route).
         expect(doc).not.toContain("update_recurrence");
       });
@@ -3874,7 +3872,7 @@ describe("EventsServer", () => {
           status: 422,
           data: { error: "validation_error", message: "field_event_type: This value should not be null." },
         });
-        const result = await call("update_event", { eventseries_id: "42", title: "New Title" });
+        const result = await call("update_event", { confirmed: true, eventseries_id: "42", title: "New Title" });
         expect(result.isError).toBe(true);
         const parsed = JSON.parse(result.content[0].text);
         expect(parsed).toMatchObject({ error: { code: "validation_error" } });
@@ -3886,7 +3884,7 @@ describe("EventsServer", () => {
           status: 200,
           data: { success: true, series_id: 42, updated_fields: ["title", "field_summary"] },
         });
-        const result = await call("update_event", { eventseries_id: "42", title: "New Title" });
+        const result = await call("update_event", { confirmed: true, eventseries_id: "42", title: "New Title" });
         expect(mockRequestRaw).toHaveBeenCalledWith(
           "actor@example.com",
           "PATCH",
@@ -3911,6 +3909,7 @@ describe("EventsServer", () => {
           data: { success: true, series_id: 42, updated_fields: ["field_event_timezone", "field_event_in_person"] },
         });
         await call("update_event", {
+          confirmed: true,
           eventseries_id: "42",
           field_event_timezone: "America/Chicago",
           field_event_in_person: false,
@@ -3923,14 +3922,14 @@ describe("EventsServer", () => {
         );
       });
 
-      it("does not accept/forward a confirmed flag — content-only edits are not gated on it", async () => {
+      it("strips confirmed from the PATCH body", async () => {
         mockRequestRaw.mockResolvedValue({
           status: 200,
           data: { success: true, series_id: 42, updated_fields: [] },
         });
         // Even if a caller mistakenly passes confirmed, the tool's param type
         // does not include it, so it is never read into the request body.
-        await call("update_event", { eventseries_id: "42" });
+        await call("update_event", { confirmed: true, eventseries_id: "42" });
         expect(mockRequestRaw).toHaveBeenCalledWith(
           "actor@example.com",
           "PATCH",
@@ -4052,7 +4051,7 @@ describe("EventsServer", () => {
           status: 200,
           data: { success: true, series_id: 42, instances_restored: 4, notified: 4, notifications_disabled: false },
         });
-        const result = await call("restore_event", { eventseries_id: "42" });
+        const result = await call("restore_event", { confirmed: true, eventseries_id: "42" });
         expect(mockRequestRaw).toHaveBeenCalledWith(
           "actor@example.com",
           "POST",
@@ -4072,7 +4071,7 @@ describe("EventsServer", () => {
           status: 409,
           data: { error: "invalid_state", message: "This event is not archived." },
         });
-        const result = await call("restore_event", { eventseries_id: "42" });
+        const result = await call("restore_event", { confirmed: true, eventseries_id: "42" });
         expect(result.isError).toBe(true);
         expect(JSON.parse(result.content[0].text)).toMatchObject({ error: { code: "invalid_state" } });
       });
@@ -4084,7 +4083,7 @@ describe("EventsServer", () => {
           status: 200,
           data: { success: true, series_id: 42, moderation_state: "ready_for_review" },
         });
-        const result = await call("send_for_review", { eventseries_id: "42" });
+        const result = await call("send_for_review", { confirmed: true, eventseries_id: "42" });
         expect(mockRequestRaw).toHaveBeenCalledWith(
           "actor@example.com",
           "POST",
@@ -4104,7 +4103,7 @@ describe("EventsServer", () => {
           status: 409,
           data: { error: "invalid_state", message: "Not draft or needs_adjustment." },
         });
-        const result = await call("send_for_review", { eventseries_id: "42" });
+        const result = await call("send_for_review", { confirmed: true, eventseries_id: "42" });
         expect(result.isError).toBe(true);
         expect(JSON.parse(result.content[0].text)).toMatchObject({ error: { code: "invalid_state" } });
       });
@@ -4162,7 +4161,7 @@ describe("EventsServer", () => {
           status: 200,
           data: { success: true, eventinstance_id: 900, notified: 1, notifications_disabled: false },
         });
-        const result = await call("restore_occurrence", { eventinstance_id: "900" });
+        const result = await call("restore_occurrence", { confirmed: true, eventinstance_id: "900" });
         expect(mockRequestRaw).toHaveBeenCalledWith(
           "actor@example.com",
           "POST",
@@ -4182,7 +4181,7 @@ describe("EventsServer", () => {
           status: 200,
           data: { success: true, eventinstance_id: 900, returns_with_series: true, notified: 0 },
         });
-        const result = await call("restore_occurrence", { eventinstance_id: "900" });
+        const result = await call("restore_occurrence", { confirmed: true, eventinstance_id: "900" });
         expect(JSON.parse(result.content[0].text)).toMatchObject({
           data: { returns_with_series: true, notified: 0 },
         });
@@ -4193,23 +4192,23 @@ describe("EventsServer", () => {
           status: 409,
           data: { error: "invalid_state", message: "This occurrence is not cancelled." },
         });
-        const result = await call("restore_occurrence", { eventinstance_id: "900" });
+        const result = await call("restore_occurrence", { confirmed: true, eventinstance_id: "900" });
         expect(result.isError).toBe(true);
         expect(JSON.parse(result.content[0].text)).toMatchObject({ error: { code: "invalid_state" } });
       });
     });
 
     describe("edit_occurrence", () => {
-      it("PATCHes the occurrence route with confirmed=false by default", async () => {
+      it("confirmed:true PATCHes a location-only edit with confirmed=true and reports executed", async () => {
         mockRequestRaw.mockResolvedValue({
           status: 200,
           data: { success: true, eventinstance_id: 900, registrants_affected: 0 },
         });
-        const result = await call("edit_occurrence", { eventinstance_id: "900", field_location: "Room 2" });
+        const result = await call("edit_occurrence", { confirmed: true, eventinstance_id: "900", field_location: "Room 2" });
         expect(mockRequestRaw).toHaveBeenCalledWith(
           "actor@example.com",
           "PATCH",
-          "/api/2.3/event-occurrences/900?confirmed=false",
+          "/api/2.3/event-occurrences/900?confirmed=true",
           { field_location: "Room 2" }
         );
         expect(JSON.parse(result.content[0].text)).toMatchObject({
@@ -4220,26 +4219,13 @@ describe("EventsServer", () => {
         });
       });
 
-      it("a date change on a live registered occurrence returns a preview with registrants_to_notify", async () => {
-        mockRequestRaw.mockResolvedValue({
-          status: 200,
-          data: { status: "preview", executed: false, eventinstance_id: 900, date_changes: true, registrants_to_notify: 4 },
-        });
-        const result = await call("edit_occurrence", {
-          eventinstance_id: "900",
-          date: { value: "2026-09-05T14:00:00", end_value: "2026-09-05T15:00:00" },
-        });
-        const parsed = JSON.parse(result.content[0].text);
-        expect(parsed).toMatchObject({ action: "update", status: "preview", executed: false });
-        expect(parsed.data.registrants_to_notify).toBe(4);
-      });
-
       it("confirmed:true commits a date change", async () => {
         mockRequestRaw.mockResolvedValue({
           status: 200,
           data: { success: true, eventinstance_id: 900, registrants_affected: 4 },
         });
         const result = await call("edit_occurrence", {
+          confirmed: true,
           eventinstance_id: "900",
           confirmed: true,
           date: { value: "2026-09-05T14:00:00", end_value: "2026-09-05T15:00:00" },
@@ -4271,6 +4257,7 @@ describe("EventsServer", () => {
           data: { success: true, series_id: 42, eventinstance_id: 950, moderation_state: "published" },
         });
         const result = await call("add_occurrence", {
+          confirmed: true,
           eventseries_id: "42",
           date: { value: "2026-09-10T14:00:00", end_value: "2026-09-10T15:00:00" },
         });
@@ -4303,6 +4290,7 @@ describe("EventsServer", () => {
           },
         });
         const result = await call("add_occurrence", {
+          confirmed: true,
           eventseries_id: "42",
           date: { value: "2026-09-10T14:00:00", end_value: "2026-09-10T15:00:00" },
         });
@@ -4318,6 +4306,7 @@ describe("EventsServer", () => {
           data: { error: "invalid_state", message: "This event is a draft; publish it before adding occurrences." },
         });
         const result = await call("add_occurrence", {
+          confirmed: true,
           eventseries_id: "42",
           date: { value: "2026-09-10T14:00:00", end_value: "2026-09-10T15:00:00" },
         });
@@ -4334,13 +4323,212 @@ describe("EventsServer", () => {
       });
     });
 
+    describe("every write previews until confirmed === true (D8-3088)", () => {
+      const occurrenceDetail = {
+        id: "900",
+        title: "OnDemand Call",
+        start_date: "2026-08-06T13:00:00Z",
+        end_date: "2026-08-06T14:00:00Z",
+        location: "Room 1",
+        series_id: "42",
+        moderation_state: "published",
+      };
+      const seriesDetail = { ...occurrenceDetail, location: "Room 1", event_type: "Training" };
+
+      // Upstream that serves reads only: any write verb is recorded and fails.
+      const readOnlyUpstream = (detail: Record<string, unknown>) => {
+        mockRequestRaw.mockImplementation(async (_user: string, method: string) =>
+          method === "GET"
+            ? { status: 200, data: detail }
+            : { status: 500, data: { error: "should_not_write" } }
+        );
+      };
+      const writes = () => mockRequestRaw.mock.calls.filter((c) => c[1] !== "GET");
+      const parse = (r: { content: { text: string }[] }) => JSON.parse(r.content[0].text);
+
+      it("update_event without confirmed previews old and new values and writes nothing", async () => {
+        readOnlyUpstream(seriesDetail);
+        const result = await call("update_event", {
+          eventseries_id: "42",
+          title: "New Title",
+          field_location: "Room 9",
+          field_event_type: "Training",
+        });
+        expect(writes()).toHaveLength(0);
+        const parsed = parse(result);
+        expect(parsed).toMatchObject({ action: "update", status: "preview", executed: false });
+        expect(parsed.data.changes).toEqual([
+          { field: "title", old: "OnDemand Call", new: "New Title" },
+          { field: "field_location", old: "Room 1", new: "Room 9" },
+        ]);
+      });
+
+      it("update_event with confirmed:'true' (string) still previews", async () => {
+        readOnlyUpstream(seriesDetail);
+        const result = await call("update_event", { eventseries_id: "42", title: "X", confirmed: "true" });
+        expect(writes()).toHaveLength(0);
+        expect(parse(result)).toMatchObject({ status: "preview", executed: false });
+      });
+
+      it("update_event with confirmed:true PATCHes without forwarding confirmed in the body", async () => {
+        mockRequestRaw.mockResolvedValue({ status: 200, data: { success: true, series_id: 42, updated_fields: ["title"] } });
+        const result = await call("update_event", { eventseries_id: "42", title: "New", confirmed: true });
+        expect(mockRequestRaw).toHaveBeenCalledTimes(1);
+        expect(mockRequestRaw).toHaveBeenCalledWith("actor@example.com", "PATCH", "/api/2.3/event-series/42", { title: "New" });
+        expect(parse(result)).toMatchObject({ status: "updated", executed: true });
+      });
+
+      it("restore_event without confirmed previews title, dates and state and writes nothing", async () => {
+        readOnlyUpstream({ ...seriesDetail, moderation_state: "archived" });
+        const result = await call("restore_event", { eventseries_id: "42" });
+        expect(writes()).toHaveLength(0);
+        expect(parse(result)).toMatchObject({
+          action: "update",
+          status: "preview",
+          executed: false,
+          data: {
+            series_id: "42",
+            title: "OnDemand Call",
+            start_date: "2026-08-06T13:00:00Z",
+            end_date: "2026-08-06T14:00:00Z",
+            current_state: "archived",
+          },
+        });
+      });
+
+      it("send_for_review without confirmed previews and writes nothing", async () => {
+        readOnlyUpstream({ ...seriesDetail, moderation_state: "draft" });
+        const result = await call("send_for_review", { eventseries_id: "42" });
+        expect(writes()).toHaveLength(0);
+        expect(parse(result)).toMatchObject({
+          status: "preview",
+          executed: false,
+          data: { title: "OnDemand Call", current_state: "draft" },
+        });
+      });
+
+      it("restore_occurrence without confirmed previews and writes nothing", async () => {
+        readOnlyUpstream({ ...occurrenceDetail, moderation_state: "archived" });
+        const result = await call("restore_occurrence", { eventinstance_id: "900" });
+        expect(writes()).toHaveLength(0);
+        expect(parse(result)).toMatchObject({
+          status: "preview",
+          executed: false,
+          data: {
+            eventinstance_id: "900",
+            title: "OnDemand Call",
+            start_date: "2026-08-06T13:00:00Z",
+            current_state: "archived",
+          },
+        });
+      });
+
+      it("add_occurrence without confirmed previews the series and the new dates and writes nothing", async () => {
+        readOnlyUpstream(seriesDetail);
+        const result = await call("add_occurrence", {
+          eventseries_id: "42",
+          date: { value: "2026-09-10T14:00:00", end_value: "2026-09-10T15:00:00" },
+        });
+        expect(writes()).toHaveLength(0);
+        expect(parse(result)).toMatchObject({
+          status: "preview",
+          executed: false,
+          data: {
+            series_id: "42",
+            title: "OnDemand Call",
+            current_state: "published",
+            new_occurrence: { value: "2026-09-10T14:00:00", end_value: "2026-09-10T15:00:00" },
+          },
+        });
+      });
+
+      it("edit_occurrence with a location-only change and no confirmed makes no PATCH and shows old and new", async () => {
+        readOnlyUpstream(occurrenceDetail);
+        const result = await call("edit_occurrence", { eventinstance_id: "900", field_location: "Room 2" });
+        expect(writes()).toHaveLength(0);
+        const parsed = parse(result);
+        expect(parsed).toMatchObject({ action: "update", status: "preview", executed: false });
+        expect(parsed.data.changes).toEqual([{ field: "field_location", old: "Room 1", new: "Room 2" }]);
+      });
+
+      it("edit_occurrence date change on a dark or no-registrant occurrence still previews without confirmed", async () => {
+        readOnlyUpstream({ ...occurrenceDetail, moderation_state: "archived" });
+        const result = await call("edit_occurrence", {
+          eventinstance_id: "900",
+          date: { value: "2026-09-05T14:00:00", end_value: "2026-09-05T15:00:00" },
+        });
+        expect(writes()).toHaveLength(0);
+        const parsed = parse(result);
+        expect(parsed).toMatchObject({ status: "preview", executed: false });
+        expect(parsed.data.changes).toEqual([
+          {
+            field: "date",
+            old: { value: "2026-08-06T13:00:00Z", end_value: "2026-08-06T14:00:00Z" },
+            new: { value: "2026-09-05T14:00:00", end_value: "2026-09-05T15:00:00" },
+          },
+        ]);
+      });
+
+      it("a preview of an occurrence that does not exist is a not_found error, not a preview", async () => {
+        mockRequestRaw.mockResolvedValue({ status: 404, data: { error: "not_found", message: "nope" } });
+        const result = await call("edit_occurrence", { eventinstance_id: "999", field_location: "X" });
+        expect(result.isError).toBe(true);
+      });
+
+      it("a preview still works with only the ids when the current event cannot be loaded for a series", async () => {
+        mockRequestRaw.mockResolvedValue({ status: 404, data: { error: "not_found" } });
+        const result = await call("restore_event", { eventseries_id: "42" });
+        expect(writes()).toHaveLength(0);
+        expect(parse(result)).toMatchObject({ status: "preview", executed: false, data: { series_id: "42" } });
+      });
+
+      it("create_event reports executed:true when Drupal commits despite confirmed=false", async () => {
+        mockRequestRaw.mockResolvedValue({
+          status: 200,
+          data: { success: true, series_id: 77, instance_ids: [300], title: "Oops", moderation_state: "draft", moderation: {} },
+        });
+        const result = await call("create_event", {
+          title: "Oops",
+          recur_type: "custom",
+          custom_dates: [{ start_date: "2026-09-01T09:00:00", end_date: "2026-09-01T10:00:00" }],
+        });
+        expect(parse(result)).toMatchObject({ action: "create", status: "created", executed: true });
+      });
+
+      it("delete_event reports executed:true when Drupal commits despite confirmed=false", async () => {
+        mockRequestRaw.mockResolvedValue({
+          status: 200,
+          data: { success: true, series_id: 42, instances_archived: 3, registrants_affected: 1, notified: 1, hard_deleted: false },
+        });
+        const result = await call("delete_event", { eventseries_id: "42" });
+        expect(mockRequestRaw).toHaveBeenCalledWith(
+          "actor@example.com",
+          "DELETE",
+          "/api/2.3/event-series/42?confirmed=false",
+          undefined
+        );
+        expect(parse(result)).toMatchObject({ action: "delete", status: "deleted", executed: true });
+      });
+
+      it("the six tools all describe the preview-by-default contract", () => {
+        for (const name of ["update_event", "restore_event", "send_for_review", "restore_occurrence", "edit_occurrence", "add_occurrence"]) {
+          const tool = server["getTools"]().find((t) => t.name === name)!;
+          expect(tool.description).toContain(
+            "Previews by default and changes nothing; call again with confirmed: true to make the change."
+          );
+          const props = (tool.inputSchema as { properties: Record<string, unknown> }).properties;
+          expect(props.confirmed).toBeDefined();
+        }
+      });
+    });
+
     describe("shared auth/error handling", () => {
       it("a 403 identity refusal (No acting user.) maps to auth_required", async () => {
         mockRequestRaw.mockResolvedValue({
           status: 403,
           data: { error: "forbidden", message: "No acting user." },
         });
-        const result = await call("restore_event", { eventseries_id: "42" });
+        const result = await call("restore_event", { confirmed: true, eventseries_id: "42" });
         expect(result.isError).toBe(true);
         expect(JSON.parse(result.content[0].text)).toMatchObject({ error: { code: "auth_required" } });
       });
@@ -4380,7 +4568,7 @@ describe("EventsServer", () => {
 
       it("an auth-redirect (3xx, stale session) maps to a re-authenticate error, not raw HTML", async () => {
         mockRequestRaw.mockResolvedValue({ status: 307, data: "<!DOCTYPE html>…" });
-        const result = await call("send_for_review", { eventseries_id: "42" });
+        const result = await call("send_for_review", { confirmed: true, eventseries_id: "42" });
         expect(result.isError).toBe(true);
         expect(result.content[0].text).toMatch(/authentication|session|re-authenticate/i);
         expect(result.content[0].text).not.toMatch(/DOCTYPE/i);
@@ -4403,6 +4591,7 @@ describe("EventsServer", () => {
       it("an unexpected 500 with no coded refusal body maps to upstream_error", async () => {
         mockRequestRaw.mockResolvedValue({ status: 500, data: { message: "Internal server error" } });
         const result = await call("add_occurrence", {
+          confirmed: true,
           eventseries_id: "42",
           date: { value: "x", end_value: "y" },
         });
@@ -4442,6 +4631,7 @@ describe("EventsServer", () => {
           data: { success: true, series_id: 1, eventinstance_id: 2, moderation_state: "published" },
         });
         const added = await call("add_occurrence", {
+          confirmed: true,
           eventseries_id: "1",
           date: { value: "x", end_value: "y" },
         });
