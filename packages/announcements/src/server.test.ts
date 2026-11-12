@@ -31,6 +31,12 @@ interface TextContent {
   text: string;
 }
 
+// Writes preview until confirmed === true; these helpers exercise the write path.
+const withConfirm = (name: string, args: Record<string, unknown>) =>
+  name === "create_announcement" || name === "update_announcement"
+    ? { confirmed: true, ...args }
+    : args;
+
 describe("AnnouncementsServer", () => {
   let server: AnnouncementsServer;
   let mockHttpClient: MockHttpClient;
@@ -689,7 +695,7 @@ describe("AnnouncementsServer", () => {
           method: "tools/call",
           params: {
             name: "create_announcement",
-            arguments: {
+            arguments: { confirmed: true,
               title: "Test Announcement",
               body: "<p>This is a test</p>",
               summary: "Test summary",
@@ -744,7 +750,7 @@ describe("AnnouncementsServer", () => {
           method: "tools/call",
           params: {
             name: "create_announcement",
-            arguments: {
+            arguments: { confirmed: true,
               title: "No Edit URL",
               body: "Body",
               summary: "Summary",
@@ -776,7 +782,7 @@ describe("AnnouncementsServer", () => {
           method: "tools/call",
           params: {
             name: "create_announcement",
-            arguments: {
+            arguments: { confirmed: true,
               title: "Tagged",
               body: "Body",
               summary: "Summary",
@@ -812,7 +818,7 @@ describe("AnnouncementsServer", () => {
           method: "tools/call",
           params: {
             name: "create_announcement",
-            arguments: {
+            arguments: { confirmed: true,
               title: "Test",
               body: "Body",
               summary: "Summary",
@@ -843,7 +849,7 @@ describe("AnnouncementsServer", () => {
           method: "tools/call",
           params: {
             name: "create_announcement",
-            arguments: {
+            arguments: { confirmed: true,
               title: "Test",
               body: "Body",
             },
@@ -861,7 +867,7 @@ describe("AnnouncementsServer", () => {
           method: "tools/call",
           params: {
             name: "create_announcement",
-            arguments: {
+            arguments: { confirmed: true,
               title: "Test",
               body: "Body",
               summary: "Summary",
@@ -896,7 +902,7 @@ describe("AnnouncementsServer", () => {
             method: "tools/call",
             params: {
               name: "create_announcement",
-              arguments: {
+              arguments: { confirmed: true,
                 title: "Test",
                 body: "Body",
                 summary: "Summary",
@@ -932,7 +938,7 @@ describe("AnnouncementsServer", () => {
             method: "tools/call",
             params: {
               name: "create_announcement",
-              arguments: {
+              arguments: { confirmed: true,
                 title: "Test",
                 body: "Body",
                 summary: "Summary",
@@ -966,7 +972,7 @@ describe("AnnouncementsServer", () => {
             method: "tools/call",
             params: {
               name: "create_announcement",
-              arguments: {
+              arguments: { confirmed: true,
                 title: "Test",
                 body: "Body",
                 summary: "Summary",
@@ -994,7 +1000,7 @@ describe("AnnouncementsServer", () => {
           method: "tools/call",
           params: {
             name: "create_announcement",
-            arguments: {
+            arguments: { confirmed: true,
               title: "Test with Link",
               body: "<p>Body content</p>",
               summary: "Test summary",
@@ -1030,7 +1036,7 @@ describe("AnnouncementsServer", () => {
           method: "tools/call",
           params: {
             name: "create_announcement",
-            arguments: {
+            arguments: { confirmed: true,
               title: "Test with sharing",
               body: "<p>Body content</p>",
               summary: "Test summary",
@@ -1056,7 +1062,7 @@ describe("AnnouncementsServer", () => {
           method: "tools/call",
           params: {
             name: "create_announcement",
-            arguments: {
+            arguments: { confirmed: true,
               title: "Test",
               body: "Body",
               summary: "Summary",
@@ -1087,7 +1093,7 @@ describe("AnnouncementsServer", () => {
           method: "tools/call",
           params: {
             name: "create_announcement",
-            arguments: {
+            arguments: { confirmed: true,
               title: "Test with group",
               body: "<p>Body content</p>",
               summary: "Test summary",
@@ -1116,7 +1122,7 @@ describe("AnnouncementsServer", () => {
           method: "tools/call",
           params: {
             name: "create_announcement",
-            arguments: {
+            arguments: { confirmed: true,
               title: "Test",
               body: "Body",
               summary: "Summary",
@@ -1143,7 +1149,7 @@ describe("AnnouncementsServer", () => {
           method: "tools/call",
           params: {
             name: "update_announcement",
-            arguments: {
+            arguments: { confirmed: true,
               uuid: "announcement-uuid",
               title: "Updated Title",
             },
@@ -1197,7 +1203,7 @@ describe("AnnouncementsServer", () => {
         const call = (args: Record<string, unknown>) =>
           server["handleToolCall"]({
             method: "tools/call",
-            params: { name: "update_announcement", arguments: { uuid: "announcement-uuid", ...args } },
+            params: { name: "update_announcement", arguments: { confirmed: true, uuid: "announcement-uuid", ...args } },
           });
         const sentGroups = () => mockDrupalAuth.patch.mock.calls[0][2].field_affinity_group_node;
 
@@ -1383,7 +1389,7 @@ describe("AnnouncementsServer", () => {
 
         const result = await server["handleToolCall"]({
           method: "tools/call",
-          params: { name: "update_announcement", arguments: { uuid: "announcement-uuid", title: "Updated Title" } },
+          params: { name: "update_announcement", arguments: { confirmed: true, uuid: "announcement-uuid", title: "Updated Title" } },
         });
 
         const responseData = JSON.parse((result.content[0] as TextContent).text);
@@ -1402,7 +1408,7 @@ describe("AnnouncementsServer", () => {
 
         const result = await server["handleToolCall"]({
           method: "tools/call",
-          params: { name: "update_announcement", arguments: { uuid: "announcement-uuid", title: "Updated Title" } },
+          params: { name: "update_announcement", arguments: { confirmed: true, uuid: "announcement-uuid", title: "Updated Title" } },
         });
 
         const responseData = JSON.parse((result.content[0] as TextContent).text);
@@ -1424,7 +1430,7 @@ describe("AnnouncementsServer", () => {
 
         const result = await server["handleToolCall"]({
           method: "tools/call",
-          params: { name: "update_announcement", arguments: { uuid: "announcement-uuid", tags: ["gpu", "nonexistent-tag"] } },
+          params: { name: "update_announcement", arguments: { confirmed: true, uuid: "announcement-uuid", tags: ["gpu", "nonexistent-tag"] } },
         });
 
         const responseData = JSON.parse((result.content[0] as TextContent).text);
@@ -1442,7 +1448,7 @@ describe("AnnouncementsServer", () => {
 
         const result = await server["handleToolCall"]({
           method: "tools/call",
-          params: { name: "update_announcement", arguments: { uuid: "announcement-uuid", title: "Updated Title" } },
+          params: { name: "update_announcement", arguments: { confirmed: true, uuid: "announcement-uuid", title: "Updated Title" } },
         });
 
         const responseData = JSON.parse((result.content[0] as TextContent).text);
@@ -1461,7 +1467,7 @@ describe("AnnouncementsServer", () => {
           method: "tools/call",
           params: {
             name: "update_announcement",
-            arguments: {
+            arguments: { confirmed: true,
               uuid: "announcement-uuid",
               title: "Updated Title",
             },
@@ -1487,7 +1493,7 @@ describe("AnnouncementsServer", () => {
           method: "tools/call",
           params: {
             name: "update_announcement",
-            arguments: {
+            arguments: { confirmed: true,
               uuid: "announcement-uuid",
               tags: ["gpu", "nonexistent-tag"],
             },
@@ -1512,7 +1518,7 @@ describe("AnnouncementsServer", () => {
           method: "tools/call",
           params: {
             name: "update_announcement",
-            arguments: {
+            arguments: { confirmed: true,
               uuid: "announcement-uuid",
               summary: "New summary only",
             },
@@ -1552,7 +1558,7 @@ describe("AnnouncementsServer", () => {
           method: "tools/call",
           params: {
             name: "update_announcement",
-            arguments: {
+            arguments: { confirmed: true,
               uuid: "announcement-uuid",
               tags: ["gpu", "hpc"],
             },
@@ -1575,7 +1581,7 @@ describe("AnnouncementsServer", () => {
           method: "tools/call",
           params: {
             name: "update_announcement",
-            arguments: {
+            arguments: { confirmed: true,
               uuid: "announcement-uuid",
               title: "Updated Title",
             },
@@ -1600,7 +1606,7 @@ describe("AnnouncementsServer", () => {
       const callTool = (name: string, args: Record<string, unknown>) =>
         server["handleToolCall"]({
           method: "tools/call",
-          params: { name, arguments: args },
+          params: { name, arguments: withConfirm(name, args) },
         });
 
       const baseCreate = { title: "T", body: "B", summary: "S" };
@@ -1955,26 +1961,162 @@ describe("AnnouncementsServer", () => {
         expect(desc).toContain("all tags will be removed");
       });
 
-      it("create description treats a change request as not confirmation", () => {
+      it("create description tells the model to preview, then re-call with confirmed after approval", () => {
         const desc = toolByName("create_announcement").description;
-        expect(desc).toContain("show the updated preview and ask again");
-        expect(desc).toContain("not confirmation");
-        expect(desc).toContain("only after the user confirms the current preview");
+        expect(desc).not.toContain("Confirm button");
+        expect(desc).toContain("approve that exact preview, call again with the same arguments and confirmed: true");
+        expect(desc).toContain("A bare change request is not approval");
+        expect(desc).not.toContain("explicit go-ahead");
+        expect(desc).not.toContain("exactly as the confirmed preview showed");
       });
 
-      it("create description lets a change plus an explicit go-ahead create, then report what was saved", () => {
-        const desc = toolByName("create_announcement").description;
-        expect(desc).toContain("A bare change request still gets an updated preview and a new ask");
-        expect(desc).toContain("requests a change and explicitly says to go ahead");
-        expect(desc).toContain("A bare change request is not confirmation");
-        expect(desc).not.toContain("A reply that requests a change is not confirmation");
-        expect(desc).toContain("explicit instruction to create in the same reply");
-        for (const phrase of ['"go ahead"', '"create it"', '"post it"', '"looks good"', '"sounds good"']) {
-          expect(desc).toContain(phrase);
+      it.each(["create_announcement", "update_announcement"])(
+        "%s description carries the preview sentence",
+        (name) => {
+          expect(toolByName(name).description).toContain(
+            "Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change."
+          );
         }
-        expect(desc).toMatch(/Approval words[^\n]*they get an updated preview/);
-        expect(desc).toContain("with that change applied");
-        expect(desc).toContain("tell the user what was saved");
+      );
+
+      describe("preview until confirmed", () => {
+        const parse = (r: { content: unknown[] }) => JSON.parse((r.content[0] as TextContent).text);
+        const raw = (name: string, args: Record<string, unknown>) =>
+          server["handleToolCall"]({ method: "tools/call", params: { name, arguments: args } });
+
+        beforeEach(() => {
+          mockDrupalAuth.get.mockImplementation(async (_u: string, url: string) => {
+            if (url === "/api/2.3/announcements/u-1") {
+              return {
+                title: "Old title",
+                body: "<p>old</p>",
+                summary: "Old summary",
+                tags: ["gpu"],
+                published_date: "2026-01-01",
+                affiliation: "Community",
+                where_to_share: ["on_the_announcements_page"],
+                affinity_groups: [],
+              };
+            }
+            return { data: [] };
+          });
+        });
+
+        it("create previews the normalized fields with defaults and writes nothing", async () => {
+          const data = parse(await raw("create_announcement", baseCreate));
+          expect(data).toMatchObject({ action: "create", status: "preview", executed: false });
+          expect(data.data).toMatchObject({
+            title: "T",
+            summary: "S",
+            body: "B",
+            tags: [],
+            affiliation: "Community",
+            where_to_share: ["Announcements page", "Bi-Weekly Digest"],
+            affinity_group: "None",
+            published_date: new Date().toISOString().split("T")[0],
+          });
+          expect(mockDrupalAuth.post).not.toHaveBeenCalled();
+          expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+        });
+
+        it("update previews old and new values and writes nothing", async () => {
+          const data = parse(await raw("update_announcement", { uuid: "u-1", title: "New title", body: "<p>x</p>" }));
+          expect(data).toMatchObject({ action: "update", status: "preview", executed: false });
+          expect(data.data.changes).toEqual([
+            { field: "title", old: "Old title", new: "New title" },
+            { field: "body", old: "<p>old</p>", new: "<p>x</p>" },
+          ]);
+          expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+          expect(mockDrupalAuth.post).not.toHaveBeenCalled();
+        });
+
+        it("update marks body old_unavailable when the item has no body key", async () => {
+          mockDrupalAuth.get.mockResolvedValue({ title: "Old title" });
+          const data = parse(await raw("update_announcement", { uuid: "u-1", body: "<p>x</p>" }));
+          expect(data.data.changes).toEqual([{ field: "body", old_unavailable: true, new: "<p>x</p>" }]);
+        });
+
+        it("update preview returns not_found for a uuid the read answers 404", async () => {
+          mockDrupalAuth.get.mockRejectedValue(new DrupalApiError("Drupal API error: 404 Not Found", 404, {}));
+          const data = parse(await raw("update_announcement", { uuid: "nope", title: "X" }));
+          expect(data.error.code).toBe("not_found");
+          expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+        });
+
+        it("update preview that changes nothing says so", async () => {
+          const data = parse(await raw("update_announcement", { uuid: "u-1", title: "Old title" }));
+          expect(data.status).toBe("preview");
+          expect(data.data.changes).toEqual([]);
+          expect(data.data.no_changes).toBe(true);
+          expect(toolByName("update_announcement").description).toContain("no_changes");
+        });
+
+        it("create preview data equals the fields the confirmed call POSTs", async () => {
+          mockDrupalAuth.post.mockResolvedValue({ success: true, uuid: "n", nid: 1, title: "T" });
+          const args = { title: "T", body: "<p>B</p>", summary: "S", external_link: { uri: "https://x.org", title: "X" } };
+          const preview = parse(await raw("create_announcement", args)).data;
+          await raw("create_announcement", { ...args, confirmed: true });
+          const [, , posted] = mockDrupalAuth.post.mock.calls[0];
+          expect(preview).toEqual({
+            title: posted.title,
+            summary: posted.body.summary,
+            body: posted.body.value,
+            tags: [],
+            affiliation: posted.field_affiliation,
+            where_to_share: ["Announcements page", "Bi-Weekly Digest"],
+            affinity_group: "None",
+            published_date: posted.field_published_date,
+            external_link: posted.field_news_external_link,
+          });
+        });
+
+        it("update preview for remove_affinity_group shows group names and reads the item once", async () => {
+          mockDrupalAuth.get.mockResolvedValue({
+            title: "Workshop",
+            affinity_groups: [
+              { uuid: "11111111-1111-4111-8111-111111111111", title: "R for HPC" },
+              { uuid: "aaaaaaaa-2222-4222-8222-22222222bbbb", title: "RMACC" },
+            ],
+          });
+          const data = parse(await raw("update_announcement", { uuid: "u-1", remove_affinity_group: "rmacc" }));
+          expect(data.status).toBe("preview");
+          expect(data.data.changes).toEqual([
+            { field: "affinity_groups", old: ["R for HPC", "RMACC"], new: ["R for HPC"] },
+          ]);
+          expect(mockDrupalAuth.get).toHaveBeenCalledTimes(1);
+          expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+        });
+
+        it("update marks old values unavailable when the read fails", async () => {
+          mockDrupalAuth.get.mockRejectedValue(new Error("boom"));
+          const data = parse(await raw("update_announcement", { uuid: "u-1", title: "New title" }));
+          expect(data.status).toBe("preview");
+          expect(data.data.changes).toEqual([{ field: "title", old_unavailable: true, new: "New title" }]);
+          expect(data.data.detail_unavailable).toBe(true);
+          expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+        });
+
+        it.each([
+          ["create_announcement", baseCreate],
+          ["update_announcement", { uuid: "u-1", title: "New title" }],
+        ])("%s treats confirmed 'true' (a string) as a preview", async (name, args) => {
+          const data = parse(await raw(name, { ...args, confirmed: "true" }));
+          expect(data.status).toBe("preview");
+          expect(data.executed).toBe(false);
+          expect(mockDrupalAuth.post).not.toHaveBeenCalled();
+          expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+        });
+
+        it("confirmed: true still writes", async () => {
+          mockDrupalAuth.post.mockResolvedValue({ success: true, uuid: "n", nid: 1, title: "T" });
+          mockDrupalAuth.patch.mockResolvedValue({ success: true, uuid: "u-1", title: "New title" });
+          const created = parse(await raw("create_announcement", { ...baseCreate, confirmed: true }));
+          const updated = parse(await raw("update_announcement", { uuid: "u-1", title: "New title", confirmed: true }));
+          expect(created.status).toBe("created");
+          expect(updated.status).toBe("updated");
+          expect(mockDrupalAuth.post).toHaveBeenCalledTimes(1);
+          expect(mockDrupalAuth.patch).toHaveBeenCalledTimes(1);
+        });
       });
 
       it("create description allows one question: which group when a group option has none", () => {
@@ -2020,7 +2162,7 @@ describe("AnnouncementsServer", () => {
       const callTool = (name: string, args: Record<string, unknown>) =>
         server["handleToolCall"]({
           method: "tools/call",
-          params: { name, arguments: args },
+          params: { name, arguments: withConfirm(name, args) },
         });
       const parse = (r: { content: unknown[] }) =>
         JSON.parse((r.content[0] as TextContent).text);
@@ -3625,7 +3767,7 @@ describe("AnnouncementsServer", () => {
     const call = (name: string, args: Record<string, unknown>) =>
       server["handleToolCall"]({
         method: "tools/call",
-        params: { name, arguments: args },
+        params: { name, arguments: withConfirm(name, args) },
       });
 
     it("create_announcement (created) produces a conformant envelope with executed:true", async () => {

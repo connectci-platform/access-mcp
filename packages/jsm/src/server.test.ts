@@ -57,6 +57,7 @@ describe("JsmServer", () => {
         params: {
           name: "create_support_ticket",
           arguments: {
+            confirmed: true,
             summary: "Cannot allocate GPUs on Delta",
             description:
               "User is unable to submit GPU jobs. Getting error about quota exceeded.",
@@ -110,6 +111,7 @@ describe("JsmServer", () => {
         params: {
           name: "create_support_ticket",
           arguments: {
+            confirmed: true,
             summary: "Cannot access Delta",
             description: "Login issues on Delta",
             user_email: "jane.doe@university.edu",
@@ -158,6 +160,7 @@ describe("JsmServer", () => {
         params: {
           name: "create_support_ticket",
           arguments: {
+            confirmed: true,
             summary: "Test",
             description: "Test description",
             user_email: "test@test.com",
@@ -181,6 +184,7 @@ describe("JsmServer", () => {
         params: {
           name: "create_support_ticket",
           arguments: {
+            confirmed: true,
             summary: "Test",
             description: "Test description",
             user_email: "test@test.com",
@@ -205,6 +209,7 @@ describe("JsmServer", () => {
         params: {
           name: "create_support_ticket",
           arguments: {
+            confirmed: true,
             summary: "Test",
             description: "Test description",
             user_email: "test@test.com",
@@ -232,6 +237,7 @@ describe("JsmServer", () => {
         params: {
           name: "create_support_ticket",
           arguments: {
+            confirmed: true,
             summary: "Test",
             description: "Test description",
             user_email: "test@test.com",
@@ -258,6 +264,7 @@ describe("JsmServer", () => {
         params: {
           name: "create_support_ticket",
           arguments: {
+            confirmed: true,
             summary: "Test",
             description: "Test description",
             user_email: "test@test.com",
@@ -282,6 +289,7 @@ describe("JsmServer", () => {
         params: {
           name: "create_support_ticket",
           arguments: {
+            confirmed: true,
             summary: "Test",
             description: "Test description",
             user_email: "test@test.com",
@@ -314,6 +322,7 @@ describe("JsmServer", () => {
         params: {
           name: "create_login_ticket",
           arguments: {
+            confirmed: true,
             summary: "Cannot login to ACCESS portal",
             description: "Getting 403 error when trying to log in with GitHub",
             user_email: "researcher@university.edu",
@@ -362,6 +371,7 @@ describe("JsmServer", () => {
         params: {
           name: "create_login_ticket",
           arguments: {
+            confirmed: true,
             summary: "Cannot SSH to Expanse",
             description: "SSH connection times out when connecting to Expanse",
             user_email: "researcher@university.edu",
@@ -410,6 +420,7 @@ describe("JsmServer", () => {
         params: {
           name: "create_login_ticket",
           arguments: {
+            confirmed: true,
             summary: "Portal login issue",
             description: "Cannot log in",
             user_email: "test@test.com",
@@ -446,6 +457,7 @@ describe("JsmServer", () => {
         params: {
           name: "report_security_incident",
           arguments: {
+            confirmed: true,
             summary: "Suspicious login activity detected",
             description:
               "Multiple failed login attempts from unknown IP addresses",
@@ -492,6 +504,7 @@ describe("JsmServer", () => {
         params: {
           name: "report_security_incident",
           arguments: {
+            confirmed: true,
             summary: "Minor security concern",
             description: "Found an outdated package",
             user_email: "dev@university.edu",
@@ -583,6 +596,7 @@ describe("JsmServer", () => {
         params: {
           name: "create_support_ticket",
           arguments: {
+            confirmed: true,
             summary: "Test dry run ticket",
             description: "This should not create a real ticket",
             user_email: "test@test.com",
@@ -612,6 +626,7 @@ describe("JsmServer", () => {
         params: {
           name: "create_support_ticket",
           arguments: {
+            confirmed: true,
             summary: "Dry run test",
             description: "Testing",
             user_email: "test@test.com",
@@ -647,6 +662,7 @@ describe("JsmServer", () => {
         params: {
           name: "create_support_ticket",
           arguments: {
+            confirmed: true,
             summary: "Real ticket",
             description: "Testing",
             user_email: "test@test.com",
@@ -673,6 +689,7 @@ describe("JsmServer", () => {
           params: {
             name: "create_support_ticket",
             arguments: {
+              confirmed: true,
               summary,
               description: "Testing",
               user_email: "test@test.com",
@@ -704,6 +721,7 @@ describe("JsmServer", () => {
         params: {
           name: "create_support_ticket",
           arguments: {
+            confirmed: true,
             summary: "Should fail",
             description: "No proxy URL",
             user_email: "test@test.com",

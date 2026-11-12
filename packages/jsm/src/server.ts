@@ -92,6 +92,7 @@ function isDryRunEnabled(): boolean {
 // ============================================================================
 
 interface CreateSupportTicketArgs {
+  confirmed?: boolean;
   summary: string;
   description: string;
   user_email?: string;
@@ -104,6 +105,7 @@ interface CreateSupportTicketArgs {
 }
 
 interface CreateLoginTicketArgs {
+  confirmed?: boolean;
   summary: string;
   description: string;
   user_email?: string;
@@ -117,6 +119,7 @@ interface CreateLoginTicketArgs {
 }
 
 interface ReportSecurityIncidentArgs {
+  confirmed?: boolean;
   summary: string;
   description: string;
   user_email?: string;
@@ -197,7 +200,7 @@ export class JsmServer extends BaseAccessServer {
       {
         name: "create_support_ticket",
         description:
-          "Create a general support ticket in ACCESS JSM. Use this when a user needs help with allocations, accounts, software, or other ACCESS-related issues that you cannot resolve directly.",
+          "Create a general support ticket in ACCESS JSM. Use this when a user needs help with allocations, accounts, software, or other ACCESS-related issues that you cannot resolve directly. Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change. Call it without confirmed to show the user the ticket as it would be filed; once the user approves that exact preview, call again with the same arguments and confirmed: true. Without confirmed it returns {action:\"create_ticket\", status:\"preview\", executed:false, data:{request_type, summary, description, filed_as, priority, category, resource, user_id_at_resource}} and files nothing; data.filed_as is the email the ticket is filed under.",
         inputSchema: {
           type: "object",
           properties: {
@@ -245,6 +248,10 @@ export class JsmServer extends BaseAccessServer {
               type: "string",
               description: "User's username at the resource (if applicable)",
             },
+            confirmed: {
+              type: "boolean",
+              description: "Omit to preview. Set true only after the user has approved this exact preview.",
+            },
           },
           required: ["summary", "description"],
         },
@@ -254,7 +261,7 @@ export class JsmServer extends BaseAccessServer {
       {
         name: "create_login_ticket",
         description:
-          "Create a ticket for login issues - either for the ACCESS portal or a specific resource provider.",
+          "Create a ticket for login issues - either for the ACCESS portal or a specific resource provider. Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change. Call it without confirmed to show the user the ticket as it would be filed; once the user approves that exact preview, call again with the same arguments and confirmed: true. Without confirmed it returns {action:\"create_ticket\", status:\"preview\", executed:false, data:{request_type, summary, description, filed_as, identity_provider, browser, resource, user_id_at_resource}} and files nothing; data.filed_as is the email the ticket is filed under.",
         inputSchema: {
           type: "object",
           properties: {
@@ -304,6 +311,10 @@ export class JsmServer extends BaseAccessServer {
               type: "string",
               description: "Username at the resource provider",
             },
+            confirmed: {
+              type: "boolean",
+              description: "Omit to preview. Set true only after the user has approved this exact preview.",
+            },
           },
           required: ["summary", "description", "login_type"],
         },
@@ -313,7 +324,7 @@ export class JsmServer extends BaseAccessServer {
       {
         name: "report_security_incident",
         description:
-          "Report a security vulnerability or incident. Use this for security-related concerns that need to go to the ACCESS cybersecurity team.",
+          "Report a security vulnerability or incident. Use this for security-related concerns that need to go to the ACCESS cybersecurity team. Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change. Call it without confirmed to show the user the report as it would be filed; once the user approves that exact preview, call again with the same arguments and confirmed: true. Without confirmed it returns {action:\"create_ticket\", status:\"preview\", executed:false, data:{request_type, summary, description, filed_as, priority}} and files nothing; data.filed_as is the email the report is filed under.",
         inputSchema: {
           type: "object",
           properties: {
@@ -345,6 +356,10 @@ export class JsmServer extends BaseAccessServer {
               enum: ["low", "medium", "high", "critical"],
               default: "medium",
               description: "Severity of the security concern",
+            },
+            confirmed: {
+              type: "boolean",
+              description: "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["summary", "description"],
@@ -513,7 +528,12 @@ export class JsmServer extends BaseAccessServer {
       },
     };
 
-    return await this.submitTicket(requestBody, "/api/v1/tickets");
+    return await this.fileTicket(args, "General support", requestBody, "/api/v1/tickets", {
+      priority,
+      category,
+      resource,
+      user_id_at_resource,
+    });
   }
 
   private async createLoginTicket(args: CreateLoginTicketArgs): Promise<CallToolResult> {
@@ -553,7 +573,18 @@ export class JsmServer extends BaseAccessServer {
       },
     };
 
-    return await this.submitTicket(requestBody, "/api/v1/tickets");
+    return await this.fileTicket(
+      args,
+      isAccessPortal ? "ACCESS login issue" : "Resource provider login issue",
+      requestBody,
+      "/api/v1/tickets",
+      {
+        identity_provider: isAccessPortal ? identity_provider : undefined,
+        browser: isAccessPortal ? browser : undefined,
+        resource: isAccessPortal ? undefined : resource,
+        user_id_at_resource: isAccessPortal ? undefined : user_id_at_resource,
+      }
+    );
   }
 
   private async reportSecurityIncident(args: ReportSecurityIncidentArgs): Promise<CallToolResult> {
@@ -578,7 +609,39 @@ export class JsmServer extends BaseAccessServer {
       },
     };
 
-    return await this.submitTicket(requestBody, "/api/v1/security-incidents");
+    return await this.fileTicket(args, "Security incident", requestBody, "/api/v1/security-incidents", {
+      priority,
+    });
+  }
+
+  /**
+   * Preview unless STRICT confirmed === true. The preview reads the same
+   * request body the commit posts, so what the user confirms is what is filed,
+   * and nothing reaches the proxy (or dry-run) until they do.
+   */
+  private async fileTicket(
+    args: { confirmed?: boolean },
+    requestType: string,
+    body: TicketRequestBody,
+    endpoint: string,
+    extras: Record<string, string | undefined>
+  ): Promise<CallToolResult> {
+    if (args.confirmed !== true) {
+      const fields = body.requestFieldValues;
+      return this.writeResponse({
+        action: "create_ticket",
+        status: "preview",
+        executed: false,
+        data: {
+          request_type: requestType,
+          summary: fields.summary,
+          description: fields.description,
+          filed_as: fields.email,
+          ...Object.fromEntries(Object.entries(extras).filter(([, v]) => v)),
+        },
+      });
+    }
+    return await this.submitTicket(body, endpoint);
   }
 
   private async submitTicket(body: TicketRequestBody, endpoint: string): Promise<CallToolResult> {

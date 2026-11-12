@@ -73,6 +73,7 @@ interface CreateEventParams extends EventContentFields {
 interface UpdateEventParams extends EventContentFields {
   eventseries_id: string;
   title?: string;
+  confirmed?: boolean;
 }
 
 interface OccurrenceDate {
@@ -90,6 +91,7 @@ interface EditOccurrenceParams {
 interface AddOccurrenceParams {
   eventseries_id: string;
   date: OccurrenceDate;
+  confirmed?: boolean;
 }
 
 interface RawEvent {
@@ -452,7 +454,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Omit or false for a no-write preview (status:\"preview\", executed:false — seat vs. waitlist); true to actually register (status:\"registered\"/\"waitlisted\", executed:true).",
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["eventinstance_id"],
@@ -474,7 +476,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Set to true only after the user has explicitly confirmed cancellation of THIS specific registration. Required.",
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["registrant_id", "confirmed"],
@@ -627,7 +629,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Omit or false for a no-write PREVIEW of the occurrence dates this recurrence would produce (status:\"preview\", executed:false, with occurrence_count/total_occurrence_count/truncated/occurrences); true to actually create the series.",
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["title", "field_event_type", "field_location"],
@@ -638,13 +640,18 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "update_event",
         description:
-          "Edit an existing event series' CONTENT fields ONLY (title, body, field_summary, field_location, field_event_type, field_skill_level, field_tags, field_event_speakers, field_event_virtual_meeting_link, field_event_timezone, field_event_in_person). This tool NEVER changes dates/recurrence and NEVER changes moderation_state (note: changing field_event_timezone reschedules the event's displayed times, but does not alter the stored recurrence) — it applies immediately, with no preview step and no confirm flag. The API deliberately has NO whole-schedule rebuild operation: schedule changes are per-occurrence only — use edit_occurrence to move one occurrence's date, or add_occurrence/cancel_occurrence to add or remove a date. A series' recurrence pattern itself can never be rebuilt on any surface once it has registrations; the reschedule path there is cancel_occurrence → edit_occurrence (while dark) → restore_occurrence. For a state change (cancel, restore, send for review), use delete_event / restore_event / send_for_review. Edits are validated against the site's field rules (required fields, allowed values, link format); a violation is refused with code \"validation_error\" and a message naming the field — fix that field (or supply it, if the series was created without it) and retry. Returns {series_id, updated_fields, edit_url}; link edit_url in your reply and don't show series_id.",
+          "Edit an existing event series' CONTENT fields ONLY (title, body, field_summary, field_location, field_event_type, field_skill_level, field_tags, field_event_speakers, field_event_virtual_meeting_link, field_event_timezone, field_event_in_person). This tool NEVER changes dates/recurrence and NEVER changes moderation_state (note: changing field_event_timezone reschedules the event's displayed times, but does not alter the stored recurrence). Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change. The API deliberately has NO whole-schedule rebuild operation: schedule changes are per-occurrence only — use edit_occurrence to move one occurrence's date, or add_occurrence/cancel_occurrence to add or remove a date. A series' recurrence pattern itself can never be rebuilt on any surface once it has registrations; the reschedule path there is cancel_occurrence → edit_occurrence (while dark) → restore_occurrence. For a state change (cancel, restore, send for review), use delete_event / restore_event / send_for_review. Edits are validated against the site's field rules (required fields, allowed values, link format); a violation is refused with code \"validation_error\" and a message naming the field — fix that field (or supply it, if the series was created without it) and retry. The preview lists each changed field with its old and new value (data.changes). Returns on commit {series_id, updated_fields, edit_url}; link edit_url in your reply and don't show series_id.",
         inputSchema: {
           type: "object" as const,
           properties: {
             eventseries_id: {
               type: "string",
-              description: "The event series id (the get_event `series_id`, or the eventinstance id — either resolves to its series).",
+              description: "The event series id: the `series_id` from get_event or get_my_events. Do not pass an eventinstance id.",
+            },
+            confirmed: {
+              type: "boolean",
+              description:
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
             title: { type: "string" },
             body: { type: "string" },
@@ -688,11 +695,11 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           properties: {
             eventseries_id: {
               type: "string",
-              description: "The event series id (get_event `series_id`, or an eventinstance id — either resolves to its series).",
+              description: "The event series id: the `series_id` from get_event or get_my_events. Do not pass an eventinstance id.",
             },
             confirmed: {
               type: "boolean",
-              description: "Omit or false for a no-write preview; true to execute the cancel/delete.",
+              description: "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["eventseries_id"],
@@ -703,13 +710,18 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "restore_event",
         description:
-          "Un-cancel a previously archived event series — the inverse of delete_event. Only legal from an archived series; an already-published series is an idempotent no-op (instances_restored:0), and a series that was never archived (draft, needs_adjustment, …) is refused with code \"invalid_state\". IMPORTANT ordering: if you also need to move the series' dates, apply date edits (edit_occurrence per-occurrence) WHILE the series is still dark/archived, THEN restore — restoring first and editing dates after means registrants get notified of the stale date before the real one. On restore, every archived instance that was NOT individually cancelled (see cancel_occurrence) comes back published and its registrants are notified; an instance you individually cancelled while the series was dark stays cancelled through the restore (this is how a PARTIAL restore works: cancel_occurrence the instances you don't want back before calling restore_event, then only the rest return). No preview step. Returns {series_id, instances_restored, notified, notifications_disabled}.",
+          "Un-cancel a previously archived event series — the inverse of delete_event. Only legal from an archived series; an already-published series is an idempotent no-op (instances_restored:0), and a series that was never archived (draft, needs_adjustment, …) is refused with code \"invalid_state\". IMPORTANT ordering: if you also need to move the series' dates, apply date edits (edit_occurrence per-occurrence) WHILE the series is still dark/archived, THEN restore — restoring first and editing dates after means registrants get notified of the stale date before the real one. On restore, every archived instance that was NOT individually cancelled (see cancel_occurrence) comes back published and its registrants are notified; an instance you individually cancelled while the series was dark stays cancelled through the restore (this is how a PARTIAL restore works: cancel_occurrence the instances you don't want back before calling restore_event, then only the rest return). Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change. The preview shows the title, dates and, when it can be read, the current state. Returns on commit {series_id, instances_restored, notified, notifications_disabled}.",
         inputSchema: {
           type: "object" as const,
           properties: {
             eventseries_id: {
               type: "string",
-              description: "The event series id (get_event `series_id`, or an eventinstance id — either resolves to its series).",
+              description: "The event series id: the `series_id` from get_event or get_my_events. Do not pass an eventinstance id.",
+            },
+            confirmed: {
+              type: "boolean",
+              description:
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["eventseries_id"],
@@ -720,13 +732,18 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "send_for_review",
         description:
-          "Route a draft (or needs_adjustment) event series to an editor for approval — the author-facing path to publication when the acting user cannot publish directly (see create_event's moderation.next_action). Legal only from draft or needs_adjustment; any other current state (published, archived, ready_for_review already) is refused with code \"invalid_state\". No preview step; no confirm flag. Returns {series_id, moderation_state, edit_url} with moderation_state now \"ready_for_review\"; link edit_url in your reply.",
+          "Route a draft (or needs_adjustment) event series to an editor for approval — the author-facing path to publication when the acting user cannot publish directly (see create_event's moderation.next_action). Legal only from draft or needs_adjustment; any other current state (published, archived, ready_for_review already) is refused with code \"invalid_state\". Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change. The preview shows the title, dates and, when it can be read, the current state. Returns on commit {series_id, moderation_state, edit_url} with moderation_state now \"ready_for_review\"; link edit_url in your reply.",
         inputSchema: {
           type: "object" as const,
           properties: {
             eventseries_id: {
               type: "string",
-              description: "The event series id (get_event `series_id`, or an eventinstance id — either resolves to its series).",
+              description: "The event series id: the `series_id` from get_event or get_my_events. Do not pass an eventinstance id.",
+            },
+            confirmed: {
+              type: "boolean",
+              description:
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["eventseries_id"],
@@ -747,7 +764,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             },
             confirmed: {
               type: "boolean",
-              description: "Omit or false for a no-write preview; true to execute the cancel.",
+              description: "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["eventinstance_id"],
@@ -758,13 +775,18 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "restore_occurrence",
         description:
-          "Un-cancel ONE previously cancelled (archived) occurrence — the inverse of cancel_occurrence. Only legal on an archived occurrence; a non-archived one is refused with code \"invalid_state\". Two outcomes depend on the PARENT series' current state: if the parent is published, the occurrence republishes immediately and its registrants are notified (returns_with_series is absent/false). If the parent series is itself dark (archived), the occurrence CANNOT publish while its series is dark — instead this just clears its individually-cancelled flag so it automatically rejoins the series the next time restore_event runs on the parent; the occurrence itself stays archived FOR NOW and the response carries returns_with_series:true, notified:0. Ordering matters: apply any date fix (edit_occurrence) to a cancelled occurrence WHILE it is still dark, before calling restore_occurrence — once it's back live, a further date change is a separate reschedule notice. If add_occurrence refuses with code \"duplicate_date\" because an existing occurrence at that exact time is a cancelled twin, use restore_occurrence on that existing occurrence instead of trying to add a new one. No preview step. Returns {eventinstance_id, notified, notifications_disabled} plus returns_with_series when applicable.",
+          "Un-cancel ONE previously cancelled (archived) occurrence — the inverse of cancel_occurrence. Only legal on an archived occurrence; a non-archived one is refused with code \"invalid_state\". Two outcomes depend on the PARENT series' current state: if the parent is published, the occurrence republishes immediately and its registrants are notified (returns_with_series is absent/false). If the parent series is itself dark (archived), the occurrence CANNOT publish while its series is dark — instead this just clears its individually-cancelled flag so it automatically rejoins the series the next time restore_event runs on the parent; the occurrence itself stays archived FOR NOW and the response carries returns_with_series:true, notified:0. Ordering matters: apply any date fix (edit_occurrence) to a cancelled occurrence WHILE it is still dark, before calling restore_occurrence — once it's back live, a further date change is a separate reschedule notice. If add_occurrence refuses with code \"duplicate_date\" because an existing occurrence at that exact time is a cancelled twin, use restore_occurrence on that existing occurrence instead of trying to add a new one. Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change. The preview shows the title, dates and, when it can be read, the current state. Returns on commit {eventinstance_id, notified, notifications_disabled} plus returns_with_series when applicable.",
         inputSchema: {
           type: "object" as const,
           properties: {
             eventinstance_id: {
               type: "string",
               description: "The eventinstance id to restore.",
+            },
+            confirmed: {
+              type: "boolean",
+              description:
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["eventinstance_id"],
@@ -775,7 +797,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "edit_occurrence",
         description:
-          "Edit ONE occurrence's own date or location — a content edit on that single instance; it does not touch sibling occurrences or the parent series. The API deliberately has no whole-schedule rebuild operation — this per-occurrence edit, plus add_occurrence/cancel_occurrence to add or remove a date, is how schedule changes work. This is the tool for rescheduling a still-LIVE occurrence: call it directly with the new date and registrants are notified of the move — no need to cancel first. (Contrast: to postpone with a gap — cancel now, fix the date later — use cancel_occurrence, THEN edit_occurrence while it's dark, THEN restore_occurrence.) A date change on a live (published) occurrence with existing registrants requires confirmed:true and previews first: WITHOUT confirmed:true you get a no-write PREVIEW (status:\"preview\", executed:false, registrants_to_notify — the count who would be notified of the move). A date change on a DARK (draft/archived) occurrence, a date change with no registrants, or a location-only edit all apply immediately without needing confirmed. Returns on commit: {eventinstance_id, registrants_affected}.",
+          "Edit ONE occurrence's own date or location — a content edit on that single instance; it does not touch sibling occurrences or the parent series. The API deliberately has no whole-schedule rebuild operation — this per-occurrence edit, plus add_occurrence/cancel_occurrence to add or remove a date, is how schedule changes work. This is the tool for rescheduling a still-LIVE occurrence: call it directly with the new date and registrants are notified of the move — no need to cancel first. (Contrast: to postpone with a gap — cancel now, fix the date later — use cancel_occurrence, THEN edit_occurrence while it's dark, THEN restore_occurrence.) Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change. The preview lists each changed field with its old and new value (data.changes); when the date moves, registrants of a live occurrence are notified on commit, and the commit result reports registrants_affected. Returns on commit: {eventinstance_id, registrants_affected}.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -785,7 +807,8 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             },
             confirmed: {
               type: "boolean",
-              description: "Required true to commit a date change on a live occurrence with registrants; otherwise optional.",
+              description:
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
             date: {
               type: "object",
@@ -808,13 +831,18 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "add_occurrence",
         description:
-          "Add ONE new occurrence directly to an event series — an unregistered, targeted addition (not a schedule rebuild: it touches only the one new row, with no risk to any other occurrence's registrants). The API deliberately has no whole-schedule rebuild operation; this tool, edit_occurrence (move one date), and cancel_occurrence (remove one date) are how a schedule changes — a series' recurrence pattern itself can never be rebuilt once it has registrations, on any surface. Its birth state follows the parent series: adding to a published series creates a published occurrence immediately; adding to an archived series creates an archived one that comes back the normal way when the series is restored. Adding to a DRAFT series is refused with code \"invalid_state\" (a draft's new occurrence would be born archived with no path to visible — publish or send_for_review the series first). Refused with code \"duplicate_date\" if an occurrence already exists at the exact requested start time; if that existing occurrence is itself a cancelled twin, the refusal message points you at restore_occurrence instead — re-adding at that same moment almost always means bringing the cancelled one back, not creating a competing duplicate. No preview step; no confirm flag. Returns {series_id, eventinstance_id, moderation_state, event_url, edit_url}.",
+          "Add ONE new occurrence directly to an event series — an unregistered, targeted addition (not a schedule rebuild: it touches only the one new row, with no risk to any other occurrence's registrants). The API deliberately has no whole-schedule rebuild operation; this tool, edit_occurrence (move one date), and cancel_occurrence (remove one date) are how a schedule changes — a series' recurrence pattern itself can never be rebuilt once it has registrations, on any surface. Its birth state follows the parent series: adding to a published series creates a published occurrence immediately; adding to an archived series creates an archived one that comes back the normal way when the series is restored. Adding to a DRAFT series is refused with code \"invalid_state\" (a draft's new occurrence would be born archived with no path to visible — publish or send_for_review the series first). Refused with code \"duplicate_date\" if an occurrence already exists at the exact requested start time; if that existing occurrence is itself a cancelled twin, the refusal message points you at restore_occurrence instead — re-adding at that same moment almost always means bringing the cancelled one back, not creating a competing duplicate. Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change. The preview shows the series title, its current state when it can be read, and the new dates. Returns on commit {series_id, eventinstance_id, moderation_state, event_url, edit_url}.",
         inputSchema: {
           type: "object" as const,
           properties: {
             eventseries_id: {
               type: "string",
-              description: "The event series id to add an occurrence to (get_event `series_id`, or an eventinstance id — either resolves to its series).",
+              description: "The event series id to add an occurrence to: the `series_id` from get_event or get_my_events. A series id only; an eventinstance id is not accepted.",
+            },
+            confirmed: {
+              type: "boolean",
+              description:
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
             date: {
               type: "object",
@@ -890,13 +918,13 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
         case "delete_event":
           return await this.deleteEvent(args.eventseries_id as string, args.confirmed as boolean | undefined);
         case "restore_event":
-          return await this.restoreEvent(args.eventseries_id as string);
+          return await this.restoreEvent(args.eventseries_id as string, args.confirmed);
         case "send_for_review":
-          return await this.sendForReview(args.eventseries_id as string);
+          return await this.sendForReview(args.eventseries_id as string, args.confirmed);
         case "cancel_occurrence":
           return await this.cancelOccurrence(args.eventinstance_id as string, args.confirmed as boolean | undefined);
         case "restore_occurrence":
-          return await this.restoreOccurrence(args.eventinstance_id as string);
+          return await this.restoreOccurrence(args.eventinstance_id as string, args.confirmed);
         case "edit_occurrence":
           return await this.editOccurrence(args as unknown as EditOccurrenceParams);
         case "add_occurrence":
@@ -1833,6 +1861,199 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
   }
 
   /**
+   * Best-effort read of the current event so a write preview can show a person
+   * what exists today. GET /api/2.3/events/{eventinstance_id} returns title,
+   * description, start/end, location, event_type, skill_level, tags, speakers
+   * and series_id, but NO moderation state; that comes from the acting user's
+   * jsonapi view event_instance_mine (same source as get_my_events), matched
+   * on drupal_internal__id. Both reads are by eventinstance id: a series id
+   * usually 404s, in which case the preview carries detail_unavailable:true
+   * (series tools) rather than failing. Occurrence tools pass strict:true so an
+   * unknown occurrence is a real not_found error.
+   */
+  private async loadCurrentEvent(
+    id: string,
+    opts: { strict: boolean }
+  ): Promise<{ detail?: Record<string, unknown>; state?: string } | { result: CallToolResult }> {
+    const actingUser = this.getActingUserAccessId();
+    const { status, data } = await this.getDrupalAuth().requestRaw(
+      actingUser,
+      "GET",
+      `/api/2.3/events/${encodeURIComponent(id)}`
+    );
+    if (status >= 200 && status < 300) {
+      return {
+        detail: (data ?? {}) as Record<string, unknown>,
+        state: await this.lookupModerationState(actingUser, id),
+      };
+    }
+    const authError = this.authRedirectError(status);
+    if (authError) return { result: authError };
+    if (opts.strict) {
+      if (status === 404) {
+        return {
+          result: this.errorResponse(`No event found with id ${id}`, {
+            hint: "Check the id via search_events.",
+            code: "not_found",
+          }),
+        };
+      }
+      return {
+        result: this.errorResponse(`Events service error (${status})`, {
+          hint: "Try again shortly.",
+          code: "upstream_error",
+        }),
+      };
+    }
+    return {};
+  }
+
+  /**
+   * Best-effort read of the series a series-id tool will write to. The
+   * portal's resolveSeries tries the id as a SERIES id first, so the preview
+   * only ever matches it as a series id: following an instance id to its
+   * series could show a different series than the commit changes when the
+   * same number is also some other series' id.
+   * Reads the acting user's event_instance_mine jsonapi data; the series
+   * reference is relationships.eventseries_id.data.meta.drupal_internal__target_id.
+   * GET /api/2.3/events/{id} is never used with the caller's id (it is
+   * instance-first, the opposite of the commit); it is read only with the id of
+   * one of the resolved series' own instances. Returns {} (detail_unavailable) when nothing matches or
+   * the read fails.
+   */
+  private async loadCurrentSeries(
+    id: string
+  ): Promise<{ detail?: Record<string, unknown>; state?: string }> {
+    let items: Array<Record<string, any>>; // eslint-disable-line @typescript-eslint/no-explicit-any -- JSON:API response shape is dynamic
+    try {
+      const result = await this.getDrupalAuth().get(
+        this.getActingUserAccessId(),
+        "/jsonapi/views/event_instance_mine/mcp_my_events?page[limit]=200"
+      );
+      items = Array.isArray(result?.data) ? result.data : [];
+    } catch {
+      return {};
+    }
+    const seriesOf = (item: Record<string, any>): string | undefined => { // eslint-disable-line @typescript-eslint/no-explicit-any
+      const target = item?.relationships?.eventseries_id?.data?.meta?.drupal_internal__target_id;
+      return target === undefined || target === null ? undefined : String(target);
+    };
+    const seriesId = String(id);
+    const matches = items.filter((i) => seriesOf(i) === seriesId);
+    if (matches.length === 0) return {};
+    const first = matches[0].attributes ?? {};
+    const range = (a: Record<string, any>) => (Array.isArray(a.date) ? a.date[0] : a.date); // eslint-disable-line @typescript-eslint/no-explicit-any
+    const starts = matches.map((m) => isoInstantUtc(range(m.attributes ?? {})?.value)).filter(Boolean).sort();
+    const ends = matches.map((m) => isoInstantUtc(range(m.attributes ?? {})?.end_value)).filter(Boolean).sort();
+    const state = first.moderation_state;
+    // The series is resolved, so one of its own instances can supply the
+    // detail fields (location, tags, speakers, ...). Used only when its
+    // series_id agrees with the resolved series; otherwise rows stay unavailable.
+    let extra: Record<string, unknown> = {};
+    const instanceId = first.drupal_internal__id;
+    if (instanceId !== undefined && instanceId !== null) {
+      try {
+        const { status, data } = await this.getDrupalAuth().requestRaw(
+          this.getActingUserAccessId(),
+          "GET",
+          `/api/2.3/events/${encodeURIComponent(String(instanceId))}`
+        );
+        if (status >= 200 && status < 300 && data && String((data as Record<string, unknown>).series_id) === seriesId) {
+          extra = data as Record<string, unknown>;
+        }
+      } catch {
+        // keep the rows old_unavailable
+      }
+    }
+    return {
+      detail: {
+        ...extra,
+        title: first.title,
+        series_id: seriesId,
+        start_date: starts[0],
+        end_date: ends[ends.length - 1],
+        instance_count: matches.length,
+      },
+      state: typeof state === "string" ? state : undefined,
+    };
+  }
+
+  /** Editorial state of one of the acting user's own instances, or undefined
+   * when the view does not list it (or cannot be read). */
+  private async lookupModerationState(actingUser: string, id: string): Promise<string | undefined> {
+    try {
+      const result = await this.getDrupalAuth().get(
+        actingUser,
+        "/jsonapi/views/event_instance_mine/mcp_my_events?page[limit]=200"
+      );
+      const items = Array.isArray(result?.data) ? result.data : [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- JSON:API response shape is dynamic
+      const match = items.find((item: any) => String(item?.attributes?.drupal_internal__id) === String(id));
+      const state = match?.attributes?.moderation_state;
+      return typeof state === "string" ? state : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Event-detail key each editable field is read from. The detail API uses
+   * short names; other fields fall back to the Drupal field name. */
+  private static readonly DETAIL_KEYS: Record<string, string> = {
+    title: "title",
+    body: "description",
+    field_location: "location",
+    field_event_type: "event_type",
+    field_skill_level: "skill_level",
+    field_tags: "tags",
+    field_event_speakers: "speakers",
+  };
+
+  private normalizeFieldValue(field: string, value: unknown): unknown {
+    if (field !== "field_tags" || value === undefined || value === null) return value;
+    const list = Array.isArray(value) ? value : String(value).split(",");
+    return list.map((t) => String(t).trim()).filter((t) => t !== "");
+  }
+
+  private currentFieldValue(detail: Record<string, unknown> | undefined, field: string): unknown {
+    if (!detail) return undefined;
+    const raw = detail[EventsServer.DETAIL_KEYS[field] ?? field] ?? detail[field];
+    return this.normalizeFieldValue(field, raw);
+  }
+
+  /** One change row, or null when the new value equals the current one. When
+   * the current value cannot be read the row says so (old_unavailable) so it
+   * is distinct from an empty value. */
+  private changeRow(
+    detail: Record<string, unknown> | undefined,
+    field: string,
+    newValue: unknown
+  ): Record<string, unknown> | null {
+    const oldValue = this.currentFieldValue(detail, field);
+    const normalizedNew = this.normalizeFieldValue(field, newValue);
+    if (oldValue === undefined) return { field, old_unavailable: true, new: normalizedNew };
+    if (JSON.stringify(oldValue) === JSON.stringify(normalizedNew)) return null;
+    return { field, old: oldValue, new: normalizedNew };
+  }
+
+  /** Readable current-state fields shared by every write preview. */
+  private currentEventSummary(
+    loaded: { detail?: Record<string, unknown>; state?: string }
+  ): Record<string, unknown> {
+    const d = loaded.detail;
+    return {
+      title: d?.title,
+      start_date: d?.start_date,
+      end_date: d?.end_date,
+      ...(loaded.state !== undefined ? { current_state: loaded.state } : { current_state_unavailable: true }),
+      ...(d ? {} : { detail_unavailable: true }),
+    };
+  }
+
+  private previewResponse(action: "create" | "update", data: Record<string, unknown>): CallToolResult {
+    return this.writeResponse({ action, status: "preview", executed: false, data });
+  }
+
+  /**
    * Shared dispatch for the nine organizer write routes: resolves the acting
    * user, calls requestRaw, and handles the auth-redirect / 403 / non-2xx
    * cases identically. Returns either a parsed 2xx body for the caller to map
@@ -2059,8 +2280,8 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
   /**
    * PATCH /api/2.3/event-series/{id} — edit a series' content fields.
    * Content-only, by design: it never writes moderation_state and never
-   * touches recurrence/date config, so it applies immediately with no
-   * preview step and no confirm flag. The API deliberately has no
+   * touches recurrence/date config, and previews (no write) unless
+   * confirmed === true. The API deliberately has no
    * whole-schedule rebuild operation at all (verified absent from
    * access_events.routing.yml) — schedule changes are per-occurrence only,
    * via editOccurrence/addOccurrence/cancelOccurrence.
@@ -2072,7 +2293,25 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
         { hint: "Pass the series id from get_event/get_my_events." }
       );
     }
-    const { eventseries_id, ...body } = params;
+    const { eventseries_id, confirmed, ...body } = params;
+
+    if (confirmed !== true) {
+      const current = await this.loadCurrentSeries(eventseries_id);
+      const detail = current.detail;
+      const changes: Array<Record<string, unknown>> = [];
+      for (const [field, newValue] of Object.entries(body)) {
+        if (newValue === undefined) continue;
+        const row = this.changeRow(detail, field, newValue);
+        if (row) changes.push(row);
+      }
+      return this.previewResponse("update", {
+        series_id: detail?.series_id ?? eventseries_id,
+        title: detail?.title,
+        changes,
+        ...(detail ? {} : { detail_unavailable: true }),
+      });
+    }
+
     const outcome = await this.eventWriteRequest(
       "PATCH",
       `/api/2.3/event-series/${encodeURIComponent(eventseries_id)}`,
@@ -2145,12 +2384,19 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
    * POST /api/2.3/event-series/{id}/restore — un-archive a series. No
    * preview step. invalid_state (409) when the series was never archived.
    */
-  private async restoreEvent(eventseriesId: string): Promise<CallToolResult> {
+  private async restoreEvent(eventseriesId: string, confirmed?: unknown): Promise<CallToolResult> {
     if (!eventseriesId) {
       return this.errorResponse(
         "eventseries_id is required",
         { hint: "Pass the series id from get_event/get_my_events." }
       );
+    }
+    if (confirmed !== true) {
+      const current = await this.loadCurrentSeries(eventseriesId);
+      return this.previewResponse("update", {
+        series_id: current.detail?.series_id ?? eventseriesId,
+        ...this.currentEventSummary(current),
+      });
     }
     const outcome = await this.eventWriteRequest(
       "POST",
@@ -2176,15 +2422,22 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
 
   /**
    * POST /api/2.3/event-series/{id}/send-for-review — route a draft/
-   * needs_adjustment series to an editor. No preview step. invalid_state
+   * needs_adjustment series to an editor. Previews unless confirmed === true. invalid_state
    * (409) when the series is not currently draft or needs_adjustment.
    */
-  private async sendForReview(eventseriesId: string): Promise<CallToolResult> {
+  private async sendForReview(eventseriesId: string, confirmed?: unknown): Promise<CallToolResult> {
     if (!eventseriesId) {
       return this.errorResponse(
         "eventseries_id is required",
         { hint: "Pass the series id from get_event/get_my_events." }
       );
+    }
+    if (confirmed !== true) {
+      const current = await this.loadCurrentSeries(eventseriesId);
+      return this.previewResponse("update", {
+        series_id: current.detail?.series_id ?? eventseriesId,
+        ...this.currentEventSummary(current),
+      });
     }
     const outcome = await this.eventWriteRequest(
       "POST",
@@ -2253,17 +2506,25 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
 
   /**
    * POST /api/2.3/event-occurrences/{id}/restore — un-cancel one occurrence.
-   * No preview step. invalid_state (409) when the occurrence is not
+   * Previews unless confirmed === true. invalid_state (409) when the occurrence is not
    * currently archived. When the parent series is dark, this only clears the
    * individually-cancelled flag (returns_with_series:true) rather than
    * publishing — see the tool doc.
    */
-  private async restoreOccurrence(eventinstanceId: string): Promise<CallToolResult> {
+  private async restoreOccurrence(eventinstanceId: string, confirmed?: unknown): Promise<CallToolResult> {
     if (!eventinstanceId) {
       return this.errorResponse(
         "eventinstance_id is required",
         { hint: "Pass the eventinstance id to restore." }
       );
+    }
+    if (confirmed !== true) {
+      const current = await this.loadCurrentEvent(eventinstanceId, { strict: true });
+      if ("result" in current) return current.result;
+      return this.previewResponse("update", {
+        eventinstance_id: eventinstanceId,
+        ...this.currentEventSummary(current),
+      });
     }
     const outcome = await this.eventWriteRequest(
       "POST",
@@ -2289,10 +2550,9 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
 
   /**
    * PATCH /api/2.3/event-occurrences/{id} — edit one occurrence's date/
-   * location. A date change on a live, registered occurrence requires
-   * confirmed:true and previews first (registrants_to_notify); everything
-   * else (location-only, dark-instance date change, no-registrant date
-   * change) applies immediately.
+   * location. Without confirmed === true every edit is a local no-write preview
+   * (changed fields, old and new); with it the PATCH is sent with
+   * ?confirmed=true.
    */
   private async editOccurrence(params: EditOccurrenceParams): Promise<CallToolResult> {
     if (!params?.eventinstance_id) {
@@ -2302,22 +2562,57 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       );
     }
     const { eventinstance_id, confirmed, ...body } = params;
+
+    // Without confirmed:true nothing is written, whatever the edit (the
+    // upstream applies location-only and dark/no-registrant date edits
+    // immediately, so we must not call it at all).
+    if (confirmed !== true) {
+      const current = await this.loadCurrentEvent(eventinstance_id, { strict: true });
+      if ("result" in current) return current.result;
+      const detail = current.detail;
+      const changes: Array<Record<string, unknown>> = [];
+      if (body.date) {
+        const oldStart = detail?.start_date as string | undefined;
+        const oldEnd = detail?.end_date as string | undefined;
+        const same =
+          oldStart !== undefined &&
+          oldEnd !== undefined &&
+          isoInstant(oldStart) === isoInstant(body.date.value) &&
+          isoInstant(oldEnd) === isoInstant(body.date.end_value);
+        if (!same) {
+          changes.push(
+            oldStart === undefined || oldEnd === undefined
+              ? { field: "date", old_unavailable: true, new: body.date }
+              : { field: "date", old: { value: oldStart, end_value: oldEnd }, new: body.date }
+          );
+        }
+      }
+      if (body.field_location !== undefined) {
+        const row = this.changeRow(detail, "field_location", body.field_location);
+        if (row) changes.push(row);
+      }
+      return this.previewResponse("update", {
+        eventinstance_id,
+        title: detail?.title,
+        ...(current.state !== undefined ? { current_state: current.state } : { current_state_unavailable: true }),
+        changes,
+        ...(changes.some((c) => c.field === "date")
+          ? current.state === "published"
+            ? { registrants_notified_on_commit: true }
+            : current.state === undefined
+              ? { registrants_may_be_notified: true }
+              : {}
+          : {}),
+      });
+    }
+
     const outcome = await this.eventWriteRequest(
       "PATCH",
-      `/api/2.3/event-occurrences/${encodeURIComponent(eventinstance_id)}?confirmed=${confirmed === true ? "true" : "false"}`,
+      `/api/2.3/event-occurrences/${encodeURIComponent(eventinstance_id)}?confirmed=true`,
       body,
       "Could not edit the occurrence."
     );
     if ("result" in outcome) return outcome.result;
-
-    if (outcome.data.status === "preview") {
-      return this.writeResponse({
-        action: "update",
-        status: "preview",
-        executed: false,
-        data: previewData(outcome.data),
-      });
-    }
 
     return this.writeResponse({
       action: "update",
@@ -2333,7 +2628,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
 
   /**
    * POST /api/2.3/event-series/{id}/occurrence — add one new occurrence.
-   * No preview step. invalid_state (409) when the parent series is a draft;
+   * Previews unless confirmed === true. invalid_state (409) when the parent series is a draft;
    * duplicate_date (409) when an occurrence already exists at the exact
    * requested start (the error message points to restore_occurrence when the
    * collision is a cancelled twin).
@@ -2350,6 +2645,19 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
         "date.value and date.end_value are required",
         { hint: "Pass the new occurrence's start/end (naive UTC)." }
       );
+    }
+    if (params.confirmed !== true) {
+      const current = await this.loadCurrentSeries(params.eventseries_id);
+      const summary = this.currentEventSummary(current);
+      return this.previewResponse("create", {
+        series_id: current.detail?.series_id ?? params.eventseries_id,
+        title: summary.title,
+        ...(summary.current_state !== undefined
+          ? { current_state: summary.current_state }
+          : { current_state_unavailable: true }),
+        new_occurrence: params.date,
+        ...(current.detail ? {} : { detail_unavailable: true }),
+      });
     }
     const outcome = await this.eventWriteRequest(
       "POST",

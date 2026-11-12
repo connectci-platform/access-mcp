@@ -74,7 +74,7 @@ export interface StandardErrorResponse {
 
 // Standard write response envelope (register/cancel/create/update/delete tools)
 export interface StandardWriteResponse {
-  action: "register" | "cancel" | "create" | "update" | "delete";
+  action: "register" | "cancel" | "create" | "update" | "delete" | "create_ticket";
   status: string;
   executed: boolean;
   data?: Record<string, unknown>;

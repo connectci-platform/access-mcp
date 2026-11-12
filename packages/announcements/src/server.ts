@@ -88,6 +88,7 @@ interface CreateAnnouncementArgs {
   affinity_group?: string;
   external_link?: { uri: string; title?: string };
   where_to_share?: string[];
+  confirmed?: boolean;
 }
 
 interface UpdateAnnouncementArgs {
@@ -105,6 +106,20 @@ interface UpdateAnnouncementArgs {
   clear_affinity_groups?: boolean;
   external_link?: { uri: string; title?: string };
   where_to_share?: string[];
+  confirmed?: boolean;
+}
+
+// Keys the single-announcement and /mine reads are shown to return.
+interface CurrentAnnouncementItem {
+  title?: string;
+  body?: string;
+  summary?: string;
+  published_date?: string | null;
+  tags?: string[];
+  affiliation?: string | null;
+  where_to_share?: string[];
+  affinity_groups?: { uuid: string; title: string | null }[];
+  has_pending_revision?: boolean;
 }
 
 interface DeleteAnnouncementArgs {
@@ -238,7 +253,7 @@ export class AnnouncementsServer extends BaseAccessServer {
       // CRUD operations (new)
       {
         name: "create_announcement",
-        description: `Create a new ACCESS announcement (saved as draft for staff review).
+        description: `Create a new ACCESS announcement (saved as draft for staff review). Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change.
 
 BEFORE CALLING:
 1. Call get_announcement_context to check coordinator status.
@@ -259,19 +274,17 @@ If user pastes content (event description, draft text, etc.):
 3. Call suggest_tags with the body text — include returned tag names in the tags parameter
 4. Call suggest_summary with the body text if no summary provided
 5. Ask only about missing/unclear title, body or summary. Affiliation, where to share and affinity group are never missing: they have defaults the user can change in the preview. Affinity Group defaults to "None" unless the user named a group.
-6. Show preview (including tags, affiliation, and where it will be shared) and get confirmation
-7. Create the announcement with ALL fields including tags
+6. Call create_announcement with ALL fields including tags, without confirmed, and show the user the preview. Once they approve that exact preview, call again with the same arguments and confirmed: true.
 
 If user describes what they want conversationally:
 1. Call get_announcement_context
 2. Guide them through providing title, body, summary (not affiliation, sharing or affinity group, which have defaults the user changes in the preview; Affinity Group defaults to "None" unless they named a group)
 3. Call suggest_tags with the body text — include returned tag names in the tags parameter
-4. Show preview (including tags, affiliation, and where it will be shared) and get confirmation
-5. Create the announcement with ALL fields including tags
+4. Call create_announcement with ALL fields including tags, without confirmed, and show the user the preview. Once they approve that exact preview, call again with the same arguments and confirmed: true.
 
 IMPORTANT: Always pass the tags parameter when creating. Tags are english NAMES (strings) taken verbatim from the "name" field of suggest_tags — pass them as the tags array. Never pass ids or uuids; the tool resolves names internally.
 
-PREVIEW FORMAT (show before creating). It is Markdown, where single line breaks are joined, so keep each field a list item, put a blank line before and after the body, and never put a --- line directly under text (it turns that text into a heading):
+PREVIEW FORMAT. The call without confirmed returns the normalized fields that would be saved (defaults applied) under data; describe them to the user as Markdown, where single line breaks are joined, so keep each field a list item, put a blank line before and after the body, and never put a --- line directly under text (it turns that text into a heading):
 
 - **Title:** [title]
 - **Summary:** [summary]
@@ -287,12 +300,11 @@ PREVIEW FORMAT (show before creating). It is Markdown, where single line breaks 
 
 [body content as paragraphs, truncate if very long]
 
-After the preview, invite the user to change the affiliation or where it is shared right there, and ask "Does this look correct?" before creating. If the user asks for a change, show the updated preview and ask again. A bare change request still gets an updated preview and a new ask. A bare change request is not confirmation; create only after the user confirms the current preview. The exception: when one reply both requests a change and explicitly says to go ahead, create with that change applied, then tell the user what was saved. An explicit go-ahead is an explicit instruction to create in the same reply, such as "go ahead", "create it" or "post it". Approval words like "looks good" or "sounds good" next to a change are not a go-ahead; they get an updated preview.
+If the user asks for a change, call the tool again with the change applied, still without confirmed, to show a new preview. A bare change request is not approval, and neither are words like "looks good" next to a change; only approval of the current preview, after which you call again with the same arguments and confirmed: true.
 Publish date: leave published_date out unless the user asks for a specific publish date; it defaults to today. It is the date the announcement is dated, listed by (newest first) and picked up by the Bi-Weekly Digest, never the date of an event the announcement describes. A future publish date keeps the announcement out of the Bi-Weekly Digest until that date and pins it to the top of listings. A past publish date, before the current digest window, also keeps it out of the digest. When the preview shows any date other than today, tell the user this.
 Affiliation options: "ACCESS Collaboration" or "Community". Sharing options: "Announcements page" and "Bi-Weekly Digest" are open to everyone. "Affinity Group page" and "Email to Affinity Group" need an affinity group the user is allowed to post to (a coordinator of it, or an administrator or news manager, who can post to any group); the group is chosen in the preview too. get_announcement_context lists only the groups the user coordinates, so an administrator or news manager sees an empty list and names the group directly.
-Pass affiliation and where_to_share exactly as the confirmed preview showed them.
 
-Returns the write envelope {action:"create", status:"created", executed:true, data:{uuid, nid, title, edit_url, moderation_state}} (a "warning" is added when some tags could not be matched; if one is returned, tell the user which tags were skipped). Read "status" and "executed"; the created draft's fields are under "data".
+Without confirmed it returns {action:"create", status:"preview", executed:false, data:{title, summary, body, tags, affiliation, where_to_share, affinity_group, published_date, external_link}} and writes nothing. On commit it returns the write envelope {action:"create", status:"created", executed:true, data:{uuid, nid, title, edit_url, moderation_state}} (a "warning" is added when some tags could not be matched; if one is returned, tell the user which tags were skipped). Read "status" and "executed"; the created draft's fields are under "data".
 After creating, tell the user the title and status, and link data.edit_url as the place to review or edit the draft. Don't show the uuid, nid or other ids: they're for later tool calls, not for the user.`,
         inputSchema: {
           type: "object",
@@ -347,6 +359,11 @@ After creating, tell the user the title and status, and link data.edit_url as th
               description:
                 "Where to share the announcement. Omit for the defaults 'Announcements page' + 'Bi-Weekly Digest'; an empty array is rejected. 'Affinity Group page' and 'Email to Affinity Group' require affinity_group.",
             },
+            confirmed: {
+              type: "boolean",
+              description:
+                "Omit to preview. Set true only after the user has approved this exact preview.",
+            },
           },
           required: ["title", "body", "summary"],
         },
@@ -355,16 +372,16 @@ After creating, tell the user the title and status, and link data.edit_url as th
       },
       {
         name: "update_announcement",
-        description: `Update an existing announcement. User must own the announcement.
+        description: `Update an existing announcement. User must own the announcement. Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change.
 
 BEFORE CALLING:
 1. Use get_my_announcements to find the announcement UUID
 2. Confirm which fields the user wants to change
 3. Only include fields that are changing. To remove every tag, set clear_tags: true (not tags: []), only when the user asks to remove all tags, and say in the preview that all tags will be removed
-4. Show a preview of the changes and ask for confirmation before updating
+4. Call the tool without confirmed to show the preview of the changes (data.changes lists each changed field with its old and new value, or old_unavailable when the current value cannot be read). Show it to the user; once they approve that exact preview, call again with the same arguments and confirmed: true. A change request means a new preview
 5. Send at most one of affinity_group, add_affinity_group, remove_affinity_group or clear_affinity_groups. Drupal checks that the user may post to every group the announcement ends up with, hidden ones included; if it refuses with not_coordinator, show its message as is
 
-Returns the write envelope {action:"update", status:"updated", executed:true, data:{uuid, title, edit_url, review_required}}. Read "status" and "executed"; the updated fields are under "data". When data.review_required is true, the user may not publish and the announcement is published, so the edit was saved as a draft for review and the live announcement is unchanged. Never tell that user the change is live; tell them it is waiting for review. A "warning" carries that review notice and any tags that could not be matched; if one is returned, pass the review notice on and tell the user which tags were skipped.
+Without confirmed it returns {action:"update", status:"preview", executed:false, data:{uuid, title, changes}} and writes nothing. When data.no_changes is true the update would change nothing: tell the user so and do not ask them to confirm. On commit it returns the write envelope {action:"update", status:"updated", executed:true, data:{uuid, title, edit_url, review_required}}. Read "status" and "executed"; the updated fields are under "data". When data.review_required is true, the user may not publish and the announcement is published, so the edit was saved as a draft for review and the live announcement is unchanged. Never tell that user the change is live; tell them it is waiting for review. A "warning" carries that review notice and any tags that could not be matched; if one is returned, pass the review notice on and tell the user which tags were skipped.
 After updating, tell the user what changed and link data.edit_url as the place to review it. Don't show the uuid, nid or other ids.`,
         inputSchema: {
           type: "object",
@@ -442,6 +459,11 @@ After updating, tell the user what changed and link data.edit_url as the place t
               description:
                 "Where to share the announcement (only if changing). Replaces the whole set of sharing options, so list every option to keep. When get_my_announcements returns where_to_share for this announcement, the known labels in it can be reused, but values it shows as unknown are shown as is and cannot be sent back; they are rejected here. Show the user the full resulting list before updating; an empty array is rejected. 'Affinity Group page' and 'Email to Affinity Group' only take effect if the announcement has an affinity group; this tool does not check that.",
             },
+            confirmed: {
+              type: "boolean",
+              description:
+                "Omit to preview. Set true only after the user has approved this exact preview.",
+            },
           },
           required: ["uuid"],
         },
@@ -475,7 +497,7 @@ Returns the write envelope {action:"delete", status, executed, data}. "confirmed
             confirmed: {
               type: "boolean",
               description:
-                "Set to true only after user has explicitly confirmed deletion of THIS specific announcement. Required.",
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["uuid", "confirmed"],
@@ -1070,17 +1092,39 @@ Which would you like to do?`,
     // Sent explicitly so the saved value always matches what the preview showed.
     requestBody.field_choose_where_to_share_this = whereToShare;
 
+    const warning =
+      unmatchedTags.length > 0
+        ? `These tags were not found and were skipped: ${unmatchedTags.join(", ")}. Use suggest_tags to get valid tag names.`
+        : undefined;
+
+    // Preview unless STRICT confirmed === true: the fields below are the ones
+    // just built for the write, so the preview is exactly what would be saved.
+    if (args.confirmed !== true) {
+      return this.writeResponse({
+        action: "create",
+        status: "preview",
+        executed: false,
+        data: {
+          title: requestBody.title,
+          summary: bodyField.summary ?? null,
+          body: bodyField.value,
+          tags: args.tags ? args.tags.filter((t) => !unmatchedTags.includes(t)) : [],
+          affiliation: requestBody.field_affiliation,
+          where_to_share: this.whereToShareLabels(requestBody.field_choose_where_to_share_this as string[]),
+          affinity_group: args.affinity_group || "None",
+          published_date: requestBody.field_published_date,
+          external_link: requestBody.field_news_external_link ?? null,
+        },
+        ...(warning && { warning }),
+      });
+    }
+
     const result = await auth.post(actingUser, "/api/2.3/announcements", requestBody);
 
     // Controller returns a flat {success, uuid, nid, title, edit_url}.
     // Prefer the server-computed edit_url; fall back to building it from nid.
     const editUrl =
       result.edit_url ?? `${process.env.DRUPAL_API_URL}/node/${result.nid}/edit`;
-
-    const warning =
-      unmatchedTags.length > 0
-        ? `These tags were not found and were skipped: ${unmatchedTags.join(", ")}. Use suggest_tags to get valid tag names.`
-        : undefined;
 
     return this.writeResponse({
       action: "create",
@@ -1169,6 +1213,7 @@ Which would you like to do?`,
       }
     }
     let pendingRevisionNotice: string | undefined;
+    let currentItem: CurrentAnnouncementItem | undefined;
     const groupChanges = [
       args.affinity_group,
       args.add_affinity_group,
@@ -1198,10 +1243,7 @@ Which would you like to do?`,
       // ones the user may not view (title null), or the replace drops them.
       // The single-item read shows the newest revision, the one PATCH edits, and
       // answers 404 both for an unknown uuid and for one the user may not edit.
-      let item: {
-        affinity_groups?: { uuid: string; title: string | null }[];
-        has_pending_revision?: boolean;
-      };
+      let item: CurrentAnnouncementItem;
       try {
         item = await auth.get(actingUser, `/api/2.3/announcements/${encodeURIComponent(args.uuid)}`);
       } catch (error) {
@@ -1213,6 +1255,7 @@ Which would you like to do?`,
         }
         throw error;
       }
+      currentItem = item;
       // Without the current list, treating it as empty would drop every group.
       if (!Array.isArray(item.affinity_groups)) {
         return this.errorResponse(
@@ -1287,6 +1330,39 @@ Which would you like to do?`,
       throw new Error(
         "No fields to update. Provide at least one of title, body, summary, published_date, tags, clear_tags, affiliation, affinity_group, add_affinity_group, remove_affinity_group, clear_affinity_groups, external_link or where_to_share."
       );
+    }
+
+    // Preview unless STRICT confirmed === true. The changes are built from the
+    // same requestBody the PATCH would send.
+    if (args.confirmed !== true) {
+      let current: CurrentAnnouncementItem | undefined;
+      try {
+        current = currentItem ?? (await this.readCurrentAnnouncement(actingUser, args.uuid));
+      } catch (error) {
+        return this.errorResponse("Announcement not found, or not yours to edit.", {
+          hint: "Check the uuid via get_my_announcements.",
+          code: "not_found",
+        });
+      }
+      const unmatchedWarning =
+        unmatchedTags.length > 0
+          ? `These tags were not found and were skipped: ${unmatchedTags.join(", ")}. Use suggest_tags to get valid tag names.`
+          : undefined;
+      const warning = [pendingRevisionNotice, unmatchedWarning].filter(Boolean).join(" ") || undefined;
+      const changes = this.buildUpdateChanges(args, requestBody, current, unmatchedTags);
+      return this.writeResponse({
+        action: "update",
+        status: "preview",
+        executed: false,
+        data: {
+          uuid: args.uuid,
+          title: current?.title ?? args.title ?? null,
+          changes,
+          ...(changes.length === 0 && { no_changes: true }),
+          ...(!current && { detail_unavailable: true }),
+        },
+        ...(warning && { warning }),
+      });
     }
 
     const result = await auth.patch(
@@ -1755,6 +1831,91 @@ Which would you like to do?`,
       return normalized;
     });
     return [...new Set(mapped)];
+  }
+
+  /**
+   * Best-effort read of the current announcement so an update preview can show
+   * old values. A failed read degrades to undefined (rows then say
+   * old_unavailable) rather than failing the preview.
+   */
+  private async readCurrentAnnouncement(
+    actingUser: string,
+    uuid: string
+  ): Promise<CurrentAnnouncementItem | undefined> {
+    try {
+      const item = await this.getDrupalAuth().get(
+        actingUser,
+        `/api/2.3/announcements/${encodeURIComponent(uuid)}`
+      );
+      return item && typeof item === "object" ? (item as CurrentAnnouncementItem) : undefined;
+    } catch (error) {
+      // An unknown uuid, or one the user may not edit, is a real error.
+      if (error instanceof DrupalApiError && error.status === 404) throw error;
+      return undefined;
+    }
+  }
+
+  private whereToShareLabels(values: string[]): string[] {
+    return values.map((v) =>
+      Object.hasOwn(AnnouncementsServer.WHERE_TO_SHARE_LABEL_BY_VALUE, v)
+        ? AnnouncementsServer.WHERE_TO_SHARE_LABEL_BY_VALUE[v]
+        : v
+    );
+  }
+
+  /** One row per field in the PATCH body: old value (or old_unavailable) and new value. */
+  private buildUpdateChanges(
+    args: UpdateAnnouncementArgs,
+    requestBody: Record<string, unknown>,
+    current: CurrentAnnouncementItem | undefined,
+    unmatchedTags: string[]
+  ): Array<Record<string, unknown>> {
+    const rows: Array<Record<string, unknown>> = [];
+    const row = (field: string, newValue: unknown, oldValue: unknown) => {
+      if (oldValue === undefined) {
+        rows.push({ field, old_unavailable: true, new: newValue });
+      } else if (JSON.stringify(oldValue) !== JSON.stringify(newValue)) {
+        rows.push({ field, old: oldValue, new: newValue });
+      }
+    };
+    const body = requestBody.body as { value?: string; summary?: string } | undefined;
+
+    if ("title" in requestBody) row("title", requestBody.title, current?.title);
+    if (body?.value !== undefined) row("body", body.value, typeof current?.body === "string" ? current.body : undefined);
+    if (body?.summary !== undefined) row("summary", body.summary, current?.summary);
+    if ("field_published_date" in requestBody) {
+      row("published_date", requestBody.field_published_date, current?.published_date);
+    }
+    if ("field_affiliation" in requestBody) {
+      row("affiliation", requestBody.field_affiliation, current?.affiliation);
+    }
+    if ("field_tags" in requestBody) {
+      const newTags = args.clear_tags === true ? [] : (args.tags ?? []).filter((t) => !unmatchedTags.includes(t));
+      row("tags", newTags, current?.tags);
+    }
+    if ("field_affinity_group_node" in requestBody) {
+      const known = new Map<string, string>();
+      for (const g of current?.affinity_groups ?? []) {
+        known.set(g.uuid.toLowerCase(), g.title ?? g.uuid);
+      }
+      const named = args.affinity_group ?? args.add_affinity_group;
+      const uuids = requestBody.field_affinity_group_node as string[];
+      const newGroups = uuids.map((u) => known.get(u.toLowerCase()) ?? named ?? u);
+      const oldGroups = Array.isArray(current?.affinity_groups)
+        ? current.affinity_groups.map((g) => g.title ?? g.uuid)
+        : undefined;
+      row("affinity_groups", newGroups, oldGroups);
+    }
+    if ("field_news_external_link" in requestBody) {
+      row("external_link", requestBody.field_news_external_link, undefined);
+    }
+    if ("field_choose_where_to_share_this" in requestBody) {
+      const oldShare = Array.isArray(current?.where_to_share)
+        ? this.whereToShareLabels(current.where_to_share)
+        : undefined;
+      row("where_to_share", this.whereToShareLabels(requestBody.field_choose_where_to_share_this as string[]), oldShare);
+    }
+    return rows;
   }
 
   /**

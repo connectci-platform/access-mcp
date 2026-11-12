@@ -24,6 +24,10 @@ Report security vulnerabilities or incidents to the ACCESS cybersecurity team.
 
 Get information about available ticket types and their categories.
 
+### Previewing before filing
+
+The three ticket tools preview by default and file nothing. Call the tool without `confirmed` to show the user the ticket as it would be filed. Once the user approves that exact preview, call again with the same arguments and `confirmed: true` to file it. A preview returns `{action: "create_ticket", status: "preview", executed: false, data}` with the request type, summary, description (including any verification note), the email it would be filed under (`filed_as`), and the other fields the ticket carries. Dry-run mode applies to the confirmed call.
+
 ## Configuration
 
 ### Environment Variables
