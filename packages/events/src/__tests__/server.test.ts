@@ -4335,7 +4335,6 @@ describe("EventsServer", () => {
         event_type: "Training",
         tags: ["gpu", "hpc"],
       };
-      const seriesDetail = occurrenceDetail;
 
       // Upstream that serves reads only: any write verb is recorded and fails.
       // The state comes from the acting user's jsonapi view, matched on drupal_internal__id.

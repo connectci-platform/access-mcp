@@ -132,7 +132,8 @@ describe("ticket previews", () => {
     });
 
     it("returns the same error as the commit when the requester can't be determined", async () => {
-      const { user_email: _omit, ...noEmail } = CALLS[tool];
+      const noEmail: Record<string, unknown> = { ...CALLS[tool] };
+      delete noEmail.user_email;
       const preview = await call(tool, noEmail);
       expect(preview.isError).toBe(true);
       expect(post).not.toHaveBeenCalled();
