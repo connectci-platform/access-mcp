@@ -22,6 +22,11 @@ export interface UsageCall {
   success: boolean;
   durationMs: number;
   actingUser: string | undefined;
+  /**
+   * The acting user is only a header claim the server didn't verify (jsm's
+   * header path, D8-3069), so the call isn't counted as authenticated.
+   */
+  unverified?: boolean;
 }
 
 export interface UsageRow {
@@ -46,7 +51,7 @@ export function buildUsageRow(call: UsageCall): UsageRow {
     // (clock skew, hung call) must not poison the integer insert downstream.
     duration_ms: Number.isFinite(call.durationMs) ? Math.max(0, Math.round(call.durationMs)) : 0,
     user_hash: hashActor(call.actingUser),
-    was_authenticated: Boolean(call.actingUser),
+    was_authenticated: Boolean(call.actingUser) && !call.unverified,
     client: null, // future hook — not derivable at this seam today
   };
 }

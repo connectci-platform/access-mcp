@@ -54,6 +54,14 @@ describe("buildUsageRow", () => {
     expect(row.user_hash).toMatch(/^[0-9a-f]{16}$/);
   });
 
+  it("doesn't count an unverified header claim as authenticated (D8-3069)", () => {
+    const row = buildUsageRow({
+      server: "jsm", tool: "create_support_ticket", args: {}, success: true,
+      durationMs: 10, actingUser: "alice@access-ci.org", unverified: true,
+    });
+    expect(row.was_authenticated).toBe(false);
+  });
+
   it("marks anonymous with null hash when no acting user", () => {
     const row = buildUsageRow({
       server: "events", tool: "search_events", args: { q: "x" }, success: true,

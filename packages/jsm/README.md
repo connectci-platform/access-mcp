@@ -54,23 +54,28 @@ PORT=3012 MCP_API_KEY=your-secret npm start
 
 ### Agent Request Example
 
+A signed-in user's ticket is filed under the email and name on their verified
+acting-user token, so the agent sends that token and no contact details:
+
 ```bash
 curl -X POST http://localhost:3012/tools/create_support_ticket \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: your-secret" \
-  -H "X-Acting-User: jsmith@access-ci.org" \
+  -H "Authorization: Bearer <acting-user token from /api/token-exchange>" \
   -d '{
     "arguments": {
       "summary": "Cannot allocate GPUs on Delta",
       "description": "User is unable to submit GPU jobs. Getting error about quota exceeded.",
-      "user_email": "john.smith@university.edu",
-      "user_name": "John Smith",
-      "access_id": "jsmith",
       "category": "Allocation Question",
       "resource": "Delta"
     }
   }'
 ```
+
+Without a verified token (an anonymous user, or a signed-in user whose token
+exchange failed), pass `user_email` and, if known, `user_name`. The ticket's
+description then says the requester isn't verified. The result's `filed_as`
+is the email the ticket went to.
 
 ## Development
 

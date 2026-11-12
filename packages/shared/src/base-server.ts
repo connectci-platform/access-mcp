@@ -70,6 +70,11 @@ export interface RequestContext {
   actingUserAuth?: "token" | "header";
   /** The verified acting-user token, forwarded on server-to-server calls. */
   actingUserToken?: string;
+  /**
+   * The signed-in account's email and name from the verified token, when the
+   * portal included them. Only set when actingUserAuth is "token".
+   */
+  actingUserProfile?: { email?: string; name?: string };
   /** Unique request ID for tracing (from X-Request-ID header) */
   requestId?: string;
   /**
@@ -120,9 +125,17 @@ export interface BaseAccessServerOptions {
    * The server's tools act as the signed-in researcher (writes and user-scoped
    * reads), so /tools verifies the acting-user token the agent sends instead of
    * trusting X-Acting-User. See acting-user-token.ts and MCP_ACTING_USER_AUTH.
-   * Leave it off for servers that act on their own service account (jsm).
+   * Leave it off for servers that act only on their own service account.
    */
   actsForUsers?: boolean;
+  /**
+   * With actsForUsers in token mode, a call carrying X-Acting-User but no
+   * token is let through on the header path (actingUserAuth "header")
+   * instead of refused, so the tool can treat the ACCESS ID as an unconfirmed
+   * hint. For jsm (D8-3069): a ticket still gets filed, marked unverified,
+   * when the portal's token exchange is down.
+   */
+  headerOnlyIsUnverified?: boolean;
 }
 
 /** ACCESS_MCP_SERVICES names of the servers constructed with actsForUsers. */
@@ -130,10 +143,17 @@ export const ACTING_USER_SERVICES: ReadonlySet<string> = new Set([
   "events",
   "announcements",
   "allocations",
+  "jsm",
 ]);
 
 type ActingUserResolution =
-  | { ok: true; actingUser?: string; auth?: "token" | "header"; token?: string }
+  | {
+      ok: true;
+      actingUser?: string;
+      auth?: "token" | "header";
+      token?: string;
+      profile?: { email?: string; name?: string };
+    }
   | { ok: false; status: 401 | 503; error: string };
 
 export abstract class BaseAccessServer {
@@ -147,6 +167,7 @@ export abstract class BaseAccessServer {
   private _sseTransports: Map<string, SSEServerTransport> = new Map();
   private _requireApiKey: boolean;
   private _actsForUsers: boolean;
+  private _headerOnlyIsUnverified: boolean;
   private _actingUserConfig?: ActingUserTokenConfig;
   private _actingUserVerifier?: ActingUserTokenVerifier;
   private _nodeServer?: HttpServer;
@@ -160,6 +181,7 @@ export abstract class BaseAccessServer {
   ) {
     this._requireApiKey = options.requireApiKey ?? false;
     this._actsForUsers = options.actsForUsers ?? false;
+    this._headerOnlyIsUnverified = options.headerOnlyIsUnverified ?? false;
     // Note: Telemetry is initialized via --import flag in the Dockerfile
     // This ensures OpenTelemetry is set up BEFORE http modules are imported
     // See packages/shared/src/telemetry-bootstrap.ts
@@ -260,6 +282,9 @@ export abstract class BaseAccessServer {
         success: succeeded,
         durationMs: Date.now() - startedAt,
         actingUser: requestContextStorage.getStore()?.actingUser,
+        unverified:
+          this._headerOnlyIsUnverified &&
+          requestContextStorage.getStore()?.actingUserAuth === "header",
       });
     }
   }
@@ -835,6 +860,7 @@ export abstract class BaseAccessServer {
         actingUser: acting.actingUser,
         actingUserAuth: acting.auth,
         actingUserToken: acting.token,
+        actingUserProfile: acting.ok ? acting.profile : undefined,
         requestId: c.req.header("X-Request-ID"),
         includeStructuredContent: c.req.header("X-Include-Structured-Content") === "1",
       };
@@ -1130,7 +1156,7 @@ export abstract class BaseAccessServer {
         };
       }
       try {
-        const { sub } = await this._actingUserVerifier.verify(match[1]);
+        const { sub, email, name } = await this._actingUserVerifier.verify(match[1]);
         if (headerUser !== undefined && headerUser !== sub) {
           return {
             ok: false,
@@ -1138,7 +1164,13 @@ export abstract class BaseAccessServer {
             error: "X-Acting-User does not match the signed-in user.",
           };
         }
-        return { ok: true, actingUser: sub, auth: "token", token: match[1] };
+        return {
+          ok: true,
+          actingUser: sub,
+          auth: "token",
+          token: match[1],
+          profile: { ...(email && { email }), ...(name && { name }) },
+        };
       } catch (error) {
         if (error instanceof ActingUserTokenUnavailableError) {
           this.logger.error("Acting-user token keys unavailable", { reason: error.message });
@@ -1162,6 +1194,9 @@ export abstract class BaseAccessServer {
       return { ok: true };
     }
     if (config.mode === "token") {
+      if (this._headerOnlyIsUnverified) {
+        return { ok: true, actingUser: headerUser, auth: "header" };
+      }
       return {
         ok: false,
         status: 401,

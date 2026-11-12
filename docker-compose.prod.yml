@@ -332,6 +332,12 @@ services:
       - JSM_PROXY_URL=${JSM_PROXY_URL}
       - JSM_DRY_RUN=false
       - MCP_API_KEY=${MCP_API_KEY}
+      # Acting-user tokens (D8-2946). A signed-in user's ticket is filed under
+      # the email and name on the verified token (D8-3069).
+      - MCP_TOKEN_ISSUER=${MCP_TOKEN_ISSUER:-}
+      - MCP_TOKEN_KIDS=${MCP_TOKEN_KIDS:-}
+      - MCP_TOKEN_AUDIENCE=${MCP_TOKEN_AUDIENCE:-https://mcp.access-ci.org}
+      - MCP_ACTING_USER_AUTH=${MCP_ACTING_USER_AUTH:-either}
       - MCP_PATH_PREFIX=/jsm
       - MCP_USAGE_DB_URL=${MCP_USAGE_DB_URL:-postgresql://mcp_usage_app:mcpusage@mcp-usage-db:5432/mcp_usage}
     deploy:

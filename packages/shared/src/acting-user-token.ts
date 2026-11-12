@@ -115,7 +115,14 @@ export interface VerifiedActingUser {
   sub: string;
   jti: string;
   exp: number;
+  /** The account's email, when the portal put one on the token (D8-3069). */
+  email?: string;
+  /** The account's name, when the portal put one on the token (D8-3069). */
+  name?: string;
 }
+
+const profileClaim = (value: unknown): string | undefined =>
+  typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 
 export class ActingUserTokenVerifier {
   private readonly getKey: JWTVerifyGetKey;
@@ -226,6 +233,8 @@ export class ActingUserTokenVerifier {
     if (typeof sub !== "string" || !sub || typeof jti !== "string" || !jti) {
       throw new InvalidActingUserTokenError("sub and jti must be non-empty strings");
     }
-    return { sub, jti, exp: exp! };
+    const email = profileClaim(payload.email);
+    const name = profileClaim(payload.name);
+    return { sub, jti, exp: exp!, ...(email && { email }), ...(name && { name }) };
   }
 }

@@ -139,6 +139,19 @@ describe("ActingUserTokenVerifier", () => {
     expect(result.sub).toBe(SUB);
   });
 
+  it("returns the account's email and name when the token names them (D8-3069)", async () => {
+    const result = await verifier().verify(
+      await mcpToken({ email: " jane@example.edu ", name: "Jane Smith" })
+    );
+    expect(result).toMatchObject({ sub: SUB, email: "jane@example.edu", name: "Jane Smith" });
+  });
+
+  it("leaves out an email or name that isn't a non-empty string", async () => {
+    const result = await verifier().verify(await mcpToken({ email: 42, name: "  " }));
+    expect(result).not.toHaveProperty("email");
+    expect(result).not.toHaveProperty("name");
+  });
+
   const refused: Array<[string, () => Promise<string> | string]> = [
     ["the agent's own token (agent audience)", agentToken],
     ["an XDMoD token", () => mcpToken({ aud: XDMOD_AUD, scope: "xdmod:read" })],
@@ -224,8 +237,12 @@ describe("actingUserTokenConfigFromEnv", () => {
 // --- The /tools route on a server that acts for users -----------------------
 
 class ActingServer extends BaseAccessServer {
-  constructor(actsForUsers = true) {
-    super("acting-test", "1.0.0", "https://api.example.com", { requireApiKey: true, actsForUsers });
+  constructor(actsForUsers = true, headerOnlyIsUnverified = false) {
+    super("acting-test", "1.0.0", "https://api.example.com", {
+      requireApiKey: true,
+      actsForUsers,
+      headerOnlyIsUnverified,
+    });
   }
   protected getTools(): ToolWithAccess[] {
     const tools: ToolWithAccess[] = [
@@ -258,6 +275,8 @@ class ActingServer extends BaseAccessServer {
           text: JSON.stringify({
             actingUser: ctx?.actingUser ?? null,
             auth: ctx?.actingUserAuth ?? null,
+            ...(ctx?.actingUserProfile &&
+              Object.keys(ctx.actingUserProfile).length > 0 && { profile: ctx.actingUserProfile }),
           }),
         },
       ],
@@ -309,7 +328,8 @@ describe("/tools on a server that acts for users", () => {
   async function boot(
     env: Record<string, string | undefined> = {},
     actsForUsers = true,
-    onCreate?: (s: ActingServer) => void
+    onCreate?: (s: ActingServer) => void,
+    headerOnlyIsUnverified = false
   ) {
     Object.assign(process.env, {
       MCP_API_KEY: KEY,
@@ -322,7 +342,7 @@ describe("/tools on a server that acts for users", () => {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }
-    const s = new ActingServer(actsForUsers);
+    const s = new ActingServer(actsForUsers, headerOnlyIsUnverified);
     onCreate?.(s);
     await s.start({ httpPort: 0 });
     server = s;
@@ -363,6 +383,43 @@ describe("/tools on a server that acts for users", () => {
       path: "token",
       mutates: true,
     });
+  });
+
+  it("puts a verified token's email and name on the request context", async () => {
+    await boot();
+    const token = await mcpToken({ email: "jane@example.edu", name: "Jane Smith" });
+    const r = await call("register_for_thing", { authorization: `Bearer ${token}` });
+    expect(r.ran).toEqual({
+      actingUser: SUB,
+      auth: "token",
+      profile: { email: "jane@example.edu", name: "Jane Smith" },
+    });
+  });
+
+  it("in token mode, a header-only call runs on the header path when the server allows it", async () => {
+    const s = await boot({ MCP_ACTING_USER_AUTH: "token" }, true, undefined, true);
+    const warn = vi.spyOn(s.log, "warn");
+    const r = await call("register_for_thing", { "x-acting-user": SUB });
+    expect(r.status).toBe(200);
+    expect(r.ran).toEqual({ actingUser: SUB, auth: "header" });
+    // Counted per tool, like any header-path call, for the step 3 rollout.
+    expect(warn).toHaveBeenCalledWith("Acting user auth", {
+      tool: "register_for_thing",
+      path: "header",
+      mutates: true,
+    });
+  });
+
+  it("in token mode, a bad token is still refused when header-only calls are allowed", async () => {
+    await boot({ MCP_ACTING_USER_AUTH: "token" }, true, undefined, true);
+    const r = await call("register_for_thing", { authorization: "Bearer not-a-token" });
+    expect(r.status).toBe(401);
+  });
+
+  it("never takes an email or name from the header path", async () => {
+    await boot();
+    const r = await call("register_for_thing", { "x-acting-user": SUB });
+    expect(r.ran).toEqual({ actingUser: SUB, auth: "header" });
   });
 
   it("a token with a matching X-Acting-User succeeds", async () => {

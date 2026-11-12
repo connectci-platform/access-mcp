@@ -3,6 +3,7 @@ import {
   Resource,
   CallToolResult,
   callerSafeUpstreamError,
+  getRequestContext,
   handleApiError,
   logUpstreamFailure,
   type ToolWithAccess,
@@ -93,8 +94,8 @@ function isDryRunEnabled(): boolean {
 interface CreateSupportTicketArgs {
   summary: string;
   description: string;
-  user_email: string;
-  user_name: string;
+  user_email?: string;
+  user_name?: string;
   access_id?: string;
   category?: string;
   priority?: string;
@@ -105,8 +106,8 @@ interface CreateSupportTicketArgs {
 interface CreateLoginTicketArgs {
   summary: string;
   description: string;
-  user_email: string;
-  user_name: string;
+  user_email?: string;
+  user_name?: string;
   access_id?: string;
   login_type: "access_portal" | "resource_provider";
   identity_provider?: string;
@@ -118,8 +119,8 @@ interface CreateLoginTicketArgs {
 interface ReportSecurityIncidentArgs {
   summary: string;
   description: string;
-  user_email: string;
-  user_name: string;
+  user_email?: string;
+  user_name?: string;
   access_id?: string;
   priority?: string;
 }
@@ -163,7 +164,11 @@ export class JsmServer extends BaseAccessServer {
       "access-mcp-jsm",
       version,
       proxyUrl || "http://unconfigured",
-      { requireApiKey: true }
+      // Verifies the acting-user token, so a signed-in user's ticket is filed
+      // under the account the token names, not under the model's arguments.
+      // A call with only X-Acting-User (the token exchange failed) still files,
+      // marked unverified, rather than being refused.
+      { requireApiKey: true, actsForUsers: true, headerOnlyIsUnverified: true }
     );
     this.dryRun = dryRun;
 
@@ -207,15 +212,18 @@ export class JsmServer extends BaseAccessServer {
             },
             user_email: {
               type: "string",
-              description: "User's email address",
+              description:
+                "User's email address. Needed only when the user isn't signed in; a signed-in user's ticket uses their account's email.",
             },
             user_name: {
               type: "string",
-              description: "User's full name",
+              description:
+                "User's full name. Needed only when the user isn't signed in; a signed-in user's ticket uses their account's name.",
             },
             access_id: {
               type: "string",
-              description: "User's ACCESS ID (optional)",
+              description:
+                "User's ACCESS ID (optional). Ignored when the user is signed in, since the ticket uses their verified ACCESS ID.",
             },
             category: {
               type: "string",
@@ -238,7 +246,7 @@ export class JsmServer extends BaseAccessServer {
               description: "User's username at the resource (if applicable)",
             },
           },
-          required: ["summary", "description", "user_email", "user_name"],
+          required: ["summary", "description"],
         },
         access: "authenticated",
         mutates: true,
@@ -260,15 +268,18 @@ export class JsmServer extends BaseAccessServer {
             },
             user_email: {
               type: "string",
-              description: "User's email address",
+              description:
+                "User's email address. Needed only when the user isn't signed in; a signed-in user's ticket uses their account's email.",
             },
             user_name: {
               type: "string",
-              description: "User's full name",
+              description:
+                "User's full name. Needed only when the user isn't signed in; a signed-in user's ticket uses their account's name.",
             },
             access_id: {
               type: "string",
-              description: "User's ACCESS ID (optional)",
+              description:
+                "User's ACCESS ID (optional). Ignored when the user is signed in, since the ticket uses their verified ACCESS ID.",
             },
             login_type: {
               type: "string",
@@ -294,7 +305,7 @@ export class JsmServer extends BaseAccessServer {
               description: "Username at the resource provider",
             },
           },
-          required: ["summary", "description", "user_email", "user_name", "login_type"],
+          required: ["summary", "description", "login_type"],
         },
         access: "authenticated",
         mutates: true,
@@ -316,15 +327,18 @@ export class JsmServer extends BaseAccessServer {
             },
             user_email: {
               type: "string",
-              description: "User's email address",
+              description:
+                "User's email address. Needed only when the user isn't signed in; a signed-in user's ticket uses their account's email.",
             },
             user_name: {
               type: "string",
-              description: "User's full name",
+              description:
+                "User's full name. Needed only when the user isn't signed in; a signed-in user's ticket uses their account's name.",
             },
             access_id: {
               type: "string",
-              description: "User's ACCESS ID (optional)",
+              description:
+                "User's ACCESS ID (optional). Ignored when the user is signed in, since the ticket uses their verified ACCESS ID.",
             },
             priority: {
               type: "string",
@@ -333,7 +347,7 @@ export class JsmServer extends BaseAccessServer {
               description: "Severity of the security concern",
             },
           },
-          required: ["summary", "description", "user_email", "user_name"],
+          required: ["summary", "description"],
         },
         access: "authenticated",
         mutates: true,
@@ -391,29 +405,104 @@ export class JsmServer extends BaseAccessServer {
     }
   }
 
+  /**
+   * Who the ticket is from (D8-3069). A signed-in user's ticket takes their
+   * ACCESS ID, email and name from the verified token, whatever the model
+   * passed. Anyone else's keeps what was given in chat, and the description
+   * says it isn't verified.
+   */
+  private requester(
+    args: { user_email?: string; user_name?: string; access_id?: string },
+    description: string
+  ):
+    | { ok: true; email: string; name: string; accessId?: string; description: string }
+    | { ok: false; error: string } {
+    const given = (value: string | undefined) => value?.trim() || undefined;
+    const bareAccessId = (value: string) => value.replace(/@access-ci\.org$/i, "");
+    const context = getRequestContext();
+    if (context?.actingUserAuth === "token" && context.actingUser) {
+      const accessId = bareAccessId(context.actingUser);
+      const verified = context.actingUserProfile ?? {};
+      const email = verified.email ?? given(args.user_email);
+      if (!email) {
+        return {
+          ok: false,
+          error:
+            "The user's sign-in didn't include an email. Ask them for the email to reply to, then try again.",
+        };
+      }
+      const note = verified.email
+        ? ""
+        : `\n\nFiled through the ACCESS Assistant by signed-in ACCESS user ${accessId}. ` +
+          "Their sign-in didn't include an email, so the email was given in chat and isn't verified.";
+      return {
+        ok: true,
+        email,
+        // Never a name from chat next to a verified email: the ACCESS ID instead.
+        name: verified.name ?? accessId,
+        accessId,
+        description: description + note,
+      };
+    }
+
+    // The header path: the caller named an ACCESS ID in X-Acting-User but sent
+    // no verified token. That is only a claim, so it goes in the description,
+    // never in the accessId field staff and reports treat as identity.
+    const claimed =
+      context?.actingUserAuth === "header" && context.actingUser
+        ? bareAccessId(context.actingUser)
+        : undefined;
+    const email = given(args.user_email);
+    if (!email) {
+      return {
+        ok: false,
+        error: claimed
+          ? "The user's sign-in couldn't be confirmed, so ask them for the email to reply to, then try again."
+          : "The user isn't signed in, so ask for their email (and their name, if they'll give it) before filing the ticket.",
+      };
+    }
+    const name = given(args.user_name);
+    const typedId = given(args.access_id);
+    const fromChat = name ? "The name and email were" : "The email was";
+    return {
+      ok: true,
+      email,
+      // Blank, as the public ticket form sends it, rather than a placeholder
+      // that could become the customer's name in JSM.
+      name: name ?? "",
+      accessId: claimed ? undefined : typedId && bareAccessId(typedId),
+      description:
+        description +
+        (claimed
+          ? `\n\nFiled through the ACCESS Assistant, which named ACCESS user ${claimed}. ` +
+            `This wasn't verified: their sign-in couldn't be confirmed. ${fromChat} given in chat.`
+          : "\n\nFiled through the ACCESS Assistant by someone who wasn't signed in. " +
+            "The name, email and ACCESS ID were given in chat and aren't verified."),
+    };
+  }
+
   private async createSupportTicket(args: CreateSupportTicketArgs): Promise<CallToolResult> {
     const {
       summary,
       description,
-      user_email,
-      user_name,
-      access_id,
       category,
       priority = "medium",
       resource,
       user_id_at_resource,
     } = args;
+    const from = this.requester(args, description);
+    if (!from.ok) return this.errorResponse(from.error);
 
     const requestBody: TicketRequestBody = {
       serviceDeskId: SERVICE_DESK.SUPPORT,
       requestTypeId: REQUEST_TYPE.GENERAL_SUPPORT,
       requestFieldValues: {
-        email: user_email,
-        name: user_name,
+        email: from.email,
+        name: from.name,
         summary,
-        description,
+        description: from.description,
         priority,
-        ...(access_id && { accessId: access_id }),
+        ...(from.accessId && { accessId: from.accessId }),
         ...(category && { issueType: category }),
         ...(resource && {
           hasResourceProblem: "Yes",
@@ -431,15 +520,15 @@ export class JsmServer extends BaseAccessServer {
     const {
       summary,
       description,
-      user_email,
-      user_name,
-      access_id,
       login_type,
       identity_provider,
       browser,
       resource,
       user_id_at_resource,
     } = args;
+
+    const from = this.requester(args, description);
+    if (!from.ok) return this.errorResponse(from.error);
 
     const isAccessPortal = login_type === "access_portal";
     const requestTypeId = isAccessPortal
@@ -450,11 +539,11 @@ export class JsmServer extends BaseAccessServer {
       serviceDeskId: SERVICE_DESK.SUPPORT,
       requestTypeId,
       requestFieldValues: {
-        email: user_email,
-        name: user_name,
+        email: from.email,
+        name: from.name,
         summary,
-        description,
-        ...(access_id && { accessId: access_id }),
+        description: from.description,
+        ...(from.accessId && { accessId: from.accessId }),
         // ACCESS portal login fields
         ...(isAccessPortal && identity_provider && { identityProvider: identity_provider }),
         ...(isAccessPortal && browser && { browser }),
@@ -471,22 +560,21 @@ export class JsmServer extends BaseAccessServer {
     const {
       summary,
       description,
-      user_email,
-      user_name,
-      access_id,
       priority = "medium",
     } = args;
+    const from = this.requester(args, description);
+    if (!from.ok) return this.errorResponse(from.error);
 
     const requestBody: TicketRequestBody = {
       serviceDeskId: SERVICE_DESK.SECURITY,
       requestTypeId: REQUEST_TYPE.SECURITY_INCIDENT,
       requestFieldValues: {
-        email: user_email,
-        name: user_name,
+        email: from.email,
+        name: from.name,
         summary,
-        description,
+        description: from.description,
         priority,
-        ...(access_id && { accessId: access_id }),
+        ...(from.accessId && { accessId: from.accessId }),
       },
     };
 
@@ -516,6 +604,7 @@ export class JsmServer extends BaseAccessServer {
               success: true,
               ticket_key: key,
               ticket_url: null,
+              filed_as: body.requestFieldValues.email,
               message: `[DRY RUN] Ticket not created. Would have submitted: ${summary}`,
             }),
           },
@@ -572,6 +661,7 @@ export class JsmServer extends BaseAccessServer {
             success: true,
             ticket_key: data.data.ticketKey,
             ticket_url: data.data.ticketUrl,
+            filed_as: body.requestFieldValues.email,
             message: `Ticket ${data.data.ticketKey} created successfully`,
           }),
         },
