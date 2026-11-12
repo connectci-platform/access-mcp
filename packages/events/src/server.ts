@@ -1915,8 +1915,9 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
    * it) is it tried as an instance id and followed to that instance's series.
    * Reads the acting user's event_instance_mine jsonapi data; the series
    * reference is relationships.eventseries_id.data.meta.drupal_internal__target_id.
-   * GET /api/2.3/events/{id} is NOT used here: it is instance-first, the
-   * opposite of the commit. Returns {} (detail_unavailable) when nothing matches or
+   * GET /api/2.3/events/{id} is never used with the caller's id (it is
+   * instance-first, the opposite of the commit); it is read only with the id of
+   * one of the resolved series' own instances. Returns {} (detail_unavailable) when nothing matches or
    * the read fails.
    */
   private async loadCurrentSeries(
@@ -1953,8 +1954,28 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
     const starts = matches.map((m) => isoInstantUtc(range(m.attributes ?? {})?.value)).filter(Boolean).sort();
     const ends = matches.map((m) => isoInstantUtc(range(m.attributes ?? {})?.end_value)).filter(Boolean).sort();
     const state = first.moderation_state;
+    // The series is resolved, so one of its own instances can supply the
+    // detail fields (location, tags, speakers, ...). Used only when its
+    // series_id agrees with the resolved series; otherwise rows stay unavailable.
+    let extra: Record<string, unknown> = {};
+    const instanceId = first.drupal_internal__id;
+    if (instanceId !== undefined && instanceId !== null) {
+      try {
+        const { status, data } = await this.getDrupalAuth().requestRaw(
+          this.getActingUserAccessId(),
+          "GET",
+          `/api/2.3/events/${encodeURIComponent(String(instanceId))}`
+        );
+        if (status >= 200 && status < 300 && data && String((data as Record<string, unknown>).series_id) === seriesId) {
+          extra = data as Record<string, unknown>;
+        }
+      } catch {
+        // keep the rows old_unavailable
+      }
+    }
     return {
       detail: {
+        ...extra,
         title: first.title,
         series_id: seriesId,
         start_date: starts[0],

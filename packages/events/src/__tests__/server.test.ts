@@ -4372,19 +4372,20 @@ describe("EventsServer", () => {
             ? { eventseries_id: { data: { type: "eventseries--x", id: "series-uuid" } } }
             : { eventseries_id: { data: { type: "eventseries--x", id: "series-uuid", meta: { drupal_internal__target_id: seriesId } } } },
       });
-      const seriesUpstream = (items: unknown[]) => {
+      // detailFor(instanceId) answers GET /api/2.3/events/{instanceId}; the default is a 404.
+      const seriesUpstream = (items: unknown[], detailFor?: (instanceId: string) => Record<string, unknown> | undefined) => {
         mockGet.mockReset();
         mockGet.mockResolvedValue({ data: items });
         mockRequestRaw.mockReset();
-        mockRequestRaw.mockImplementation(async (_u: string, method: string) =>
-          method === "GET"
-            ? { status: 500, data: { error: "events_get_must_not_be_used" } }
-            : { status: 500, data: { error: "should_not_write" } }
-        );
+        mockRequestRaw.mockImplementation(async (_u: string, method: string, path: string) => {
+          if (method !== "GET") return { status: 500, data: { error: "should_not_write" } };
+          const detail = detailFor?.(path.split("/").pop()!);
+          return detail ? { status: 200, data: detail } : { status: 404, data: { error: "not_found" } };
+        });
       };
       const seriesPreview = async (name: string, args: Record<string, unknown>) => {
         const result = await call(name, args);
-        expect(mockRequestRaw).not.toHaveBeenCalled();
+        expect(writes()).toHaveLength(0);
         return parse(result).data;
       };
 
@@ -4471,6 +4472,31 @@ describe("EventsServer", () => {
         const date = { value: "2026-09-10T14:00:00", end_value: "2026-09-10T15:00:00" };
         const data = await seriesPreview("add_occurrence", { eventseries_id: "42", date });
         expect(data).toMatchObject({ series_id: "42", title: "OnDemand Call", current_state: "published", new_occurrence: date });
+      });
+
+      it("update_event shows old values from an instance of the resolved series, and only that instance's id is read", async () => {
+        seriesUpstream([instanceItem(900, 7, "draft", "Other"), instanceItem(5, 42)], (id) =>
+          id === "5" ? { series_id: "42", title: "OnDemand Call", location: "Room 1", tags: ["gpu", "hpc"], speakers: "Ada" } : undefined
+        );
+        const data = await seriesPreview("update_event", {
+          eventseries_id: "42",
+          title: "New Title",
+          field_location: "Room 9",
+          field_tags: ["gpu", "hpc"],
+          field_event_speakers: "Ada",
+        });
+        expect(data.changes).toEqual([
+          { field: "title", old: "OnDemand Call", new: "New Title" },
+          { field: "field_location", old: "Room 1", new: "Room 9" },
+        ]);
+        expect(mockRequestRaw.mock.calls.map((c) => c[2])).toEqual(["/api/2.3/events/5"]);
+      });
+
+      it("update_event keeps rows old_unavailable when the instance detail names another series", async () => {
+        seriesUpstream([instanceItem(5, 42)], () => ({ series_id: "99", title: "Wrong", location: "Elsewhere" }));
+        const data = await seriesPreview("update_event", { eventseries_id: "42", field_location: "Room 9" });
+        expect(data.changes).toEqual([{ field: "field_location", old_unavailable: true, new: "Room 9" }]);
+        expect(data.series_id).toBe("42");
       });
 
       it("series id wins over an unrelated instance with the same id (collision)", async () => {
