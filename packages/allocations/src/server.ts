@@ -643,7 +643,7 @@ export class AllocationsServer extends BaseAccessServer {
         name: "get_rp_account",
         mutates: false,
         description:
-          "Get the authenticated user's account and live balance on ONE resource provider (RP). Returns the RP display name, the user's rp_username, and their grants with current balances and units. Pass resource_id (ACCESS Global Resource ID, e.g. delta-gpu.ncsa.access-ci.org) — get it from get_my_rp_accounts (which lists the resources the user actually has), or from search_resources for an arbitrary resource. Use this for a fresh balance on a specific RP; use get_my_rp_accounts to see all accounts at once. Scoped to the authenticated acting user. Read-only.",
+          "Get the authenticated user's account and live balance on ONE resource provider (RP). Returns the RP display name, the user's rp_username, and their grants with current balances and units. rp_username is the login the resource issued; null means no login is on file for that resource, so do not substitute the user's ACCESS username. Pass resource_id (ACCESS Global Resource ID, e.g. delta-gpu.ncsa.access-ci.org) — get it from get_my_rp_accounts (which lists the resources the user actually has), or from search_resources for an arbitrary resource. Use this for a fresh balance on a specific RP; use get_my_rp_accounts to see all accounts at once. Scoped to the authenticated acting user. Read-only.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -677,7 +677,7 @@ export class AllocationsServer extends BaseAccessServer {
         name: "get_my_rp_accounts",
         mutates: false,
         description:
-          "List all resource-provider (RP) accounts for the authenticated user — every resource they have an allocation on, with cached balances. Returns one entry per RP: the resource_id (ACCESS Global Resource ID, e.g. delta-gpu.ncsa.access-ci.org), rp_display_name, rp_username, account state, and grants with balances and units. Start here to discover which resources the user has; then call get_rp_account with a resource_id for a live, up-to-the-minute balance on one of them. Balances here reflect the last sync (synced_at); a first-time query may return state \"syncing\" — ask again in a few seconds. Scoped to the authenticated acting user. Read-only.",
+          "List all resource-provider (RP) accounts for the authenticated user — every resource they have an allocation on, with cached balances. Returns one entry per RP: the resource_id (ACCESS Global Resource ID, e.g. delta-gpu.ncsa.access-ci.org), rp_display_name, rp_username, account state, and grants with balances and units. rp_username is the login the resource issued; null means no login is on file for that resource, so do not substitute the user's ACCESS username. Start here to discover which resources the user has; then call get_rp_account with a resource_id for a live, up-to-the-minute balance on one of them. Balances here reflect the last sync (synced_at); a first-time query may return state \"syncing\" — ask again in a few seconds. Scoped to the authenticated acting user. Read-only.",
         inputSchema: { type: "object" as const, properties: {}, required: [] },
         access: "authenticated",
       },

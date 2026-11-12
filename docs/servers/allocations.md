@@ -89,7 +89,7 @@ Get aggregate statistics (top fields of science, resources, institutions, and al
 
 ### `get_my_rp_accounts`
 
-List all resource-provider (RP) accounts for the **authenticated user** — every resource they have an allocation on, with cached balances. Returns one entry per RP: the `resource_id` (ACCESS Global Resource ID, e.g. `delta.ncsa.access-ci.org`), `rp_display_name`, `rp_username`, account state, and grants with balances and units. Start here to discover which resources the user has, then call `get_rp_account` for a live balance on one of them. Read-only.
+List all resource-provider (RP) accounts for the **authenticated user** — every resource they have an allocation on, with cached balances. Returns one entry per RP: the `resource_id` (ACCESS Global Resource ID, e.g. `delta.ncsa.access-ci.org`), `rp_display_name`, `rp_username`, account state, and grants with balances and units. `rp_username` is the login the resource issued; `null` means no login is on file for that resource, so do not substitute the user's ACCESS username. Start here to discover which resources the user has, then call `get_rp_account` for a live balance on one of them. Read-only.
 
 Requires authentication: the acting user is resolved from the `X-Acting-User` header (set by an authenticated MCP connector). Balances reflect the last sync (`synced_at`); a first-time query may return `state: "syncing"` — ask again in a few seconds.
 
@@ -103,7 +103,7 @@ get_my_rp_accounts({})
 
 ### `get_rp_account`
 
-Get the **authenticated user's** account and live balance on ONE resource provider (RP). Returns the RP display name, the user's `rp_username`, and their grants with current balances and units. Read-only, scoped to the acting user.
+Get the **authenticated user's** account and live balance on ONE resource provider (RP). Returns the RP display name, the user's `rp_username`, and their grants with current balances and units. `rp_username` is the login the resource issued; `null` means no login is on file for that resource, so do not substitute the user's ACCESS username. Read-only, scoped to the acting user.
 
 **Parameters:**
 | Parameter | Type | Description |
