@@ -112,6 +112,7 @@ interface UpdateAnnouncementArgs {
 // Keys the single-announcement and /mine reads are shown to return.
 interface CurrentAnnouncementItem {
   title?: string;
+  body?: string;
   summary?: string;
   published_date?: string | null;
   tags?: string[];
@@ -361,7 +362,7 @@ After creating, tell the user the title and status, and link data.edit_url as th
             confirmed: {
               type: "boolean",
               description:
-                "Leave unset to get a preview that changes nothing. Set to true only to make the change, after the user has confirmed it.",
+                "Set only by the Confirm button; never set it yourself.",
             },
           },
           required: ["title", "body", "summary"],
@@ -380,7 +381,7 @@ BEFORE CALLING:
 4. Call the tool without confirmed to show the preview of the changes (data.changes lists each changed field with its old and new value, or old_unavailable when the current value cannot be read). The user confirms with the Confirm button; never pass confirmed yourself
 5. Send at most one of affinity_group, add_affinity_group, remove_affinity_group or clear_affinity_groups. Drupal checks that the user may post to every group the announcement ends up with, hidden ones included; if it refuses with not_coordinator, show its message as is
 
-Without confirmed it returns {action:"update", status:"preview", executed:false, data:{uuid, title, changes}} and writes nothing. On commit it returns the write envelope {action:"update", status:"updated", executed:true, data:{uuid, title, edit_url, review_required}}. Read "status" and "executed"; the updated fields are under "data". When data.review_required is true, the user may not publish and the announcement is published, so the edit was saved as a draft for review and the live announcement is unchanged. Never tell that user the change is live; tell them it is waiting for review. A "warning" carries that review notice and any tags that could not be matched; if one is returned, pass the review notice on and tell the user which tags were skipped.
+Without confirmed it returns {action:"update", status:"preview", executed:false, data:{uuid, title, changes}} and writes nothing. When data.no_changes is true the update would change nothing: tell the user so and do not ask them to confirm. On commit it returns the write envelope {action:"update", status:"updated", executed:true, data:{uuid, title, edit_url, review_required}}. Read "status" and "executed"; the updated fields are under "data". When data.review_required is true, the user may not publish and the announcement is published, so the edit was saved as a draft for review and the live announcement is unchanged. Never tell that user the change is live; tell them it is waiting for review. A "warning" carries that review notice and any tags that could not be matched; if one is returned, pass the review notice on and tell the user which tags were skipped.
 After updating, tell the user what changed and link data.edit_url as the place to review it. Don't show the uuid, nid or other ids.`,
         inputSchema: {
           type: "object",
@@ -461,7 +462,7 @@ After updating, tell the user what changed and link data.edit_url as the place t
             confirmed: {
               type: "boolean",
               description:
-                "Leave unset to get a preview that changes nothing. Set to true only to make the change, after the user has confirmed it.",
+                "Set only by the Confirm button; never set it yourself.",
             },
           },
           required: ["uuid"],
@@ -496,7 +497,7 @@ Returns the write envelope {action:"delete", status, executed, data}. "confirmed
             confirmed: {
               type: "boolean",
               description:
-                "Set to true only after user has explicitly confirmed deletion of THIS specific announcement. Required.",
+                "Set only by the Confirm button; never set it yourself.",
             },
           },
           required: ["uuid", "confirmed"],
@@ -1105,12 +1106,12 @@ Which would you like to do?`,
         executed: false,
         data: {
           title: requestBody.title,
-          summary: args.summary ?? null,
-          body: args.body,
+          summary: bodyField.summary ?? null,
+          body: bodyField.value,
           tags: args.tags ? args.tags.filter((t) => !unmatchedTags.includes(t)) : [],
-          affiliation,
-          where_to_share: this.whereToShareLabels(whereToShare),
-          affinity_group: args.affinity_group ?? "None",
+          affiliation: requestBody.field_affiliation,
+          where_to_share: this.whereToShareLabels(requestBody.field_choose_where_to_share_this as string[]),
+          affinity_group: args.affinity_group || "None",
           published_date: requestBody.field_published_date,
           external_link: requestBody.field_news_external_link ?? null,
         },
@@ -1334,7 +1335,15 @@ Which would you like to do?`,
     // Preview unless STRICT confirmed === true. The changes are built from the
     // same requestBody the PATCH would send.
     if (args.confirmed !== true) {
-      const current = currentItem ?? (await this.readCurrentAnnouncement(actingUser, args.uuid));
+      let current: CurrentAnnouncementItem | undefined;
+      try {
+        current = currentItem ?? (await this.readCurrentAnnouncement(actingUser, args.uuid));
+      } catch (error) {
+        return this.errorResponse("Announcement not found, or not yours to edit.", {
+          hint: "Check the uuid via get_my_announcements.",
+          code: "not_found",
+        });
+      }
       const unmatchedWarning =
         unmatchedTags.length > 0
           ? `These tags were not found and were skipped: ${unmatchedTags.join(", ")}. Use suggest_tags to get valid tag names.`
@@ -1345,7 +1354,12 @@ Which would you like to do?`,
         action: "update",
         status: "preview",
         executed: false,
-        data: { uuid: args.uuid, title: current?.title ?? args.title ?? null, changes },
+        data: {
+          uuid: args.uuid,
+          title: current?.title ?? args.title ?? null,
+          changes,
+          ...(changes.length === 0 && { no_changes: true }),
+        },
         ...(warning && { warning }),
       });
     }
@@ -1833,7 +1847,9 @@ Which would you like to do?`,
         `/api/2.3/announcements/${encodeURIComponent(uuid)}`
       );
       return item && typeof item === "object" ? (item as CurrentAnnouncementItem) : undefined;
-    } catch {
+    } catch (error) {
+      // An unknown uuid, or one the user may not edit, is a real error.
+      if (error instanceof DrupalApiError && error.status === 404) throw error;
       return undefined;
     }
   }
@@ -1864,7 +1880,7 @@ Which would you like to do?`,
     const body = requestBody.body as { value?: string; summary?: string } | undefined;
 
     if ("title" in requestBody) row("title", requestBody.title, current?.title);
-    if (body?.value !== undefined) row("body", body.value, undefined);
+    if (body?.value !== undefined) row("body", body.value, typeof current?.body === "string" ? current.body : undefined);
     if (body?.summary !== undefined) row("summary", body.summary, current?.summary);
     if ("field_published_date" in requestBody) {
       row("published_date", requestBody.field_published_date, current?.published_date);

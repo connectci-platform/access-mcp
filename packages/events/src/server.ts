@@ -454,7 +454,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Omit or false for a no-write preview (status:\"preview\", executed:false — seat vs. waitlist); true to actually register (status:\"registered\"/\"waitlisted\", executed:true).",
+                "Set only by the Confirm button; never set it yourself.",
             },
           },
           required: ["eventinstance_id"],
@@ -476,7 +476,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Set to true only after the user has explicitly confirmed cancellation of THIS specific registration. Required.",
+                "Set only by the Confirm button; never set it yourself.",
             },
           },
           required: ["registrant_id", "confirmed"],
@@ -629,7 +629,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Omit or false for a no-write PREVIEW of the occurrence dates this recurrence would produce (status:\"preview\", executed:false, with occurrence_count/total_occurrence_count/truncated/occurrences); true to actually create the series.",
+                "Set only by the Confirm button; never set it yourself.",
             },
           },
           required: ["title", "field_event_type", "field_location"],
@@ -651,7 +651,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Leave unset to get a preview that changes nothing. Set to true only to make the change, after the user has confirmed it.",
+                "Set only by the Confirm button; never set it yourself.",
             },
             title: { type: "string" },
             body: { type: "string" },
@@ -699,7 +699,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             },
             confirmed: {
               type: "boolean",
-              description: "Omit or false for a no-write preview; true to execute the cancel/delete.",
+              description: "Set only by the Confirm button; never set it yourself.",
             },
           },
           required: ["eventseries_id"],
@@ -721,7 +721,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Leave unset to get a preview that changes nothing. Set to true only to make the change, after the user has confirmed it.",
+                "Set only by the Confirm button; never set it yourself.",
             },
           },
           required: ["eventseries_id"],
@@ -743,7 +743,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Leave unset to get a preview that changes nothing. Set to true only to make the change, after the user has confirmed it.",
+                "Set only by the Confirm button; never set it yourself.",
             },
           },
           required: ["eventseries_id"],
@@ -764,7 +764,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             },
             confirmed: {
               type: "boolean",
-              description: "Omit or false for a no-write preview; true to execute the cancel.",
+              description: "Set only by the Confirm button; never set it yourself.",
             },
           },
           required: ["eventinstance_id"],
@@ -786,7 +786,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Leave unset to get a preview that changes nothing. Set to true only to make the change, after the user has confirmed it.",
+                "Set only by the Confirm button; never set it yourself.",
             },
           },
           required: ["eventinstance_id"],
@@ -808,7 +808,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Leave unset to get a preview that changes nothing. Set to true only to make the change, after the user has confirmed it.",
+                "Set only by the Confirm button; never set it yourself.",
             },
             date: {
               type: "object",
@@ -842,7 +842,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Leave unset to get a preview that changes nothing. Set to true only to make the change, after the user has confirmed it.",
+                "Set only by the Confirm button; never set it yourself.",
             },
             date: {
               type: "object",

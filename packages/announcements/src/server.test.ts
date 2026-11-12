@@ -1988,6 +1988,7 @@ describe("AnnouncementsServer", () => {
             if (url === "/api/2.3/announcements/u-1") {
               return {
                 title: "Old title",
+                body: "<p>old</p>",
                 summary: "Old summary",
                 tags: ["gpu"],
                 published_date: "2026-01-01",
@@ -2022,10 +2023,67 @@ describe("AnnouncementsServer", () => {
           expect(data).toMatchObject({ action: "update", status: "preview", executed: false });
           expect(data.data.changes).toEqual([
             { field: "title", old: "Old title", new: "New title" },
-            { field: "body", old_unavailable: true, new: "<p>x</p>" },
+            { field: "body", old: "<p>old</p>", new: "<p>x</p>" },
           ]);
           expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
           expect(mockDrupalAuth.post).not.toHaveBeenCalled();
+        });
+
+        it("update marks body old_unavailable when the item has no body key", async () => {
+          mockDrupalAuth.get.mockResolvedValue({ title: "Old title" });
+          const data = parse(await raw("update_announcement", { uuid: "u-1", body: "<p>x</p>" }));
+          expect(data.data.changes).toEqual([{ field: "body", old_unavailable: true, new: "<p>x</p>" }]);
+        });
+
+        it("update preview returns not_found for a uuid the read answers 404", async () => {
+          mockDrupalAuth.get.mockRejectedValue(new DrupalApiError("Drupal API error: 404 Not Found", 404, {}));
+          const data = parse(await raw("update_announcement", { uuid: "nope", title: "X" }));
+          expect(data.error.code).toBe("not_found");
+          expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
+        });
+
+        it("update preview that changes nothing says so", async () => {
+          const data = parse(await raw("update_announcement", { uuid: "u-1", title: "Old title" }));
+          expect(data.status).toBe("preview");
+          expect(data.data.changes).toEqual([]);
+          expect(data.data.no_changes).toBe(true);
+          expect(toolByName("update_announcement").description).toContain("no_changes");
+        });
+
+        it("create preview data equals the fields the confirmed call POSTs", async () => {
+          mockDrupalAuth.post.mockResolvedValue({ success: true, uuid: "n", nid: 1, title: "T" });
+          const args = { title: "T", body: "<p>B</p>", summary: "S", external_link: { uri: "https://x.org", title: "X" } };
+          const preview = parse(await raw("create_announcement", args)).data;
+          await raw("create_announcement", { ...args, confirmed: true });
+          const [, , posted] = mockDrupalAuth.post.mock.calls[0];
+          expect(preview).toEqual({
+            title: posted.title,
+            summary: posted.body.summary,
+            body: posted.body.value,
+            tags: [],
+            affiliation: posted.field_affiliation,
+            where_to_share: ["Announcements page", "Bi-Weekly Digest"],
+            affinity_group: "None",
+            published_date: posted.field_published_date,
+            external_link: posted.field_news_external_link,
+          });
+        });
+
+        it("update preview for remove_affinity_group shows group names and reads the item once", async () => {
+          mockDrupalAuth.get.mockResolvedValue({
+            title: "Workshop",
+            affinity_groups: [
+              { uuid: "11111111-1111-4111-8111-111111111111", title: "R for HPC" },
+              { uuid: "aaaaaaaa-2222-4222-8222-22222222bbbb", title: "RMACC" },
+            ],
+          });
+          const data = parse(await raw("update_announcement", { uuid: "u-1", remove_affinity_group: "rmacc" }));
+          expect(data.status).toBe("preview");
+          expect(data.data.changes).toEqual([
+            { field: "affinity_groups", old: ["R for HPC", "RMACC"], new: ["R for HPC"] },
+          ]);
+          expect(mockDrupalAuth.get).toHaveBeenCalledTimes(1);
+          expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
         });
 
         it("update marks old values unavailable when the read fails", async () => {
