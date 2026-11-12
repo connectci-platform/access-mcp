@@ -3208,7 +3208,8 @@ describe("EventsServer", () => {
       it("edit_occurrence teaches the live-reschedule story, contrasts the postpone-with-a-gap story, and notes there is no whole-schedule rebuild", () => {
         const doc = toolDoc("edit_occurrence");
         expect(doc).toContain("cancel_occurrence");
-        expect(doc).toContain("registrants_to_notify");
+        expect(doc).toContain("registrants_affected");
+        expect(doc).not.toContain("registrants_to_notify");
         expect(doc.toLowerCase()).toContain("no whole-schedule rebuild");
       });
 
@@ -4331,12 +4332,21 @@ describe("EventsServer", () => {
         end_date: "2026-08-06T14:00:00Z",
         location: "Room 1",
         series_id: "42",
-        moderation_state: "published",
+        event_type: "Training",
+        tags: ["gpu", "hpc"],
       };
-      const seriesDetail = { ...occurrenceDetail, location: "Room 1", event_type: "Training" };
+      const seriesDetail = occurrenceDetail;
 
       // Upstream that serves reads only: any write verb is recorded and fails.
-      const readOnlyUpstream = (detail: Record<string, unknown>) => {
+      // The state comes from the acting user's jsonapi view, matched on drupal_internal__id.
+      const readOnlyUpstream = (detail: Record<string, unknown>, state: string | null = "published") => {
+        mockGet.mockReset();
+        mockGet.mockResolvedValue({
+          data:
+            state === null
+              ? []
+              : [{ id: "uuid-1", type: "eventinstance--x", attributes: { drupal_internal__id: 900, moderation_state: state } }],
+        });
         mockRequestRaw.mockImplementation(async (_user: string, method: string) =>
           method === "GET"
             ? { status: 200, data: detail }
@@ -4353,6 +4363,9 @@ describe("EventsServer", () => {
           title: "New Title",
           field_location: "Room 9",
           field_event_type: "Training",
+          field_tags: ["hpc", "gpu "],
+          field_event_speakers: "Ada",
+          field_event_timezone: "America/Chicago",
         });
         expect(writes()).toHaveLength(0);
         const parsed = parse(result);
@@ -4360,14 +4373,29 @@ describe("EventsServer", () => {
         expect(parsed.data.changes).toEqual([
           { field: "title", old: "OnDemand Call", new: "New Title" },
           { field: "field_location", old: "Room 1", new: "Room 9" },
+          { field: "field_tags", old: ["gpu", "hpc"], new: ["hpc", "gpu"] },
+          { field: "field_event_speakers", old_unavailable: true, new: "Ada" },
+          { field: "field_event_timezone", old_unavailable: true, new: "America/Chicago" },
         ]);
       });
 
-      it("update_event with confirmed:'true' (string) still previews", async () => {
-        readOnlyUpstream(seriesDetail);
-        const result = await call("update_event", { eventseries_id: "42", title: "X", confirmed: "true" });
-        expect(writes()).toHaveLength(0);
-        expect(parse(result)).toMatchObject({ status: "preview", executed: false });
+      it("a non-boolean confirmed (string \"true\") still previews for all six tools", async () => {
+        const date = { value: "2026-09-10T14:00:00", end_value: "2026-09-10T15:00:00" };
+        const calls: Array<[string, Record<string, unknown>]> = [
+          ["update_event", { eventseries_id: "900", title: "X" }],
+          ["restore_event", { eventseries_id: "900" }],
+          ["send_for_review", { eventseries_id: "900" }],
+          ["restore_occurrence", { eventinstance_id: "900" }],
+          ["edit_occurrence", { eventinstance_id: "900", field_location: "Room 2" }],
+          ["add_occurrence", { eventseries_id: "900", date }],
+        ];
+        for (const [name, args] of calls) {
+          mockRequestRaw.mockReset();
+          readOnlyUpstream(occurrenceDetail);
+          const result = await call(name, { ...args, confirmed: "true" });
+          expect(writes(), name).toHaveLength(0);
+          expect(parse(result), name).toMatchObject({ status: "preview", executed: false });
+        }
       });
 
       it("update_event with confirmed:true PATCHes without forwarding confirmed in the body", async () => {
@@ -4379,8 +4407,8 @@ describe("EventsServer", () => {
       });
 
       it("restore_event without confirmed previews title, dates and state and writes nothing", async () => {
-        readOnlyUpstream({ ...seriesDetail, moderation_state: "archived" });
-        const result = await call("restore_event", { eventseries_id: "42" });
+        readOnlyUpstream(seriesDetail, "archived");
+        const result = await call("restore_event", { eventseries_id: "900" });
         expect(writes()).toHaveLength(0);
         expect(parse(result)).toMatchObject({
           action: "update",
@@ -4397,8 +4425,8 @@ describe("EventsServer", () => {
       });
 
       it("send_for_review without confirmed previews and writes nothing", async () => {
-        readOnlyUpstream({ ...seriesDetail, moderation_state: "draft" });
-        const result = await call("send_for_review", { eventseries_id: "42" });
+        readOnlyUpstream(seriesDetail, "draft");
+        const result = await call("send_for_review", { eventseries_id: "900" });
         expect(writes()).toHaveLength(0);
         expect(parse(result)).toMatchObject({
           status: "preview",
@@ -4408,7 +4436,7 @@ describe("EventsServer", () => {
       });
 
       it("restore_occurrence without confirmed previews and writes nothing", async () => {
-        readOnlyUpstream({ ...occurrenceDetail, moderation_state: "archived" });
+        readOnlyUpstream(occurrenceDetail, "archived");
         const result = await call("restore_occurrence", { eventinstance_id: "900" });
         expect(writes()).toHaveLength(0);
         expect(parse(result)).toMatchObject({
@@ -4426,7 +4454,7 @@ describe("EventsServer", () => {
       it("add_occurrence without confirmed previews the series and the new dates and writes nothing", async () => {
         readOnlyUpstream(seriesDetail);
         const result = await call("add_occurrence", {
-          eventseries_id: "42",
+          eventseries_id: "900",
           date: { value: "2026-09-10T14:00:00", end_value: "2026-09-10T15:00:00" },
         });
         expect(writes()).toHaveLength(0);
@@ -4451,8 +4479,17 @@ describe("EventsServer", () => {
         expect(parsed.data.changes).toEqual([{ field: "field_location", old: "Room 1", new: "Room 2" }]);
       });
 
+      it("edit_occurrence preview has no registrants_to_notify and no moderation_state guess", async () => {
+        readOnlyUpstream(occurrenceDetail, null);
+        const result = await call("edit_occurrence", { eventinstance_id: "900", field_location: "Room 2" });
+        const parsed = parse(result);
+        expect(parsed.data).not.toHaveProperty("registrants_to_notify");
+        expect(parsed.data.current_state_unavailable).toBe(true);
+        expect(parsed.data).not.toHaveProperty("current_state");
+      });
+
       it("edit_occurrence date change on a dark or no-registrant occurrence still previews without confirmed", async () => {
-        readOnlyUpstream({ ...occurrenceDetail, moderation_state: "archived" });
+        readOnlyUpstream(occurrenceDetail, "archived");
         const result = await call("edit_occurrence", {
           eventinstance_id: "900",
           date: { value: "2026-09-05T14:00:00", end_value: "2026-09-05T15:00:00" },
@@ -4479,7 +4516,14 @@ describe("EventsServer", () => {
         mockRequestRaw.mockResolvedValue({ status: 404, data: { error: "not_found" } });
         const result = await call("restore_event", { eventseries_id: "42" });
         expect(writes()).toHaveLength(0);
-        expect(parse(result)).toMatchObject({ status: "preview", executed: false, data: { series_id: "42" } });
+        const parsed = parse(result);
+        expect(parsed).toMatchObject({
+          action: "update",
+          status: "preview",
+          executed: false,
+          data: { series_id: "42", detail_unavailable: true },
+        });
+        expect(parsed.data.title).toBeUndefined();
       });
 
       it("create_event reports executed:true when Drupal commits despite confirmed=false", async () => {
