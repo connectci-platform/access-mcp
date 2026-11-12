@@ -646,7 +646,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           properties: {
             eventseries_id: {
               type: "string",
-              description: "The event series id (the get_event `series_id`, or the eventinstance id — either resolves to its series). Pass an eventinstance id: that is what the preview reads the current event from, and if only a series id is given the preview may say detail_unavailable.",
+              description: "The event series id: the `series_id` from get_event or get_my_events. Do not pass an eventinstance id.",
             },
             confirmed: {
               type: "boolean",
@@ -695,7 +695,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           properties: {
             eventseries_id: {
               type: "string",
-              description: "The event series id (get_event `series_id`, or an eventinstance id — either resolves to its series). Pass an eventinstance id: that is what the preview reads the current event from, and if only a series id is given the preview may say detail_unavailable.",
+              description: "The event series id: the `series_id` from get_event or get_my_events. Do not pass an eventinstance id.",
             },
             confirmed: {
               type: "boolean",
@@ -716,7 +716,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           properties: {
             eventseries_id: {
               type: "string",
-              description: "The event series id (get_event `series_id`, or an eventinstance id — either resolves to its series). Pass an eventinstance id: that is what the preview reads the current event from, and if only a series id is given the preview may say detail_unavailable.",
+              description: "The event series id: the `series_id` from get_event or get_my_events. Do not pass an eventinstance id.",
             },
             confirmed: {
               type: "boolean",
@@ -738,7 +738,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           properties: {
             eventseries_id: {
               type: "string",
-              description: "The event series id (get_event `series_id`, or an eventinstance id — either resolves to its series). Pass an eventinstance id: that is what the preview reads the current event from, and if only a series id is given the preview may say detail_unavailable.",
+              description: "The event series id: the `series_id` from get_event or get_my_events. Do not pass an eventinstance id.",
             },
             confirmed: {
               type: "boolean",
@@ -837,7 +837,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           properties: {
             eventseries_id: {
               type: "string",
-              description: "The event series id to add an occurrence to (get_event `series_id`, or an eventinstance id — either resolves to its series). Pass an eventinstance id: that is what the preview reads the current event from, and if only a series id is given the preview may say detail_unavailable.",
+              description: "The event series id to add an occurrence to: the `series_id` from get_event or get_my_events. A series id only; an eventinstance id is not accepted.",
             },
             confirmed: {
               type: "boolean",
@@ -1908,6 +1908,63 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
     return {};
   }
 
+  /**
+   * Best-effort read of the series a series-id tool will write to, resolved
+   * the way the portal's resolveSeries does it: the id is a SERIES id first;
+   * only when no series of the acting user's has that id (and the tool allows
+   * it) is it tried as an instance id and followed to that instance's series.
+   * Reads the acting user's event_instance_mine jsonapi data; the series
+   * reference is relationships.eventseries_id.data.meta.drupal_internal__target_id.
+   * GET /api/2.3/events/{id} is NOT used here: it is instance-first, the
+   * opposite of the commit. Returns {} (detail_unavailable) when nothing matches or
+   * the read fails.
+   */
+  private async loadCurrentSeries(
+    id: string,
+    opts: { allowInstanceId: boolean }
+  ): Promise<{ detail?: Record<string, unknown>; state?: string }> {
+    let items: Array<Record<string, any>>; // eslint-disable-line @typescript-eslint/no-explicit-any -- JSON:API response shape is dynamic
+    try {
+      const result = await this.getDrupalAuth().get(
+        this.getActingUserAccessId(),
+        "/jsonapi/views/event_instance_mine/mcp_my_events?page[limit]=200"
+      );
+      items = Array.isArray(result?.data) ? result.data : [];
+    } catch {
+      return {};
+    }
+    const seriesOf = (item: Record<string, any>): string | undefined => { // eslint-disable-line @typescript-eslint/no-explicit-any
+      const target = item?.relationships?.eventseries_id?.data?.meta?.drupal_internal__target_id;
+      return target === undefined || target === null ? undefined : String(target);
+    };
+    const want = String(id);
+    let seriesId: string | undefined;
+    if (items.some((i) => seriesOf(i) === want)) {
+      seriesId = want;
+    } else if (opts.allowInstanceId) {
+      const instance = items.find((i) => String(i?.attributes?.drupal_internal__id) === want);
+      seriesId = instance ? seriesOf(instance) : undefined;
+    }
+    if (seriesId === undefined) return {};
+    const matches = items.filter((i) => seriesOf(i) === seriesId);
+    if (matches.length === 0) return {};
+    const first = matches[0].attributes ?? {};
+    const range = (a: Record<string, any>) => (Array.isArray(a.date) ? a.date[0] : a.date); // eslint-disable-line @typescript-eslint/no-explicit-any
+    const starts = matches.map((m) => isoInstantUtc(range(m.attributes ?? {})?.value)).filter(Boolean).sort();
+    const ends = matches.map((m) => isoInstantUtc(range(m.attributes ?? {})?.end_value)).filter(Boolean).sort();
+    const state = first.moderation_state;
+    return {
+      detail: {
+        title: first.title,
+        series_id: seriesId,
+        start_date: starts[0],
+        end_date: ends[ends.length - 1],
+        instance_count: matches.length,
+      },
+      state: typeof state === "string" ? state : undefined,
+    };
+  }
+
   /** Editorial state of one of the acting user's own instances, or undefined
    * when the view does not list it (or cannot be read). */
   private async lookupModerationState(actingUser: string, id: string): Promise<string | undefined> {
@@ -2226,8 +2283,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
     const { eventseries_id, confirmed, ...body } = params;
 
     if (confirmed !== true) {
-      const current = await this.loadCurrentEvent(eventseries_id, { strict: false });
-      if ("result" in current) return current.result;
+      const current = await this.loadCurrentSeries(eventseries_id, { allowInstanceId: true });
       const detail = current.detail;
       const changes: Array<Record<string, unknown>> = [];
       for (const [field, newValue] of Object.entries(body)) {
@@ -2323,8 +2379,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       );
     }
     if (confirmed !== true) {
-      const current = await this.loadCurrentEvent(eventseriesId, { strict: false });
-      if ("result" in current) return current.result;
+      const current = await this.loadCurrentSeries(eventseriesId, { allowInstanceId: true });
       return this.previewResponse("update", {
         series_id: current.detail?.series_id ?? eventseriesId,
         ...this.currentEventSummary(current),
@@ -2365,8 +2420,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       );
     }
     if (confirmed !== true) {
-      const current = await this.loadCurrentEvent(eventseriesId, { strict: false });
-      if ("result" in current) return current.result;
+      const current = await this.loadCurrentSeries(eventseriesId, { allowInstanceId: true });
       return this.previewResponse("update", {
         series_id: current.detail?.series_id ?? eventseriesId,
         ...this.currentEventSummary(current),
@@ -2580,8 +2634,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       );
     }
     if (params.confirmed !== true) {
-      const current = await this.loadCurrentEvent(params.eventseries_id, { strict: false });
-      if ("result" in current) return current.result;
+      const current = await this.loadCurrentSeries(params.eventseries_id, { allowInstanceId: false });
       const summary = this.currentEventSummary(current);
       return this.previewResponse("create", {
         series_id: current.detail?.series_id ?? params.eventseries_id,

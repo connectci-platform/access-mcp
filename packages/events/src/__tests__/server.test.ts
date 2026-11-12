@@ -4356,26 +4356,52 @@ describe("EventsServer", () => {
       const writes = () => mockRequestRaw.mock.calls.filter((c) => c[1] !== "GET");
       const parse = (r: { content: { text: string }[] }) => JSON.parse(r.content[0].text);
 
+      // The series tools resolve ids like the portal (series first) from the acting
+      // user's event_instance_mine jsonapi data; GET /api/2.3/events is never used.
+      const instanceItem = (instanceId: number, seriesId: number | null, state = "published", title = "OnDemand Call") => ({
+        id: `uuid-${instanceId}`,
+        type: "eventinstance--x",
+        attributes: {
+          drupal_internal__id: instanceId,
+          title,
+          moderation_state: state,
+          date: { value: "2026-08-06T13:00:00+00:00", end_value: "2026-08-06T14:00:00+00:00" },
+        },
+        relationships:
+          seriesId === null
+            ? { eventseries_id: { data: { type: "eventseries--x", id: "series-uuid" } } }
+            : { eventseries_id: { data: { type: "eventseries--x", id: "series-uuid", meta: { drupal_internal__target_id: seriesId } } } },
+      });
+      const seriesUpstream = (items: unknown[]) => {
+        mockGet.mockReset();
+        mockGet.mockResolvedValue({ data: items });
+        mockRequestRaw.mockReset();
+        mockRequestRaw.mockImplementation(async (_u: string, method: string) =>
+          method === "GET"
+            ? { status: 500, data: { error: "events_get_must_not_be_used" } }
+            : { status: 500, data: { error: "should_not_write" } }
+        );
+      };
+      const seriesPreview = async (name: string, args: Record<string, unknown>) => {
+        const result = await call(name, args);
+        expect(mockRequestRaw).not.toHaveBeenCalled();
+        return parse(result).data;
+      };
+
       it("update_event without confirmed previews old and new values and writes nothing", async () => {
-        readOnlyUpstream(seriesDetail);
+        seriesUpstream([instanceItem(900, 42)]);
         const result = await call("update_event", {
           eventseries_id: "42",
           title: "New Title",
           field_location: "Room 9",
-          field_event_type: "Training",
-          field_tags: ["hpc", "gpu "],
-          field_event_speakers: "Ada",
-          field_event_timezone: "America/Chicago",
         });
         expect(writes()).toHaveLength(0);
         const parsed = parse(result);
         expect(parsed).toMatchObject({ action: "update", status: "preview", executed: false });
+        expect(parsed.data.series_id).toBe("42");
         expect(parsed.data.changes).toEqual([
           { field: "title", old: "OnDemand Call", new: "New Title" },
-          { field: "field_location", old: "Room 1", new: "Room 9" },
-          { field: "field_tags", old: ["gpu", "hpc"], new: ["hpc", "gpu"] },
-          { field: "field_event_speakers", old_unavailable: true, new: "Ada" },
-          { field: "field_event_timezone", old_unavailable: true, new: "America/Chicago" },
+          { field: "field_location", old_unavailable: true, new: "Room 9" },
         ]);
       });
 
@@ -4407,32 +4433,21 @@ describe("EventsServer", () => {
       });
 
       it("restore_event without confirmed previews title, dates and state and writes nothing", async () => {
-        readOnlyUpstream(seriesDetail, "archived");
-        const result = await call("restore_event", { eventseries_id: "900" });
-        expect(writes()).toHaveLength(0);
-        expect(parse(result)).toMatchObject({
-          action: "update",
-          status: "preview",
-          executed: false,
-          data: {
-            series_id: "42",
-            title: "OnDemand Call",
-            start_date: "2026-08-06T13:00:00Z",
-            end_date: "2026-08-06T14:00:00Z",
-            current_state: "archived",
-          },
+        seriesUpstream([instanceItem(900, 42, "archived")]);
+        const data = await seriesPreview("restore_event", { eventseries_id: "42" });
+        expect(data).toMatchObject({
+          series_id: "42",
+          title: "OnDemand Call",
+          start_date: "2026-08-06T13:00:00Z",
+          end_date: "2026-08-06T14:00:00Z",
+          current_state: "archived",
         });
       });
 
       it("send_for_review without confirmed previews and writes nothing", async () => {
-        readOnlyUpstream(seriesDetail, "draft");
-        const result = await call("send_for_review", { eventseries_id: "900" });
-        expect(writes()).toHaveLength(0);
-        expect(parse(result)).toMatchObject({
-          status: "preview",
-          executed: false,
-          data: { title: "OnDemand Call", current_state: "draft" },
-        });
+        seriesUpstream([instanceItem(900, 42, "draft")]);
+        const data = await seriesPreview("send_for_review", { eventseries_id: "42" });
+        expect(data).toMatchObject({ title: "OnDemand Call", current_state: "draft" });
       });
 
       it("restore_occurrence without confirmed previews and writes nothing", async () => {
@@ -4452,22 +4467,57 @@ describe("EventsServer", () => {
       });
 
       it("add_occurrence without confirmed previews the series and the new dates and writes nothing", async () => {
-        readOnlyUpstream(seriesDetail);
-        const result = await call("add_occurrence", {
-          eventseries_id: "900",
-          date: { value: "2026-09-10T14:00:00", end_value: "2026-09-10T15:00:00" },
-        });
-        expect(writes()).toHaveLength(0);
-        expect(parse(result)).toMatchObject({
-          status: "preview",
-          executed: false,
-          data: {
-            series_id: "42",
-            title: "OnDemand Call",
-            current_state: "published",
-            new_occurrence: { value: "2026-09-10T14:00:00", end_value: "2026-09-10T15:00:00" },
-          },
-        });
+        seriesUpstream([instanceItem(900, 42)]);
+        const date = { value: "2026-09-10T14:00:00", end_value: "2026-09-10T15:00:00" };
+        const data = await seriesPreview("add_occurrence", { eventseries_id: "42", date });
+        expect(data).toMatchObject({ series_id: "42", title: "OnDemand Call", current_state: "published", new_occurrence: date });
+      });
+
+      it("series id wins over an unrelated instance with the same id (collision)", async () => {
+        // The user owns series 900 (via instance 5) and an unrelated instance numbered 900 of series 7.
+        seriesUpstream([instanceItem(900, 7, "draft", "Other Event"), instanceItem(5, 900, "published", "Mine")]);
+        for (const name of ["update_event", "restore_event", "send_for_review"]) {
+          const data = await seriesPreview(name, { eventseries_id: "900", ...(name === "update_event" ? { title: "N" } : {}) });
+          expect(data.series_id, name).toBe("900");
+          expect(data.title, name).toBe("Mine");
+        }
+      });
+
+      it("an instance id falls back to its series for update, restore and send_for_review", async () => {
+        seriesUpstream([instanceItem(900, 42, "draft"), instanceItem(901, 42, "draft")]);
+        for (const name of ["update_event", "restore_event", "send_for_review"]) {
+          const data = await seriesPreview(name, { eventseries_id: "901", ...(name === "update_event" ? { title: "N" } : {}) });
+          expect(data.series_id, name).toBe("42");
+          expect(data.title, name).toBe("OnDemand Call");
+        }
+      });
+
+      it("series-id tools tell the model to pass the series_id", () => {
+        for (const name of ["update_event", "restore_event", "send_for_review", "add_occurrence"]) {
+          const tool = server["getTools"]().find((t) => t.name === name)!;
+          const props = tool.inputSchema.properties as Record<string, { description: string }>;
+          expect(props.eventseries_id.description, name).toContain("`series_id`");
+          expect(props.eventseries_id.description, name).not.toContain("either resolves");
+        }
+      });
+
+      it("add_occurrence takes a series id only: an instance id gives detail_unavailable", async () => {
+        seriesUpstream([instanceItem(900, 42)]);
+        const date = { value: "2026-09-10T14:00:00", end_value: "2026-09-10T15:00:00" };
+        const data = await seriesPreview("add_occurrence", { eventseries_id: "900", date });
+        expect(data.detail_unavailable).toBe(true);
+        expect(data.title).toBeUndefined();
+      });
+
+      it("when the jsonapi payload has no series meta, series previews say detail_unavailable", async () => {
+        seriesUpstream([instanceItem(900, null)]);
+        for (const name of ["restore_event", "send_for_review"]) {
+          const data = await seriesPreview(name, { eventseries_id: "900" });
+          expect(data.detail_unavailable, name).toBe(true);
+        }
+        const data = await seriesPreview("update_event", { eventseries_id: "900", title: "N" });
+        expect(data.detail_unavailable).toBe(true);
+        expect(data.changes).toEqual([{ field: "title", old_unavailable: true, new: "N" }]);
       });
 
       it("edit_occurrence with a location-only change and no confirmed makes no PATCH and shows old and new", async () => {
