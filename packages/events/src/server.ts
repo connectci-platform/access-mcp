@@ -1909,10 +1909,11 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
   }
 
   /**
-   * Best-effort read of the series a series-id tool will write to, resolved
-   * the way the portal's resolveSeries does it: the id is a SERIES id first;
-   * only when no series of the acting user's has that id (and the tool allows
-   * it) is it tried as an instance id and followed to that instance's series.
+   * Best-effort read of the series a series-id tool will write to. The
+   * portal's resolveSeries tries the id as a SERIES id first, so the preview
+   * only ever matches it as a series id: following an instance id to its
+   * series could show a different series than the commit changes when the
+   * same number is also some other series' id.
    * Reads the acting user's event_instance_mine jsonapi data; the series
    * reference is relationships.eventseries_id.data.meta.drupal_internal__target_id.
    * GET /api/2.3/events/{id} is never used with the caller's id (it is
@@ -1921,8 +1922,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
    * the read fails.
    */
   private async loadCurrentSeries(
-    id: string,
-    opts: { allowInstanceId: boolean }
+    id: string
   ): Promise<{ detail?: Record<string, unknown>; state?: string }> {
     let items: Array<Record<string, any>>; // eslint-disable-line @typescript-eslint/no-explicit-any -- JSON:API response shape is dynamic
     try {
@@ -1938,15 +1938,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       const target = item?.relationships?.eventseries_id?.data?.meta?.drupal_internal__target_id;
       return target === undefined || target === null ? undefined : String(target);
     };
-    const want = String(id);
-    let seriesId: string | undefined;
-    if (items.some((i) => seriesOf(i) === want)) {
-      seriesId = want;
-    } else if (opts.allowInstanceId) {
-      const instance = items.find((i) => String(i?.attributes?.drupal_internal__id) === want);
-      seriesId = instance ? seriesOf(instance) : undefined;
-    }
-    if (seriesId === undefined) return {};
+    const seriesId = String(id);
     const matches = items.filter((i) => seriesOf(i) === seriesId);
     if (matches.length === 0) return {};
     const first = matches[0].attributes ?? {};
@@ -2304,7 +2296,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
     const { eventseries_id, confirmed, ...body } = params;
 
     if (confirmed !== true) {
-      const current = await this.loadCurrentSeries(eventseries_id, { allowInstanceId: true });
+      const current = await this.loadCurrentSeries(eventseries_id);
       const detail = current.detail;
       const changes: Array<Record<string, unknown>> = [];
       for (const [field, newValue] of Object.entries(body)) {
@@ -2400,7 +2392,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       );
     }
     if (confirmed !== true) {
-      const current = await this.loadCurrentSeries(eventseriesId, { allowInstanceId: true });
+      const current = await this.loadCurrentSeries(eventseriesId);
       return this.previewResponse("update", {
         series_id: current.detail?.series_id ?? eventseriesId,
         ...this.currentEventSummary(current),
@@ -2441,7 +2433,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       );
     }
     if (confirmed !== true) {
-      const current = await this.loadCurrentSeries(eventseriesId, { allowInstanceId: true });
+      const current = await this.loadCurrentSeries(eventseriesId);
       return this.previewResponse("update", {
         series_id: current.detail?.series_id ?? eventseriesId,
         ...this.currentEventSummary(current),
@@ -2655,7 +2647,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       );
     }
     if (params.confirmed !== true) {
-      const current = await this.loadCurrentSeries(params.eventseries_id, { allowInstanceId: false });
+      const current = await this.loadCurrentSeries(params.eventseries_id);
       const summary = this.currentEventSummary(current);
       return this.previewResponse("create", {
         series_id: current.detail?.series_id ?? params.eventseries_id,

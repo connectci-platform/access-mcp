@@ -4509,12 +4509,12 @@ describe("EventsServer", () => {
         }
       });
 
-      it("an instance id falls back to its series for update, restore and send_for_review", async () => {
+      it("an instance id is not followed to its series: the portal resolves series ids first, so the preview could show a different series than the commit changes", async () => {
         seriesUpstream([instanceItem(900, 42, "draft"), instanceItem(901, 42, "draft")]);
         for (const name of ["update_event", "restore_event", "send_for_review"]) {
           const data = await seriesPreview(name, { eventseries_id: "901", ...(name === "update_event" ? { title: "N" } : {}) });
-          expect(data.series_id, name).toBe("42");
-          expect(data.title, name).toBe("OnDemand Call");
+          expect(data.detail_unavailable, name).toBe(true);
+          expect(data.title, name).toBeUndefined();
         }
       });
 
