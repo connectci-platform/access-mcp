@@ -454,7 +454,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Set only by the Confirm button; never set it yourself.",
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["eventinstance_id"],
@@ -476,7 +476,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Set only by the Confirm button; never set it yourself.",
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["registrant_id", "confirmed"],
@@ -629,7 +629,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Set only by the Confirm button; never set it yourself.",
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["title", "field_event_type", "field_location"],
@@ -640,7 +640,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "update_event",
         description:
-          "Edit an existing event series' CONTENT fields ONLY (title, body, field_summary, field_location, field_event_type, field_skill_level, field_tags, field_event_speakers, field_event_virtual_meeting_link, field_event_timezone, field_event_in_person). This tool NEVER changes dates/recurrence and NEVER changes moderation_state (note: changing field_event_timezone reschedules the event's displayed times, but does not alter the stored recurrence). Previews by default and changes nothing; call again with confirmed: true to make the change. The API deliberately has NO whole-schedule rebuild operation: schedule changes are per-occurrence only — use edit_occurrence to move one occurrence's date, or add_occurrence/cancel_occurrence to add or remove a date. A series' recurrence pattern itself can never be rebuilt on any surface once it has registrations; the reschedule path there is cancel_occurrence → edit_occurrence (while dark) → restore_occurrence. For a state change (cancel, restore, send for review), use delete_event / restore_event / send_for_review. Edits are validated against the site's field rules (required fields, allowed values, link format); a violation is refused with code \"validation_error\" and a message naming the field — fix that field (or supply it, if the series was created without it) and retry. The preview lists each changed field with its old and new value (data.changes). Returns on commit {series_id, updated_fields, edit_url}; link edit_url in your reply and don't show series_id.",
+          "Edit an existing event series' CONTENT fields ONLY (title, body, field_summary, field_location, field_event_type, field_skill_level, field_tags, field_event_speakers, field_event_virtual_meeting_link, field_event_timezone, field_event_in_person). This tool NEVER changes dates/recurrence and NEVER changes moderation_state (note: changing field_event_timezone reschedules the event's displayed times, but does not alter the stored recurrence). Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change. The API deliberately has NO whole-schedule rebuild operation: schedule changes are per-occurrence only — use edit_occurrence to move one occurrence's date, or add_occurrence/cancel_occurrence to add or remove a date. A series' recurrence pattern itself can never be rebuilt on any surface once it has registrations; the reschedule path there is cancel_occurrence → edit_occurrence (while dark) → restore_occurrence. For a state change (cancel, restore, send for review), use delete_event / restore_event / send_for_review. Edits are validated against the site's field rules (required fields, allowed values, link format); a violation is refused with code \"validation_error\" and a message naming the field — fix that field (or supply it, if the series was created without it) and retry. The preview lists each changed field with its old and new value (data.changes). Returns on commit {series_id, updated_fields, edit_url}; link edit_url in your reply and don't show series_id.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -651,7 +651,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Set only by the Confirm button; never set it yourself.",
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
             title: { type: "string" },
             body: { type: "string" },
@@ -699,7 +699,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             },
             confirmed: {
               type: "boolean",
-              description: "Set only by the Confirm button; never set it yourself.",
+              description: "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["eventseries_id"],
@@ -710,7 +710,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "restore_event",
         description:
-          "Un-cancel a previously archived event series — the inverse of delete_event. Only legal from an archived series; an already-published series is an idempotent no-op (instances_restored:0), and a series that was never archived (draft, needs_adjustment, …) is refused with code \"invalid_state\". IMPORTANT ordering: if you also need to move the series' dates, apply date edits (edit_occurrence per-occurrence) WHILE the series is still dark/archived, THEN restore — restoring first and editing dates after means registrants get notified of the stale date before the real one. On restore, every archived instance that was NOT individually cancelled (see cancel_occurrence) comes back published and its registrants are notified; an instance you individually cancelled while the series was dark stays cancelled through the restore (this is how a PARTIAL restore works: cancel_occurrence the instances you don't want back before calling restore_event, then only the rest return). Previews by default and changes nothing; call again with confirmed: true to make the change. The preview shows the title, dates and, when it can be read, the current state. Returns on commit {series_id, instances_restored, notified, notifications_disabled}.",
+          "Un-cancel a previously archived event series — the inverse of delete_event. Only legal from an archived series; an already-published series is an idempotent no-op (instances_restored:0), and a series that was never archived (draft, needs_adjustment, …) is refused with code \"invalid_state\". IMPORTANT ordering: if you also need to move the series' dates, apply date edits (edit_occurrence per-occurrence) WHILE the series is still dark/archived, THEN restore — restoring first and editing dates after means registrants get notified of the stale date before the real one. On restore, every archived instance that was NOT individually cancelled (see cancel_occurrence) comes back published and its registrants are notified; an instance you individually cancelled while the series was dark stays cancelled through the restore (this is how a PARTIAL restore works: cancel_occurrence the instances you don't want back before calling restore_event, then only the rest return). Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change. The preview shows the title, dates and, when it can be read, the current state. Returns on commit {series_id, instances_restored, notified, notifications_disabled}.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -721,7 +721,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Set only by the Confirm button; never set it yourself.",
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["eventseries_id"],
@@ -732,7 +732,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "send_for_review",
         description:
-          "Route a draft (or needs_adjustment) event series to an editor for approval — the author-facing path to publication when the acting user cannot publish directly (see create_event's moderation.next_action). Legal only from draft or needs_adjustment; any other current state (published, archived, ready_for_review already) is refused with code \"invalid_state\". Previews by default and changes nothing; call again with confirmed: true to make the change. The preview shows the title, dates and, when it can be read, the current state. Returns on commit {series_id, moderation_state, edit_url} with moderation_state now \"ready_for_review\"; link edit_url in your reply.",
+          "Route a draft (or needs_adjustment) event series to an editor for approval — the author-facing path to publication when the acting user cannot publish directly (see create_event's moderation.next_action). Legal only from draft or needs_adjustment; any other current state (published, archived, ready_for_review already) is refused with code \"invalid_state\". Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change. The preview shows the title, dates and, when it can be read, the current state. Returns on commit {series_id, moderation_state, edit_url} with moderation_state now \"ready_for_review\"; link edit_url in your reply.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -743,7 +743,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Set only by the Confirm button; never set it yourself.",
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["eventseries_id"],
@@ -764,7 +764,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             },
             confirmed: {
               type: "boolean",
-              description: "Set only by the Confirm button; never set it yourself.",
+              description: "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["eventinstance_id"],
@@ -775,7 +775,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "restore_occurrence",
         description:
-          "Un-cancel ONE previously cancelled (archived) occurrence — the inverse of cancel_occurrence. Only legal on an archived occurrence; a non-archived one is refused with code \"invalid_state\". Two outcomes depend on the PARENT series' current state: if the parent is published, the occurrence republishes immediately and its registrants are notified (returns_with_series is absent/false). If the parent series is itself dark (archived), the occurrence CANNOT publish while its series is dark — instead this just clears its individually-cancelled flag so it automatically rejoins the series the next time restore_event runs on the parent; the occurrence itself stays archived FOR NOW and the response carries returns_with_series:true, notified:0. Ordering matters: apply any date fix (edit_occurrence) to a cancelled occurrence WHILE it is still dark, before calling restore_occurrence — once it's back live, a further date change is a separate reschedule notice. If add_occurrence refuses with code \"duplicate_date\" because an existing occurrence at that exact time is a cancelled twin, use restore_occurrence on that existing occurrence instead of trying to add a new one. Previews by default and changes nothing; call again with confirmed: true to make the change. The preview shows the title, dates and, when it can be read, the current state. Returns on commit {eventinstance_id, notified, notifications_disabled} plus returns_with_series when applicable.",
+          "Un-cancel ONE previously cancelled (archived) occurrence — the inverse of cancel_occurrence. Only legal on an archived occurrence; a non-archived one is refused with code \"invalid_state\". Two outcomes depend on the PARENT series' current state: if the parent is published, the occurrence republishes immediately and its registrants are notified (returns_with_series is absent/false). If the parent series is itself dark (archived), the occurrence CANNOT publish while its series is dark — instead this just clears its individually-cancelled flag so it automatically rejoins the series the next time restore_event runs on the parent; the occurrence itself stays archived FOR NOW and the response carries returns_with_series:true, notified:0. Ordering matters: apply any date fix (edit_occurrence) to a cancelled occurrence WHILE it is still dark, before calling restore_occurrence — once it's back live, a further date change is a separate reschedule notice. If add_occurrence refuses with code \"duplicate_date\" because an existing occurrence at that exact time is a cancelled twin, use restore_occurrence on that existing occurrence instead of trying to add a new one. Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change. The preview shows the title, dates and, when it can be read, the current state. Returns on commit {eventinstance_id, notified, notifications_disabled} plus returns_with_series when applicable.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -786,7 +786,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Set only by the Confirm button; never set it yourself.",
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["eventinstance_id"],
@@ -797,7 +797,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "edit_occurrence",
         description:
-          "Edit ONE occurrence's own date or location — a content edit on that single instance; it does not touch sibling occurrences or the parent series. The API deliberately has no whole-schedule rebuild operation — this per-occurrence edit, plus add_occurrence/cancel_occurrence to add or remove a date, is how schedule changes work. This is the tool for rescheduling a still-LIVE occurrence: call it directly with the new date and registrants are notified of the move — no need to cancel first. (Contrast: to postpone with a gap — cancel now, fix the date later — use cancel_occurrence, THEN edit_occurrence while it's dark, THEN restore_occurrence.) Previews by default and changes nothing; call again with confirmed: true to make the change. The preview lists each changed field with its old and new value (data.changes); when the date moves, registrants of a live occurrence are notified on commit, and the commit result reports registrants_affected. Returns on commit: {eventinstance_id, registrants_affected}.",
+          "Edit ONE occurrence's own date or location — a content edit on that single instance; it does not touch sibling occurrences or the parent series. The API deliberately has no whole-schedule rebuild operation — this per-occurrence edit, plus add_occurrence/cancel_occurrence to add or remove a date, is how schedule changes work. This is the tool for rescheduling a still-LIVE occurrence: call it directly with the new date and registrants are notified of the move — no need to cancel first. (Contrast: to postpone with a gap — cancel now, fix the date later — use cancel_occurrence, THEN edit_occurrence while it's dark, THEN restore_occurrence.) Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change. The preview lists each changed field with its old and new value (data.changes); when the date moves, registrants of a live occurrence are notified on commit, and the commit result reports registrants_affected. Returns on commit: {eventinstance_id, registrants_affected}.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -808,7 +808,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Set only by the Confirm button; never set it yourself.",
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
             date: {
               type: "object",
@@ -831,7 +831,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "add_occurrence",
         description:
-          "Add ONE new occurrence directly to an event series — an unregistered, targeted addition (not a schedule rebuild: it touches only the one new row, with no risk to any other occurrence's registrants). The API deliberately has no whole-schedule rebuild operation; this tool, edit_occurrence (move one date), and cancel_occurrence (remove one date) are how a schedule changes — a series' recurrence pattern itself can never be rebuilt once it has registrations, on any surface. Its birth state follows the parent series: adding to a published series creates a published occurrence immediately; adding to an archived series creates an archived one that comes back the normal way when the series is restored. Adding to a DRAFT series is refused with code \"invalid_state\" (a draft's new occurrence would be born archived with no path to visible — publish or send_for_review the series first). Refused with code \"duplicate_date\" if an occurrence already exists at the exact requested start time; if that existing occurrence is itself a cancelled twin, the refusal message points you at restore_occurrence instead — re-adding at that same moment almost always means bringing the cancelled one back, not creating a competing duplicate. Previews by default and changes nothing; call again with confirmed: true to make the change. The preview shows the series title, its current state when it can be read, and the new dates. Returns on commit {series_id, eventinstance_id, moderation_state, event_url, edit_url}.",
+          "Add ONE new occurrence directly to an event series — an unregistered, targeted addition (not a schedule rebuild: it touches only the one new row, with no risk to any other occurrence's registrants). The API deliberately has no whole-schedule rebuild operation; this tool, edit_occurrence (move one date), and cancel_occurrence (remove one date) are how a schedule changes — a series' recurrence pattern itself can never be rebuilt once it has registrations, on any surface. Its birth state follows the parent series: adding to a published series creates a published occurrence immediately; adding to an archived series creates an archived one that comes back the normal way when the series is restored. Adding to a DRAFT series is refused with code \"invalid_state\" (a draft's new occurrence would be born archived with no path to visible — publish or send_for_review the series first). Refused with code \"duplicate_date\" if an occurrence already exists at the exact requested start time; if that existing occurrence is itself a cancelled twin, the refusal message points you at restore_occurrence instead — re-adding at that same moment almost always means bringing the cancelled one back, not creating a competing duplicate. Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change. The preview shows the series title, its current state when it can be read, and the new dates. Returns on commit {series_id, eventinstance_id, moderation_state, event_url, edit_url}.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -842,7 +842,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
             confirmed: {
               type: "boolean",
               description:
-                "Set only by the Confirm button; never set it yourself.",
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
             date: {
               type: "object",
@@ -2529,6 +2529,13 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
         title: detail?.title,
         ...(current.state !== undefined ? { current_state: current.state } : { current_state_unavailable: true }),
         changes,
+        ...(changes.some((c) => c.field === "date")
+          ? current.state === "published"
+            ? { registrants_notified_on_commit: true }
+            : current.state === undefined
+              ? { registrants_may_be_notified: true }
+              : {}
+          : {}),
       });
     }
 

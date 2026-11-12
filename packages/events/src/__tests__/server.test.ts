@@ -4506,6 +4506,28 @@ describe("EventsServer", () => {
         ]);
       });
 
+      it("edit_occurrence date preview flags registrant notification by state", async () => {
+        const date = { value: "2026-09-05T14:00:00", end_value: "2026-09-05T15:00:00" };
+        readOnlyUpstream(occurrenceDetail, "published");
+        let data = parse(await call("edit_occurrence", { eventinstance_id: "900", date })).data;
+        expect(data.registrants_notified_on_commit).toBe(true);
+        expect(data).not.toHaveProperty("registrants_may_be_notified");
+
+        readOnlyUpstream(occurrenceDetail, null);
+        data = parse(await call("edit_occurrence", { eventinstance_id: "900", date })).data;
+        expect(data.registrants_may_be_notified).toBe(true);
+        expect(data).not.toHaveProperty("registrants_notified_on_commit");
+
+        readOnlyUpstream(occurrenceDetail, "archived");
+        data = parse(await call("edit_occurrence", { eventinstance_id: "900", date })).data;
+        expect(data).not.toHaveProperty("registrants_notified_on_commit");
+        expect(data).not.toHaveProperty("registrants_may_be_notified");
+
+        readOnlyUpstream(occurrenceDetail, "published");
+        data = parse(await call("edit_occurrence", { eventinstance_id: "900", field_location: "Room 2" })).data;
+        expect(data).not.toHaveProperty("registrants_notified_on_commit");
+      });
+
       it("a preview of an occurrence that does not exist is a not_found error, not a preview", async () => {
         mockRequestRaw.mockResolvedValue({ status: 404, data: { error: "not_found", message: "nope" } });
         const result = await call("edit_occurrence", { eventinstance_id: "999", field_location: "X" });
@@ -4558,7 +4580,7 @@ describe("EventsServer", () => {
         for (const name of ["update_event", "restore_event", "send_for_review", "restore_occurrence", "edit_occurrence", "add_occurrence"]) {
           const tool = server["getTools"]().find((t) => t.name === name)!;
           expect(tool.description).toContain(
-            "Previews by default and changes nothing; call again with confirmed: true to make the change."
+            "Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change."
           );
           const props = (tool.inputSchema as { properties: Record<string, unknown> }).properties;
           expect(props.confirmed).toBeDefined();

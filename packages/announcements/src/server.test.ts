@@ -1961,10 +1961,11 @@ describe("AnnouncementsServer", () => {
         expect(desc).toContain("all tags will be removed");
       });
 
-      it("create description says the user confirms with the button and never lets the model confirm", () => {
+      it("create description tells the model to preview, then re-call with confirmed after approval", () => {
         const desc = toolByName("create_announcement").description;
-        expect(desc).toContain("Confirm button");
-        expect(desc).toContain("never pass confirmed yourself");
+        expect(desc).not.toContain("Confirm button");
+        expect(desc).toContain("approve that exact preview, call again with the same arguments and confirmed: true");
+        expect(desc).toContain("A bare change request is not approval");
         expect(desc).not.toContain("explicit go-ahead");
         expect(desc).not.toContain("exactly as the confirmed preview showed");
       });
@@ -1973,7 +1974,7 @@ describe("AnnouncementsServer", () => {
         "%s description carries the preview sentence",
         (name) => {
           expect(toolByName(name).description).toContain(
-            "Previews by default and changes nothing; call again with confirmed: true to make the change."
+            "Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change."
           );
         }
       );
@@ -2091,6 +2092,7 @@ describe("AnnouncementsServer", () => {
           const data = parse(await raw("update_announcement", { uuid: "u-1", title: "New title" }));
           expect(data.status).toBe("preview");
           expect(data.data.changes).toEqual([{ field: "title", old_unavailable: true, new: "New title" }]);
+          expect(data.data.detail_unavailable).toBe(true);
           expect(mockDrupalAuth.patch).not.toHaveBeenCalled();
         });
 

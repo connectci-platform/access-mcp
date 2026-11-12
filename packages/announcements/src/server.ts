@@ -253,7 +253,7 @@ export class AnnouncementsServer extends BaseAccessServer {
       // CRUD operations (new)
       {
         name: "create_announcement",
-        description: `Create a new ACCESS announcement (saved as draft for staff review). Previews by default and changes nothing; call again with confirmed: true to make the change.
+        description: `Create a new ACCESS announcement (saved as draft for staff review). Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change.
 
 BEFORE CALLING:
 1. Call get_announcement_context to check coordinator status.
@@ -274,15 +274,15 @@ If user pastes content (event description, draft text, etc.):
 3. Call suggest_tags with the body text — include returned tag names in the tags parameter
 4. Call suggest_summary with the body text if no summary provided
 5. Ask only about missing/unclear title, body or summary. Affiliation, where to share and affinity group are never missing: they have defaults the user can change in the preview. Affinity Group defaults to "None" unless the user named a group.
-6. Call create_announcement with ALL fields including tags, without confirmed, to show the preview. The user confirms with the Confirm button.
+6. Call create_announcement with ALL fields including tags, without confirmed, and show the user the preview. Once they approve that exact preview, call again with the same arguments and confirmed: true.
 
 If user describes what they want conversationally:
 1. Call get_announcement_context
 2. Guide them through providing title, body, summary (not affiliation, sharing or affinity group, which have defaults the user changes in the preview; Affinity Group defaults to "None" unless they named a group)
 3. Call suggest_tags with the body text — include returned tag names in the tags parameter
-4. Call create_announcement with ALL fields including tags, without confirmed, to show the preview. The user confirms with the Confirm button.
+4. Call create_announcement with ALL fields including tags, without confirmed, and show the user the preview. Once they approve that exact preview, call again with the same arguments and confirmed: true.
 
-IMPORTANT: Never pass confirmed yourself; only the user's Confirm button does. Always pass the tags parameter when creating. Tags are english NAMES (strings) taken verbatim from the "name" field of suggest_tags — pass them as the tags array. Never pass ids or uuids; the tool resolves names internally.
+IMPORTANT: Always pass the tags parameter when creating. Tags are english NAMES (strings) taken verbatim from the "name" field of suggest_tags — pass them as the tags array. Never pass ids or uuids; the tool resolves names internally.
 
 PREVIEW FORMAT. The call without confirmed returns the normalized fields that would be saved (defaults applied) under data; describe them to the user as Markdown, where single line breaks are joined, so keep each field a list item, put a blank line before and after the body, and never put a --- line directly under text (it turns that text into a heading):
 
@@ -300,7 +300,7 @@ PREVIEW FORMAT. The call without confirmed returns the normalized fields that wo
 
 [body content as paragraphs, truncate if very long]
 
-If the user asks for a change, call the tool again with the change applied, still without confirmed, to show the updated preview. The user confirms with the Confirm button; a chat reply such as "go ahead" is not confirmation, and you never pass confirmed yourself.
+If the user asks for a change, call the tool again with the change applied, still without confirmed, to show a new preview. A bare change request is not approval, and neither are words like "looks good" next to a change; only approval of the current preview, after which you call again with the same arguments and confirmed: true.
 Publish date: leave published_date out unless the user asks for a specific publish date; it defaults to today. It is the date the announcement is dated, listed by (newest first) and picked up by the Bi-Weekly Digest, never the date of an event the announcement describes. A future publish date keeps the announcement out of the Bi-Weekly Digest until that date and pins it to the top of listings. A past publish date, before the current digest window, also keeps it out of the digest. When the preview shows any date other than today, tell the user this.
 Affiliation options: "ACCESS Collaboration" or "Community". Sharing options: "Announcements page" and "Bi-Weekly Digest" are open to everyone. "Affinity Group page" and "Email to Affinity Group" need an affinity group the user is allowed to post to (a coordinator of it, or an administrator or news manager, who can post to any group); the group is chosen in the preview too. get_announcement_context lists only the groups the user coordinates, so an administrator or news manager sees an empty list and names the group directly.
 
@@ -362,7 +362,7 @@ After creating, tell the user the title and status, and link data.edit_url as th
             confirmed: {
               type: "boolean",
               description:
-                "Set only by the Confirm button; never set it yourself.",
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["title", "body", "summary"],
@@ -372,13 +372,13 @@ After creating, tell the user the title and status, and link data.edit_url as th
       },
       {
         name: "update_announcement",
-        description: `Update an existing announcement. User must own the announcement. Previews by default and changes nothing; call again with confirmed: true to make the change.
+        description: `Update an existing announcement. User must own the announcement. Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change.
 
 BEFORE CALLING:
 1. Use get_my_announcements to find the announcement UUID
 2. Confirm which fields the user wants to change
 3. Only include fields that are changing. To remove every tag, set clear_tags: true (not tags: []), only when the user asks to remove all tags, and say in the preview that all tags will be removed
-4. Call the tool without confirmed to show the preview of the changes (data.changes lists each changed field with its old and new value, or old_unavailable when the current value cannot be read). The user confirms with the Confirm button; never pass confirmed yourself
+4. Call the tool without confirmed to show the preview of the changes (data.changes lists each changed field with its old and new value, or old_unavailable when the current value cannot be read). Show it to the user; once they approve that exact preview, call again with the same arguments and confirmed: true. A change request means a new preview
 5. Send at most one of affinity_group, add_affinity_group, remove_affinity_group or clear_affinity_groups. Drupal checks that the user may post to every group the announcement ends up with, hidden ones included; if it refuses with not_coordinator, show its message as is
 
 Without confirmed it returns {action:"update", status:"preview", executed:false, data:{uuid, title, changes}} and writes nothing. When data.no_changes is true the update would change nothing: tell the user so and do not ask them to confirm. On commit it returns the write envelope {action:"update", status:"updated", executed:true, data:{uuid, title, edit_url, review_required}}. Read "status" and "executed"; the updated fields are under "data". When data.review_required is true, the user may not publish and the announcement is published, so the edit was saved as a draft for review and the live announcement is unchanged. Never tell that user the change is live; tell them it is waiting for review. A "warning" carries that review notice and any tags that could not be matched; if one is returned, pass the review notice on and tell the user which tags were skipped.
@@ -462,7 +462,7 @@ After updating, tell the user what changed and link data.edit_url as the place t
             confirmed: {
               type: "boolean",
               description:
-                "Set only by the Confirm button; never set it yourself.",
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["uuid"],
@@ -497,7 +497,7 @@ Returns the write envelope {action:"delete", status, executed, data}. "confirmed
             confirmed: {
               type: "boolean",
               description:
-                "Set only by the Confirm button; never set it yourself.",
+                "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["uuid", "confirmed"],
@@ -1359,6 +1359,7 @@ Which would you like to do?`,
           title: current?.title ?? args.title ?? null,
           changes,
           ...(changes.length === 0 && { no_changes: true }),
+          ...(!current && { detail_unavailable: true }),
         },
         ...(warning && { warning }),
       });

@@ -200,7 +200,7 @@ export class JsmServer extends BaseAccessServer {
       {
         name: "create_support_ticket",
         description:
-          "Create a general support ticket in ACCESS JSM. Use this when a user needs help with allocations, accounts, software, or other ACCESS-related issues that you cannot resolve directly. Previews by default and changes nothing; call again with confirmed: true to make the change. Call it without confirmed to show the user the ticket as it would be filed; the user confirms with the Confirm button, and you never pass confirmed yourself. A chat reply such as \"go ahead\" is not confirmation. Without confirmed it returns {action:\"create_ticket\", status:\"preview\", executed:false, data:{request_type, summary, description, filed_as, priority, category, resource, user_id_at_resource}} and files nothing; data.filed_as is the email the ticket is filed under.",
+          "Create a general support ticket in ACCESS JSM. Use this when a user needs help with allocations, accounts, software, or other ACCESS-related issues that you cannot resolve directly. Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change. Call it without confirmed to show the user the ticket as it would be filed; once the user approves that exact preview, call again with the same arguments and confirmed: true. Without confirmed it returns {action:\"create_ticket\", status:\"preview\", executed:false, data:{request_type, summary, description, filed_as, priority, category, resource, user_id_at_resource}} and files nothing; data.filed_as is the email the ticket is filed under.",
         inputSchema: {
           type: "object",
           properties: {
@@ -250,7 +250,7 @@ export class JsmServer extends BaseAccessServer {
             },
             confirmed: {
               type: "boolean",
-              description: "Set only by the Confirm button; never set it yourself.",
+              description: "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["summary", "description"],
@@ -261,7 +261,7 @@ export class JsmServer extends BaseAccessServer {
       {
         name: "create_login_ticket",
         description:
-          "Create a ticket for login issues - either for the ACCESS portal or a specific resource provider. Previews by default and changes nothing; call again with confirmed: true to make the change. Call it without confirmed to show the user the ticket as it would be filed; the user confirms with the Confirm button, and you never pass confirmed yourself. A chat reply such as \"go ahead\" is not confirmation. Without confirmed it returns {action:\"create_ticket\", status:\"preview\", executed:false, data:{request_type, summary, description, filed_as, identity_provider, browser, resource, user_id_at_resource}} and files nothing; data.filed_as is the email the ticket is filed under.",
+          "Create a ticket for login issues - either for the ACCESS portal or a specific resource provider. Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change. Call it without confirmed to show the user the ticket as it would be filed; once the user approves that exact preview, call again with the same arguments and confirmed: true. Without confirmed it returns {action:\"create_ticket\", status:\"preview\", executed:false, data:{request_type, summary, description, filed_as, identity_provider, browser, resource, user_id_at_resource}} and files nothing; data.filed_as is the email the ticket is filed under.",
         inputSchema: {
           type: "object",
           properties: {
@@ -313,7 +313,7 @@ export class JsmServer extends BaseAccessServer {
             },
             confirmed: {
               type: "boolean",
-              description: "Set only by the Confirm button; never set it yourself.",
+              description: "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["summary", "description", "login_type"],
@@ -324,7 +324,7 @@ export class JsmServer extends BaseAccessServer {
       {
         name: "report_security_incident",
         description:
-          "Report a security vulnerability or incident. Use this for security-related concerns that need to go to the ACCESS cybersecurity team. Previews by default and changes nothing; call again with confirmed: true to make the change. Call it without confirmed to show the user the report as it would be filed; the user confirms with the Confirm button, and you never pass confirmed yourself. A chat reply such as \"go ahead\" is not confirmation. Without confirmed it returns {action:\"create_ticket\", status:\"preview\", executed:false, data:{request_type, summary, description, filed_as, priority}} and files nothing; data.filed_as is the email the report is filed under.",
+          "Report a security vulnerability or incident. Use this for security-related concerns that need to go to the ACCESS cybersecurity team. Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change. Call it without confirmed to show the user the report as it would be filed; once the user approves that exact preview, call again with the same arguments and confirmed: true. Without confirmed it returns {action:\"create_ticket\", status:\"preview\", executed:false, data:{request_type, summary, description, filed_as, priority}} and files nothing; data.filed_as is the email the report is filed under.",
         inputSchema: {
           type: "object",
           properties: {
@@ -359,7 +359,7 @@ export class JsmServer extends BaseAccessServer {
             },
             confirmed: {
               type: "boolean",
-              description: "Set only by the Confirm button; never set it yourself.",
+              description: "Omit to preview. Set true only after the user has approved this exact preview.",
             },
           },
           required: ["summary", "description"],

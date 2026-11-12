@@ -1,5 +1,5 @@
 /**
- * The ticket tools preview until the Confirm button sets confirmed: true
+ * The ticket tools preview until called with confirmed: true
  * (D8-3088). A preview files nothing and shows what would be filed.
  */
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
@@ -138,15 +138,15 @@ describe("ticket previews", () => {
       expect(post).not.toHaveBeenCalled();
     });
 
-    it("tells the model to preview and never pass confirmed", () => {
+    it("tells the model to preview until the user approves", () => {
       const def = server["getTools"]().find((t) => t.name === tool)!;
       expect(def.description).toContain(
-        "Previews by default and changes nothing; call again with confirmed: true to make the change."
+        "Previews by default and changes nothing; call again with confirmed: true after the user approves the preview to make the change."
       );
-      expect(def.description).toContain("Confirm button");
-      expect(def.description).toContain("you never pass confirmed yourself");
+      expect(def.description).not.toContain("Confirm button");
+      expect(def.description).toContain("once the user approves that exact preview");
       const props = def.inputSchema.properties as Record<string, { description?: string }>;
-      expect(props.confirmed.description).toBe("Set only by the Confirm button; never set it yourself.");
+      expect(props.confirmed.description).toBe("Omit to preview. Set true only after the user has approved this exact preview.");
     });
   });
 
