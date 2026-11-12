@@ -44,7 +44,7 @@ describe("ticket requester", () => {
 
   const call = (name: string, args: Record<string, unknown>, context?: RequestContext) => {
     const run = () =>
-      server["handleToolCall"]({ method: "tools/call", params: { name, arguments: args } });
+      server["handleToolCall"]({ method: "tools/call", params: { name, arguments: { confirmed: true, ...args } } });
     return context ? requestContextStorage.run(context, run) : run();
   };
   const sent = () => post.mock.calls[0][1].requestFieldValues;
