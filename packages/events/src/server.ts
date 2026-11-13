@@ -443,7 +443,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "register_for_event",
         description:
-          "Register the acting user for an ACCESS event via native ACCESS registration. WITHOUT `confirmed` (or confirmed:false) this returns a PREVIEW of what would happen (seat vs. waitlist) and writes NOTHING. WITH confirmed:true it registers. Returns the write-envelope shape {action:\"register\", status, executed, data}: read `status` (preview | registered | waitlisted | already_registered) and `executed` (true only when a write actually happened). status:\"preview\" means executed:false — nothing was written; call again with confirmed:true to commit. status:\"registered\"/\"waitlisted\" carries data.registrant_id. status:\"already_registered\" (executed:false) means the acting user already holds a seat — no change. Refusals (event_full, registration_closed, not_registrable, not_permitted) come back as errors with a machine-readable `code`. Pair with get_event (live availability before registering), get_my_registrations (list the acting user's registrations), and cancel_registration (cancel one, takes the registrant_id).",
+          "Register the acting user for an ACCESS event via native ACCESS registration. WITHOUT `confirmed` (or confirmed:false) this returns a PREVIEW of what would happen (seat vs. waitlist, with the event title, start_date and end_date, or detail_unavailable when the event could not be read) and writes NOTHING. WITH confirmed:true it registers. Returns the write-envelope shape {action:\"register\", status, executed, data}: read `status` (preview | registered | waitlisted | already_registered) and `executed` (true only when a write actually happened). status:\"preview\" means executed:false — nothing was written; call again with confirmed:true to commit. status:\"registered\"/\"waitlisted\" carries data.registrant_id. status:\"already_registered\" (executed:false) means the acting user already holds a seat — no change. Refusals (event_full, registration_closed, not_registrable, not_permitted) come back as errors with a machine-readable `code`. Pair with get_event (live availability before registering), get_my_registrations (list the acting user's registrations), and cancel_registration (cancel one, takes the registrant_id).",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -487,7 +487,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "create_event",
         description:
-          "Create a new event series as a DRAFT (organizer write; acting-user-gated). There is no self-publish path — every created series starts moderation_state:\"draft\" regardless of what you pass. The response's moderation block tells you what to do next: moderation.can_publish (whether the acting user may publish directly) and moderation.next_action (\"send_for_review\" when they cannot — call send_for_review to route it to an editor). Requires title, field_event_type, and field_location — the last two are required by the site's field validation (the same rule the browser form enforces), and creation is refused with code \"validation_error\" naming the field if they are missing or invalid. You must ALSO specify the schedule, exactly one of two ways: for a repeating event pass a recurrence object; for one-off or irregular dates pass recur_type:\"custom\" with custom_dates. The recurrence object describes the pattern with frequency (\"daily\", \"weekly\", \"monthly\", \"yearly\", \"consecutive\"), start_date, end_date, start_time, and either duration_minutes OR ends_at for daily/weekly/monthly/yearly. For monthly, use weekday mode (days + week_positions, e.g. [\"mon\"] + [\"first\"] for first Monday; use monthday mode (days_of_month, e.g. [15] or [-1] for last day) for 'the 15th' or 'last day' patterns. Yearly uses months + days/days_of_month. Consecutive uses window_start/window_end + session_minutes + gap_minutes. Invalid recurrence fields are refused with a coded error (validation_error/over_fill/out_of_vocab) naming the problem field before anything is written. Affinity group is optional: supply field_affinity_group_node only to publish the event to one or more groups the acting user coordinates (creation is refused with code \"not_coordinator\" if they do not coordinate ALL supplied groups); omit it to create an event not published to any group. For recur_type:\"custom\", pass custom_dates as [{start_date, end_date}, …]. Optional content fields: body, field_summary, field_skill_level, field_tags, field_event_speakers, field_event_virtual_meeting_link, field_event_in_person (physical venue vs online). Optional field_event_timezone (IANA name): set only when the user names a timezone different from their own — otherwise omit it and the event uses the acting user's account timezone. WITHOUT confirmed:true this returns a no-write PREVIEW (status:\"preview\", executed:false, with occurrence_count, total_occurrence_count, truncated, and occurrences — truncated is true only when a 1000-occurrence hard cap clipped the set, in which case total_occurrence_count is the real total while occurrence_count/occurrences hold the shown first 1000; report total_occurrence_count to the user) of the occurrence dates the recurrence would produce — show it to the user first. WITH confirmed:true it creates the series. Returns on commit: {series_id, instance_ids, title, moderation_state, moderation, event_url, edit_url}; link event_url (the event page) and edit_url (where the organizer edits or publishes it) in your reply, with the title and state. Don't show series_id or instance_ids: they're for later tool calls, not for the user. If a recurrence pattern produces zero occurrences the response also carries recurrence_warning.",
+          "Create a new event series as a DRAFT (organizer write; acting-user-gated). There is no self-publish path — every created series starts moderation_state:\"draft\" regardless of what you pass. The response's moderation block tells you what to do next: moderation.can_publish (whether the acting user may publish directly) and moderation.next_action (\"send_for_review\" when they cannot — call send_for_review to route it to an editor). Requires title, field_event_type, and field_location — the last two are required by the site's field validation (the same rule the browser form enforces), and creation is refused with code \"validation_error\" naming the field if they are missing or invalid. You must ALSO specify the schedule, exactly one of two ways: for a repeating event pass a recurrence object; for one-off or irregular dates pass recur_type:\"custom\" with custom_dates. The recurrence object describes the pattern with frequency (\"daily\", \"weekly\", \"monthly\", \"yearly\", \"consecutive\"), start_date, end_date, start_time, and either duration_minutes OR ends_at for daily/weekly/monthly/yearly. For monthly, use weekday mode (days + week_positions, e.g. [\"mon\"] + [\"first\"] for first Monday; use monthday mode (days_of_month, e.g. [15] or [-1] for last day) for 'the 15th' or 'last day' patterns. Yearly uses months + days/days_of_month. Consecutive uses window_start/window_end + session_minutes + gap_minutes. Invalid recurrence fields are refused with a coded error (validation_error/over_fill/out_of_vocab) naming the problem field before anything is written. Affinity group is optional: supply field_affinity_group_node only to publish the event to one or more groups the acting user coordinates (creation is refused with code \"not_coordinator\" if they do not coordinate ALL supplied groups); omit it to create an event not published to any group. For recur_type:\"custom\", pass custom_dates as [{start_date, end_date}, …]. Optional content fields: body, field_summary, field_skill_level, field_tags, field_event_speakers, field_event_virtual_meeting_link, field_event_in_person (physical venue vs online). Optional field_event_timezone (IANA name): set only when the user names a timezone different from their own — otherwise omit it and the event uses the acting user's account timezone. WITHOUT confirmed:true this returns a no-write PREVIEW (status:\"preview\", executed:false, with occurrence_count, total_occurrence_count, truncated, and occurrences — truncated is true only when a 1000-occurrence hard cap clipped the set, in which case total_occurrence_count is the real total while occurrence_count/occurrences hold the shown first 1000; report total_occurrence_count to the user) of the occurrence dates the recurrence would produce, plus the title, body and content fields that would be saved — show it to the user first. WITH confirmed:true it creates the series. Returns on commit: {series_id, instance_ids, title, moderation_state, moderation, event_url, edit_url}; link event_url (the event page) and edit_url (where the organizer edits or publishes it) in your reply, with the title and state. Don't show series_id or instance_ids: they're for later tool calls, not for the user. If a recurrence pattern produces zero occurrences the response also carries recurrence_warning.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -689,7 +689,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "delete_event",
         description:
-          "Cancel (archive) an event series — organizer write, acting-user-gated. A series that was ever published is ARCHIVED (its instances archive too; registrations are always KEPT and future registrants are notified). A series that was NEVER published is instead hard-deleted, UNLESS it carries any registrations (past or future — attendance history is protected), in which case it is refused with code \"registrations_exist\": those cannot be silently destroyed. WITHOUT confirmed:true this returns a no-write PREVIEW (status:\"preview\", executed:false) describing would_archive/would_hard_delete and registrants_affected — show it to the user first. WITH confirmed:true it executes. Returns on commit: {series_id, instances_archived, registrants_affected, notified, notifications_disabled, hard_deleted}. To reschedule instead of cancelling, prefer edit_occurrence (single date) or cancel_occurrence + restore_occurrence for partial changes — reserve delete_event for actually cancelling the whole series. To undo, use restore_event.",
+          "Cancel (archive) an event series — organizer write, acting-user-gated. A series that was ever published is ARCHIVED (its instances archive too; registrations are always KEPT and future registrants are notified). A series that was NEVER published is instead hard-deleted, UNLESS it carries any registrations (past or future — attendance history is protected), in which case it is refused with code \"registrations_exist\": those cannot be silently destroyed. WITHOUT confirmed:true this returns a no-write PREVIEW (status:\"preview\", executed:false) with the series title, start_date, end_date and current_state, and would_archive/would_hard_delete and registrants_affected (detail_unavailable when the series could not be read) — show it to the user first. WITH confirmed:true it executes. Returns on commit: {series_id, instances_archived, registrants_affected, notified, notifications_disabled, hard_deleted}. To reschedule instead of cancelling, prefer edit_occurrence (single date) or cancel_occurrence + restore_occurrence for partial changes — reserve delete_event for actually cancelling the whole series. To undo, use restore_event.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -754,7 +754,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       {
         name: "cancel_occurrence",
         description:
-          "Cancel ONE occurrence of an event series without touching the rest — organizer write, acting-user-gated. This is the tool for a postponement: to move a single occurrence's date while keeping registrants informed, cancel_occurrence it first (registrants are notified it's off), THEN edit_occurrence its date while it's dark, THEN restore_occurrence to bring it back at the new time. (Contrast: to reschedule a still-LIVE occurrence with no gap, skip cancel entirely and just call edit_occurrence directly — that notifies registrants of the new date without ever cancelling.) For a PARTIAL series restore, cancel_occurrence each instance you want to STAY cancelled before calling restore_event on the parent series — restore_event skips any instance that is individually cancelled. Registrations on the occurrence are always KEPT (never destroyed) on cancel. WITHOUT confirmed:true, returns a no-write PREVIEW (status:\"preview\", executed:false, registrants_affected). WITH confirmed:true it executes: a published occurrence archives; an already-archived occurrence is idempotently flagged (so a series-wide restore will skip it); a draft occurrence is refused with code \"invalid_state\" (delete it instead — there's nothing published to cancel); any other state is also refused invalid_state. Returns {eventinstance_id, registrants_affected, notified, notifications_disabled}.",
+          "Cancel ONE occurrence of an event series without touching the rest — organizer write, acting-user-gated. This is the tool for a postponement: to move a single occurrence's date while keeping registrants informed, cancel_occurrence it first (registrants are notified it's off), THEN edit_occurrence its date while it's dark, THEN restore_occurrence to bring it back at the new time. (Contrast: to reschedule a still-LIVE occurrence with no gap, skip cancel entirely and just call edit_occurrence directly — that notifies registrants of the new date without ever cancelling.) For a PARTIAL series restore, cancel_occurrence each instance you want to STAY cancelled before calling restore_event on the parent series — restore_event skips any instance that is individually cancelled. Registrations on the occurrence are always KEPT (never destroyed) on cancel. WITHOUT confirmed:true, returns a no-write PREVIEW (status:\"preview\", executed:false, title, start_date, end_date, registrants_affected; detail_unavailable when the occurrence could not be read). WITH confirmed:true it executes: a published occurrence archives; an already-archived occurrence is idempotently flagged (so a series-wide restore will skip it); a draft occurrence is refused with code \"invalid_state\" (delete it instead — there's nothing published to cancel); any other state is also refused invalid_state. Returns {eventinstance_id, registrants_affected, notified, notifications_disabled}.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -1647,11 +1647,14 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       // spec Ground Truth), so no guard is needed here — reading it unconditionally
       // is safe. If it were ever absent, JSON.stringify drops the undefined key and
       // data serializes to {}; the envelope stays conformant either way.
+      const summary = await this.occurrenceSummary(eventinstanceId, { withState: false });
       return this.writeResponse({
         action: "register",
         status: "preview",
         executed: false,
         data: {
+          eventinstance_id: eventinstanceId,
+          ...summary,
           outcome_if_confirmed: data?.outcome_if_confirmed,
           ...(data?.seats_remaining != null && {
             seats_remaining: data.seats_remaining,
@@ -1924,15 +1927,26 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
   private async loadCurrentSeries(
     id: string
   ): Promise<{ detail?: Record<string, unknown>; state?: string }> {
-    let items: Array<Record<string, any>>; // eslint-disable-line @typescript-eslint/no-explicit-any -- JSON:API response shape is dynamic
-    try {
-      const result = await this.getDrupalAuth().get(
-        this.getActingUserAccessId(),
-        "/jsonapi/views/event_instance_mine/mcp_my_events?page[limit]=200"
-      );
-      items = Array.isArray(result?.data) ? result.data : [];
-    } catch {
-      return {};
+    const items: Array<Record<string, any>> = []; // eslint-disable-line @typescript-eslint/no-explicit-any -- JSON:API response shape is dynamic
+    // Page through the view so a series' date range is complete. When the cap
+    // is hit (or a later page fails) with rows left, the range is flagged
+    // dates_incomplete rather than shown as if it were the whole series.
+    let datesIncomplete = false;
+    let path: string | undefined = "/jsonapi/views/event_instance_mine/mcp_my_events?page[limit]=200";
+    for (let page = 0; path; page++) {
+      if (page === EventsServer.SERIES_VIEW_MAX_PAGES) {
+        datesIncomplete = true;
+        break;
+      }
+      try {
+        const result = await this.getDrupalAuth().get(this.getActingUserAccessId(), path);
+        if (Array.isArray(result?.data)) items.push(...result.data);
+        path = EventsServer.nextPagePath(result?.links?.next);
+      } catch {
+        if (page === 0) return {};
+        datesIncomplete = true;
+        break;
+      }
     }
     const seriesOf = (item: Record<string, any>): string | undefined => { // eslint-disable-line @typescript-eslint/no-explicit-any
       const target = item?.relationships?.eventseries_id?.data?.meta?.drupal_internal__target_id;
@@ -1970,12 +1984,27 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
         ...extra,
         title: first.title,
         series_id: seriesId,
-        start_date: starts[0],
-        end_date: ends[ends.length - 1],
-        instance_count: matches.length,
+        ...(datesIncomplete
+          ? { dates_incomplete: true }
+          : { start_date: starts[0], end_date: ends[ends.length - 1], instance_count: matches.length }),
       },
       state: typeof state === "string" ? state : undefined,
     };
+  }
+
+  private static readonly SERIES_VIEW_MAX_PAGES = 10;
+
+  /** Path and query of a JSON:API links.next, so the next page is read from
+   * the configured portal and never from a host named in the response. */
+  private static nextPagePath(next: unknown): string | undefined {
+    const href = typeof next === "string" ? next : (next as { href?: unknown } | undefined)?.href;
+    if (typeof href !== "string" || href === "") return undefined;
+    try {
+      const url = new URL(href, "http://portal.invalid");
+      return `${url.pathname}${url.search}`;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Editorial state of one of the acting user's own instances, or undefined
@@ -2044,9 +2073,58 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       title: d?.title,
       start_date: d?.start_date,
       end_date: d?.end_date,
+      ...(d?.dates_incomplete === true ? { dates_incomplete: true } : {}),
       ...(loaded.state !== undefined ? { current_state: loaded.state } : { current_state_unavailable: true }),
-      ...(d ? {} : { detail_unavailable: true }),
+      ...(d && d.title != null ? {} : { detail_unavailable: true }),
     };
+  }
+
+  /** Content fields create_event's preview shows, read from the request body
+   * the commit sends so the card shows what would be saved. */
+  private static readonly CREATE_PREVIEW_FIELDS = [
+    "title",
+    "body",
+    "field_summary",
+    "field_location",
+    "field_event_type",
+    "field_skill_level",
+    "field_tags",
+    "field_event_speakers",
+    "field_event_virtual_meeting_link",
+    "field_event_in_person",
+    "field_event_timezone",
+    "field_affinity_group_node",
+  ] as const;
+
+  /** Best-effort read of one occurrence's title and dates for a preview that
+   * acts on an instance id. A failed or untitled read gives detail_unavailable
+   * instead of failing the preview. Read-only. */
+  private async occurrenceSummary(
+    id: string,
+    opts: { withState: boolean }
+  ): Promise<Record<string, unknown>> {
+    let loaded: { detail?: Record<string, unknown>; state?: string } = {};
+    try {
+      if (opts.withState) {
+        const current = await this.loadCurrentEvent(id, { strict: false });
+        if (!("result" in current)) loaded = current;
+      } else {
+        const { status, data } = await this.getDrupalAuth().requestRaw(
+          this.getActingUserAccessId(),
+          "GET",
+          `/api/2.3/events/${encodeURIComponent(id)}`
+        );
+        if (status >= 200 && status < 300 && data) loaded = { detail: data as Record<string, unknown> };
+      }
+    } catch {
+      loaded = {};
+    }
+    const summary = this.currentEventSummary(loaded);
+    if (!opts.withState) {
+      delete summary.current_state;
+      delete summary.current_state_unavailable;
+    }
+    return summary;
   }
 
   private previewResponse(action: "create" | "update", data: Record<string, unknown>): CallToolResult {
@@ -2206,11 +2284,15 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       if ("result" in outcome) return outcome.result;
 
       if (outcome.data.status === "preview") {
+        const sent: Record<string, unknown> = payload;
+        const content = Object.fromEntries(
+          EventsServer.CREATE_PREVIEW_FIELDS.filter((k) => sent[k] !== undefined).map((k) => [k, sent[k]])
+        );
         return this.writeResponse({
           action: "create",
           status: "preview",
           executed: false,
-          data: previewData(outcome.data),
+          data: { ...previewData(outcome.data), ...content },
         });
       }
       // Drupal did NOT preview (e.g. it committed because it doesn't yet
@@ -2357,11 +2439,12 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
     if ("result" in outcome) return outcome.result;
 
     if (outcome.data.status === "preview") {
+      const current = await this.loadCurrentSeries(eventseriesId);
       return this.writeResponse({
         action: "delete",
         status: "preview",
         executed: false,
-        data: previewData(outcome.data),
+        data: { ...this.currentEventSummary(current), ...previewData(outcome.data) },
       });
     }
 
@@ -2482,11 +2565,12 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
     if ("result" in outcome) return outcome.result;
 
     if (outcome.data.status === "preview") {
+      const summary = await this.occurrenceSummary(eventinstanceId, { withState: true });
       return this.writeResponse({
         action: "delete",
         status: "preview",
         executed: false,
-        data: previewData(outcome.data),
+        data: { ...summary, ...previewData(outcome.data) },
       });
     }
 
@@ -2656,7 +2740,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           ? { current_state: summary.current_state }
           : { current_state_unavailable: true }),
         new_occurrence: params.date,
-        ...(current.detail ? {} : { detail_unavailable: true }),
+        ...(summary.detail_unavailable ? { detail_unavailable: true } : {}),
       });
     }
     const outcome = await this.eventWriteRequest(

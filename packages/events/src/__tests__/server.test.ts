@@ -4661,6 +4661,366 @@ describe("EventsServer", () => {
           expect(props.confirmed).toBeDefined();
         }
       });
+
+      describe("previews identify what they act on, from server data (D8-3088 cards)", () => {
+        // An upstream that answers the tool's own preview route (a no-write
+        // confirmed=false call) plus reads; anything else is recorded as a write.
+        const previewUpstream = (
+          route: { method: string; path: string; data: Record<string, unknown> },
+          detailFor?: (id: string) => Record<string, unknown> | undefined
+        ) => {
+          mockRequestRaw.mockReset();
+          mockRequestRaw.mockImplementation(async (_u: string, method: string, path: string) => {
+            if (method === route.method && path === route.path) return { status: 200, data: route.data };
+            if (method !== "GET") return { status: 500, data: { error: "should_not_write" } };
+            const detail = detailFor?.(path.split("/").pop()!);
+            return detail ? { status: 200, data: detail } : { status: 404, data: { error: "not_found" } };
+          });
+        };
+        const otherWrites = (path: string) =>
+          mockRequestRaw.mock.calls.filter((c) => c[1] !== "GET" && c[2] !== path);
+
+        it("delete_event preview shows the series title, first and last dates and state, and keeps the counts", async () => {
+          mockGet.mockReset();
+          mockGet.mockResolvedValue({
+            data: [
+              instanceItem(900, 42, "published", "GPU Bootcamp"),
+              {
+                ...instanceItem(901, 42, "published", "GPU Bootcamp"),
+                attributes: {
+                  drupal_internal__id: 901,
+                  title: "GPU Bootcamp",
+                  moderation_state: "published",
+                  date: { value: "2026-08-13T13:00:00+00:00", end_value: "2026-08-13T14:00:00+00:00" },
+                },
+              },
+              instanceItem(500, 7, "published", "Other Event"),
+            ],
+          });
+          const path = "/api/2.3/event-series/42?confirmed=false";
+          previewUpstream({
+            method: "DELETE",
+            path,
+            data: { status: "preview", executed: false, series_id: 42, would_archive: true, would_hard_delete: false, registrants_affected: 3 },
+          });
+          const parsed = parse(await call("delete_event", { eventseries_id: "42" }));
+          expect(otherWrites(path)).toHaveLength(0);
+          expect(parsed).toMatchObject({ action: "delete", status: "preview", executed: false });
+          expect(parsed.data).toMatchObject({
+            series_id: 42,
+            title: "GPU Bootcamp",
+            start_date: "2026-08-06T13:00:00Z",
+            end_date: "2026-08-13T14:00:00Z",
+            current_state: "published",
+            would_archive: true,
+            would_hard_delete: false,
+            registrants_affected: 3,
+          });
+          expect(parsed.data).not.toHaveProperty("detail_unavailable");
+        });
+
+        it("delete_event preview says detail_unavailable when the series can't be read, and still previews", async () => {
+          mockGet.mockReset();
+          mockGet.mockRejectedValue(new Error("down"));
+          const path = "/api/2.3/event-series/42?confirmed=false";
+          previewUpstream({
+            method: "DELETE",
+            path,
+            data: { status: "preview", executed: false, series_id: 42, would_archive: true, would_hard_delete: false, registrants_affected: 3 },
+          });
+          const parsed = parse(await call("delete_event", { eventseries_id: "42" }));
+          expect(parsed).toMatchObject({
+            status: "preview",
+            executed: false,
+            data: { series_id: 42, would_archive: true, registrants_affected: 3, detail_unavailable: true },
+          });
+          expect(parsed.data.title).toBeUndefined();
+        });
+
+        it("delete_event commit is unchanged: one DELETE, no reads", async () => {
+          mockGet.mockReset();
+          mockRequestRaw.mockResolvedValue({
+            status: 200,
+            data: { success: true, series_id: 42, instances_archived: 1, registrants_affected: 0, notified: 0, hard_deleted: false },
+          });
+          await call("delete_event", { eventseries_id: "42", confirmed: true });
+          expect(mockRequestRaw).toHaveBeenCalledTimes(1);
+          expect(mockGet).not.toHaveBeenCalled();
+        });
+
+        it("cancel_occurrence preview shows the event title and that occurrence's start and end", async () => {
+          readOnlyUpstream(occurrenceDetail, "published");
+          const path = "/api/2.3/event-occurrences/900?confirmed=false";
+          previewUpstream(
+            { method: "DELETE", path, data: { status: "preview", executed: false, eventinstance_id: 900, registrants_affected: 2 } },
+            (id) => (id === "900" ? occurrenceDetail : undefined)
+          );
+          const parsed = parse(await call("cancel_occurrence", { eventinstance_id: "900" }));
+          expect(otherWrites(path)).toHaveLength(0);
+          expect(parsed).toMatchObject({ action: "delete", status: "preview", executed: false });
+          expect(parsed.data).toMatchObject({
+            eventinstance_id: 900,
+            registrants_affected: 2,
+            title: "OnDemand Call",
+            start_date: "2026-08-06T13:00:00Z",
+            end_date: "2026-08-06T14:00:00Z",
+            current_state: "published",
+          });
+          expect(parsed.data).not.toHaveProperty("detail_unavailable");
+          expect(mockRequestRaw.mock.calls.filter((c) => c[1] === "GET").map((c) => c[2])).toEqual(["/api/2.3/events/900"]);
+        });
+
+        it("cancel_occurrence preview says detail_unavailable when the occurrence can't be read", async () => {
+          mockGet.mockReset();
+          mockGet.mockResolvedValue({ data: [] });
+          const path = "/api/2.3/event-occurrences/900?confirmed=false";
+          previewUpstream({ method: "DELETE", path, data: { status: "preview", executed: false, eventinstance_id: 900, registrants_affected: 2 } });
+          const parsed = parse(await call("cancel_occurrence", { eventinstance_id: "900" }));
+          expect(parsed).toMatchObject({
+            status: "preview",
+            executed: false,
+            data: { eventinstance_id: 900, registrants_affected: 2, detail_unavailable: true },
+          });
+          expect(parsed.data.title).toBeUndefined();
+        });
+
+        it("cancel_occurrence commit is unchanged: one DELETE, no reads", async () => {
+          mockGet.mockReset();
+          mockRequestRaw.mockResolvedValue({ status: 200, data: { success: true, eventinstance_id: 900, registrants_affected: 0, notified: 0 } });
+          await call("cancel_occurrence", { eventinstance_id: "900", confirmed: true });
+          expect(mockRequestRaw).toHaveBeenCalledTimes(1);
+          expect(mockGet).not.toHaveBeenCalled();
+        });
+
+        it("register_for_event preview shows the event title and its start and end, plus the outcome", async () => {
+          const path = "/api/1.0/events/900/register";
+          previewUpstream(
+            { method: "POST", path, data: { outcome_if_confirmed: "seat", seats_remaining: 5 } },
+            (id) => (id === "900" ? occurrenceDetail : undefined)
+          );
+          const parsed = parse(await call("register_for_event", { eventinstance_id: "900" }));
+          expect(mockRequestRaw).toHaveBeenCalledWith("actor@example.com", "POST", path, { confirmed: false });
+          expect(otherWrites(path)).toHaveLength(0);
+          expect(parsed).toMatchObject({ action: "register", status: "preview", executed: false });
+          expect(parsed.data).toMatchObject({
+            outcome_if_confirmed: "seat",
+            seats_remaining: 5,
+            eventinstance_id: "900",
+            title: "OnDemand Call",
+            start_date: "2026-08-06T13:00:00Z",
+            end_date: "2026-08-06T14:00:00Z",
+          });
+          expect(parsed.data).not.toHaveProperty("detail_unavailable");
+        });
+
+        it("register_for_event preview says detail_unavailable when the event can't be read", async () => {
+          for (const detail of [undefined, { id: "900" }]) {
+            const path = "/api/1.0/events/900/register";
+            previewUpstream({ method: "POST", path, data: { outcome_if_confirmed: "seat" } }, () => detail);
+            const parsed = parse(await call("register_for_event", { eventinstance_id: "900" }));
+            expect(parsed).toMatchObject({
+              status: "preview",
+              executed: false,
+              data: { outcome_if_confirmed: "seat", detail_unavailable: true },
+            });
+            expect(parsed.data.title).toBeUndefined();
+          }
+        });
+
+        it("register_for_event commit is unchanged: one POST, no reads", async () => {
+          mockRequestRaw.mockResolvedValue({ status: 200, data: { success: true, status: "registered", registrant_id: "r1" } });
+          await call("register_for_event", { eventinstance_id: "900", confirmed: true });
+          expect(mockRequestRaw).toHaveBeenCalledTimes(1);
+        });
+
+        const VIEW = "/jsonapi/views/event_instance_mine/mcp_my_events?page[limit]=200";
+        const dated = (instanceId: number, seriesId: number, start: string, end: string) => {
+          const item = instanceItem(instanceId, seriesId, "published", "GPU Bootcamp");
+          return { ...item, attributes: { ...item.attributes, date: { value: start, end_value: end } } };
+        };
+
+        it("delete_event dates cover a series spread over two pages of the view", async () => {
+          const next = "https://drupal.example/jsonapi/views/event_instance_mine/mcp_my_events?page[limit]=200&page[offset]=200";
+          mockGet.mockReset();
+          mockGet.mockImplementation(async (_u: string, path: string) =>
+            path === VIEW
+              ? { data: [dated(900, 42, "2026-08-06T13:00:00+00:00", "2026-08-06T14:00:00+00:00")], links: { next: { href: next } } }
+              : { data: [dated(950, 42, "2026-12-01T13:00:00+00:00", "2026-12-01T14:00:00+00:00")], links: {} }
+          );
+          const path = "/api/2.3/event-series/42?confirmed=false";
+          previewUpstream({ method: "DELETE", path, data: { status: "preview", executed: false, series_id: 42, would_archive: true } });
+          const data = parse(await call("delete_event", { eventseries_id: "42" })).data;
+          expect(mockGet).toHaveBeenCalledTimes(2);
+          // The next link is followed as a path on the configured portal, never as an absolute URL.
+          expect(mockGet.mock.calls[1][1]).toMatch(/^\/jsonapi\/views\/event_instance_mine\/mcp_my_events\?.*offset/);
+          expect(data).toMatchObject({ title: "GPU Bootcamp", start_date: "2026-08-06T13:00:00Z", end_date: "2026-12-01T14:00:00Z" });
+          expect(data).not.toHaveProperty("dates_incomplete");
+          expect(data).not.toHaveProperty("detail_unavailable");
+        });
+
+        it("hitting the page cap flags dates_incomplete instead of showing a partial range, and keeps the title", async () => {
+          let n = 0;
+          mockGet.mockReset();
+          mockGet.mockImplementation(async () => {
+            n++;
+            return {
+              data: [dated(900 + n, 42, `2026-08-${String(n).padStart(2, "0")}T13:00:00+00:00`, `2026-08-${String(n).padStart(2, "0")}T14:00:00+00:00`)],
+              links: { next: { href: `https://drupal.example${VIEW}&page[offset]=${n * 200}` } },
+            };
+          });
+          const path = "/api/2.3/event-series/42?confirmed=false";
+          previewUpstream({ method: "DELETE", path, data: { status: "preview", executed: false, series_id: 42, would_archive: true } });
+          const data = parse(await call("delete_event", { eventseries_id: "42" })).data;
+          expect(mockGet).toHaveBeenCalledTimes(10);
+          expect(data).toMatchObject({ title: "GPU Bootcamp", dates_incomplete: true, would_archive: true });
+          expect(data).not.toHaveProperty("start_date");
+          expect(data).not.toHaveProperty("end_date");
+          for (const name of ["restore_event", "send_for_review"]) {
+            n = 0;
+            mockRequestRaw.mockClear();
+            const d = await seriesPreview(name, { eventseries_id: "42" });
+            expect(d.dates_incomplete, name).toBe(true);
+            expect(d.title, name).toBe("GPU Bootcamp");
+            expect(d, name).not.toHaveProperty("start_date");
+          }
+        });
+
+        it("add_occurrence follows the shared title rule: a series row with no title gives detail_unavailable", async () => {
+          const item = instanceItem(900, 42);
+          const { title: _t, ...attrs } = item.attributes;
+          void _t;
+          seriesUpstream([{ ...item, attributes: attrs }]);
+          const date = { value: "2026-09-10T14:00:00", end_value: "2026-09-10T15:00:00" };
+          const data = await seriesPreview("add_occurrence", { eventseries_id: "42", date });
+          expect(data.detail_unavailable).toBe(true);
+          expect(data.new_occurrence).toEqual(date);
+        });
+
+        const otherDetail = { ...occurrenceDetail, id: "901", title: "Different Event", start_date: "2027-01-01T10:00:00Z", end_date: "2027-01-01T11:00:00Z" };
+
+        it("cancel_occurrence shows the requested instance, not another one in the upstream", async () => {
+          mockGet.mockReset();
+          mockGet.mockResolvedValue({
+            data: [
+              { id: "u-901", type: "eventinstance--x", attributes: { drupal_internal__id: 901, moderation_state: "draft" } },
+              { id: "u-900", type: "eventinstance--x", attributes: { drupal_internal__id: 900, moderation_state: "published" } },
+            ],
+          });
+          const path = "/api/2.3/event-occurrences/900?confirmed=false";
+          previewUpstream(
+            { method: "DELETE", path, data: { status: "preview", executed: false, eventinstance_id: 900, registrants_affected: 2 } },
+            (id) => (id === "900" ? occurrenceDetail : id === "901" ? otherDetail : undefined)
+          );
+          const data = parse(await call("cancel_occurrence", { eventinstance_id: "900" })).data;
+          expect(data).toMatchObject({
+            title: "OnDemand Call",
+            start_date: "2026-08-06T13:00:00Z",
+            end_date: "2026-08-06T14:00:00Z",
+            current_state: "published",
+          });
+        });
+
+        it("register_for_event shows the requested instance, not another one in the upstream", async () => {
+          const path = "/api/1.0/events/901/register";
+          previewUpstream(
+            { method: "POST", path, data: { outcome_if_confirmed: "seat" } },
+            (id) => (id === "900" ? occurrenceDetail : id === "901" ? otherDetail : undefined)
+          );
+          const data = parse(await call("register_for_event", { eventinstance_id: "901" })).data;
+          expect(data).toMatchObject({
+            eventinstance_id: "901",
+            title: "Different Event",
+            start_date: "2027-01-01T10:00:00Z",
+            end_date: "2027-01-01T11:00:00Z",
+          });
+        });
+
+        const createPreviewBody = {
+          status: "preview",
+          executed: false,
+          occurrence_count: 1,
+          total_occurrence_count: 1,
+          truncated: false,
+          occurrences: [{ start: "2026-09-01T14:00:00", end: "2026-09-01T15:00:00" }],
+        };
+
+        it("create_event preview shows the content fields the commit would save, from the request body it sends", async () => {
+          const path = "/api/2.3/events?confirmed=false";
+          previewUpstream({ method: "POST", path, data: createPreviewBody });
+          const args = {
+            title: "GPU Bootcamp",
+            recur_type: "custom",
+            custom_dates: [{ start_date: "2026-09-01T14:00:00", end_date: "2026-09-01T15:00:00" }],
+            body: "<p>Bring a laptop.</p>",
+            field_summary: "Hands-on GPU training",
+            field_location: "Room 1",
+            field_event_type: "Training",
+            field_skill_level: "Beginner",
+            field_tags: ["gpu", "hpc"],
+            field_event_speakers: "Ada Lovelace",
+            field_event_virtual_meeting_link: "https://zoom.example/j/1",
+            field_event_in_person: false,
+            field_event_timezone: "America/New_York",
+            field_affinity_group_node: ["uuid-1"],
+          };
+          const parsed = parse(await call("create_event", args));
+          expect(otherWrites(path)).toHaveLength(0);
+          const sent = mockRequestRaw.mock.calls.find((c) => c[2] === path)![3] as Record<string, unknown>;
+          expect(parsed).toMatchObject({ action: "create", status: "preview", executed: false });
+          const { title, custom_dates: _cd, recur_type: _rt, ...fields } = args;
+          void _cd;
+          void _rt;
+          expect(parsed.data).toMatchObject({ title, ...fields, occurrence_count: 1, occurrences: createPreviewBody.occurrences });
+          for (const [k, v] of Object.entries({ title, ...fields })) expect(sent[k], k).toEqual(v);
+        });
+
+        it("create_event preview omits content fields that were not supplied", async () => {
+          const path = "/api/2.3/events?confirmed=false";
+          previewUpstream({ method: "POST", path, data: createPreviewBody });
+          const parsed = parse(
+            await call("create_event", {
+              title: "GPU Bootcamp",
+              recur_type: "custom",
+              custom_dates: [{ start_date: "2026-09-01T14:00:00", end_date: "2026-09-01T15:00:00" }],
+              field_location: "Room 1",
+            })
+          );
+          expect(parsed.data).toMatchObject({ title: "GPU Bootcamp", field_location: "Room 1", occurrence_count: 1 });
+          for (const k of [
+            "body",
+            "field_summary",
+            "field_event_type",
+            "field_skill_level",
+            "field_tags",
+            "field_event_speakers",
+            "field_event_virtual_meeting_link",
+            "field_event_in_person",
+            "field_event_timezone",
+            "field_affinity_group_node",
+          ]) {
+            expect(parsed.data, k).not.toHaveProperty(k);
+          }
+        });
+
+        it("create_event commit body is unchanged by the preview fields", async () => {
+          mockRequestRaw.mockResolvedValue({ status: 200, data: { success: true, series_id: 1, instance_ids: [2], title: "T" } });
+          await call("create_event", {
+            title: "T",
+            recur_type: "custom",
+            custom_dates: [{ start_date: "2026-09-01T14:00:00", end_date: "2026-09-01T15:00:00" }],
+            field_location: "Room 1",
+            confirmed: true,
+          });
+          expect(mockRequestRaw).toHaveBeenCalledTimes(1);
+          expect(mockRequestRaw.mock.calls[0][3]).toEqual({
+            title: "T",
+            recur_type: "custom",
+            field_affinity_group_node: undefined,
+            custom_dates: [{ start_date: "2026-09-01T14:00:00", end_date: "2026-09-01T15:00:00" }],
+            field_location: "Room 1",
+          });
+        });
+      });
     });
 
     describe("shared auth/error handling", () => {
