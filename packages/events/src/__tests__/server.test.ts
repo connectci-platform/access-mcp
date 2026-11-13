@@ -4849,6 +4849,7 @@ describe("EventsServer", () => {
             title: "GPU Bootcamp",
             recur_type: "custom",
             custom_dates: [{ start_date: "2026-09-01T14:00:00", end_date: "2026-09-01T15:00:00" }],
+            body: "<p>Bring a laptop.</p>",
             field_summary: "Hands-on GPU training",
             field_location: "Room 1",
             field_event_type: "Training",
@@ -4884,6 +4885,7 @@ describe("EventsServer", () => {
           );
           expect(parsed.data).toMatchObject({ title: "GPU Bootcamp", field_location: "Room 1", occurrence_count: 1 });
           for (const k of [
+            "body",
             "field_summary",
             "field_event_type",
             "field_skill_level",
