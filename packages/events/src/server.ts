@@ -1927,15 +1927,26 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
   private async loadCurrentSeries(
     id: string
   ): Promise<{ detail?: Record<string, unknown>; state?: string }> {
-    let items: Array<Record<string, any>>; // eslint-disable-line @typescript-eslint/no-explicit-any -- JSON:API response shape is dynamic
-    try {
-      const result = await this.getDrupalAuth().get(
-        this.getActingUserAccessId(),
-        "/jsonapi/views/event_instance_mine/mcp_my_events?page[limit]=200"
-      );
-      items = Array.isArray(result?.data) ? result.data : [];
-    } catch {
-      return {};
+    const items: Array<Record<string, any>> = []; // eslint-disable-line @typescript-eslint/no-explicit-any -- JSON:API response shape is dynamic
+    // Page through the view so a series' date range is complete. When the cap
+    // is hit (or a later page fails) with rows left, the range is flagged
+    // dates_incomplete rather than shown as if it were the whole series.
+    let datesIncomplete = false;
+    let path: string | undefined = "/jsonapi/views/event_instance_mine/mcp_my_events?page[limit]=200";
+    for (let page = 0; path; page++) {
+      if (page === EventsServer.SERIES_VIEW_MAX_PAGES) {
+        datesIncomplete = true;
+        break;
+      }
+      try {
+        const result = await this.getDrupalAuth().get(this.getActingUserAccessId(), path);
+        if (Array.isArray(result?.data)) items.push(...result.data);
+        path = EventsServer.nextPagePath(result?.links?.next);
+      } catch {
+        if (page === 0) return {};
+        datesIncomplete = true;
+        break;
+      }
     }
     const seriesOf = (item: Record<string, any>): string | undefined => { // eslint-disable-line @typescript-eslint/no-explicit-any
       const target = item?.relationships?.eventseries_id?.data?.meta?.drupal_internal__target_id;
@@ -1973,12 +1984,27 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
         ...extra,
         title: first.title,
         series_id: seriesId,
-        start_date: starts[0],
-        end_date: ends[ends.length - 1],
-        instance_count: matches.length,
+        ...(datesIncomplete
+          ? { dates_incomplete: true }
+          : { start_date: starts[0], end_date: ends[ends.length - 1], instance_count: matches.length }),
       },
       state: typeof state === "string" ? state : undefined,
     };
+  }
+
+  private static readonly SERIES_VIEW_MAX_PAGES = 10;
+
+  /** Path and query of a JSON:API links.next, so the next page is read from
+   * the configured portal and never from a host named in the response. */
+  private static nextPagePath(next: unknown): string | undefined {
+    const href = typeof next === "string" ? next : (next as { href?: unknown } | undefined)?.href;
+    if (typeof href !== "string" || href === "") return undefined;
+    try {
+      const url = new URL(href, "http://portal.invalid");
+      return `${url.pathname}${url.search}`;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Editorial state of one of the acting user's own instances, or undefined
@@ -2047,6 +2073,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
       title: d?.title,
       start_date: d?.start_date,
       end_date: d?.end_date,
+      ...(d?.dates_incomplete === true ? { dates_incomplete: true } : {}),
       ...(loaded.state !== undefined ? { current_state: loaded.state } : { current_state_unavailable: true }),
       ...(d && d.title != null ? {} : { detail_unavailable: true }),
     };
@@ -2713,7 +2740,7 @@ Returns: {total, items: [{id, type, title, start_date, end_date, status}]} where
           ? { current_state: summary.current_state }
           : { current_state_unavailable: true }),
         new_occurrence: params.date,
-        ...(current.detail ? {} : { detail_unavailable: true }),
+        ...(summary.detail_unavailable ? { detail_unavailable: true } : {}),
       });
     }
     const outcome = await this.eventWriteRequest(

@@ -4833,6 +4833,108 @@ describe("EventsServer", () => {
           expect(mockRequestRaw).toHaveBeenCalledTimes(1);
         });
 
+        const VIEW = "/jsonapi/views/event_instance_mine/mcp_my_events?page[limit]=200";
+        const dated = (instanceId: number, seriesId: number, start: string, end: string) => {
+          const item = instanceItem(instanceId, seriesId, "published", "GPU Bootcamp");
+          return { ...item, attributes: { ...item.attributes, date: { value: start, end_value: end } } };
+        };
+
+        it("delete_event dates cover a series spread over two pages of the view", async () => {
+          const next = "https://drupal.example/jsonapi/views/event_instance_mine/mcp_my_events?page[limit]=200&page[offset]=200";
+          mockGet.mockReset();
+          mockGet.mockImplementation(async (_u: string, path: string) =>
+            path === VIEW
+              ? { data: [dated(900, 42, "2026-08-06T13:00:00+00:00", "2026-08-06T14:00:00+00:00")], links: { next: { href: next } } }
+              : { data: [dated(950, 42, "2026-12-01T13:00:00+00:00", "2026-12-01T14:00:00+00:00")], links: {} }
+          );
+          const path = "/api/2.3/event-series/42?confirmed=false";
+          previewUpstream({ method: "DELETE", path, data: { status: "preview", executed: false, series_id: 42, would_archive: true } });
+          const data = parse(await call("delete_event", { eventseries_id: "42" })).data;
+          expect(mockGet).toHaveBeenCalledTimes(2);
+          // The next link is followed as a path on the configured portal, never as an absolute URL.
+          expect(mockGet.mock.calls[1][1]).toMatch(/^\/jsonapi\/views\/event_instance_mine\/mcp_my_events\?.*offset/);
+          expect(data).toMatchObject({ title: "GPU Bootcamp", start_date: "2026-08-06T13:00:00Z", end_date: "2026-12-01T14:00:00Z" });
+          expect(data).not.toHaveProperty("dates_incomplete");
+          expect(data).not.toHaveProperty("detail_unavailable");
+        });
+
+        it("hitting the page cap flags dates_incomplete instead of showing a partial range, and keeps the title", async () => {
+          let n = 0;
+          mockGet.mockReset();
+          mockGet.mockImplementation(async () => {
+            n++;
+            return {
+              data: [dated(900 + n, 42, `2026-08-${String(n).padStart(2, "0")}T13:00:00+00:00`, `2026-08-${String(n).padStart(2, "0")}T14:00:00+00:00`)],
+              links: { next: { href: `https://drupal.example${VIEW}&page[offset]=${n * 200}` } },
+            };
+          });
+          const path = "/api/2.3/event-series/42?confirmed=false";
+          previewUpstream({ method: "DELETE", path, data: { status: "preview", executed: false, series_id: 42, would_archive: true } });
+          const data = parse(await call("delete_event", { eventseries_id: "42" })).data;
+          expect(mockGet).toHaveBeenCalledTimes(10);
+          expect(data).toMatchObject({ title: "GPU Bootcamp", dates_incomplete: true, would_archive: true });
+          expect(data).not.toHaveProperty("start_date");
+          expect(data).not.toHaveProperty("end_date");
+          for (const name of ["restore_event", "send_for_review"]) {
+            n = 0;
+            mockRequestRaw.mockClear();
+            const d = await seriesPreview(name, { eventseries_id: "42" });
+            expect(d.dates_incomplete, name).toBe(true);
+            expect(d.title, name).toBe("GPU Bootcamp");
+            expect(d, name).not.toHaveProperty("start_date");
+          }
+        });
+
+        it("add_occurrence follows the shared title rule: a series row with no title gives detail_unavailable", async () => {
+          const item = instanceItem(900, 42);
+          const { title: _t, ...attrs } = item.attributes;
+          void _t;
+          seriesUpstream([{ ...item, attributes: attrs }]);
+          const date = { value: "2026-09-10T14:00:00", end_value: "2026-09-10T15:00:00" };
+          const data = await seriesPreview("add_occurrence", { eventseries_id: "42", date });
+          expect(data.detail_unavailable).toBe(true);
+          expect(data.new_occurrence).toEqual(date);
+        });
+
+        const otherDetail = { ...occurrenceDetail, id: "901", title: "Different Event", start_date: "2027-01-01T10:00:00Z", end_date: "2027-01-01T11:00:00Z" };
+
+        it("cancel_occurrence shows the requested instance, not another one in the upstream", async () => {
+          mockGet.mockReset();
+          mockGet.mockResolvedValue({
+            data: [
+              { id: "u-901", type: "eventinstance--x", attributes: { drupal_internal__id: 901, moderation_state: "draft" } },
+              { id: "u-900", type: "eventinstance--x", attributes: { drupal_internal__id: 900, moderation_state: "published" } },
+            ],
+          });
+          const path = "/api/2.3/event-occurrences/900?confirmed=false";
+          previewUpstream(
+            { method: "DELETE", path, data: { status: "preview", executed: false, eventinstance_id: 900, registrants_affected: 2 } },
+            (id) => (id === "900" ? occurrenceDetail : id === "901" ? otherDetail : undefined)
+          );
+          const data = parse(await call("cancel_occurrence", { eventinstance_id: "900" })).data;
+          expect(data).toMatchObject({
+            title: "OnDemand Call",
+            start_date: "2026-08-06T13:00:00Z",
+            end_date: "2026-08-06T14:00:00Z",
+            current_state: "published",
+          });
+        });
+
+        it("register_for_event shows the requested instance, not another one in the upstream", async () => {
+          const path = "/api/1.0/events/901/register";
+          previewUpstream(
+            { method: "POST", path, data: { outcome_if_confirmed: "seat" } },
+            (id) => (id === "900" ? occurrenceDetail : id === "901" ? otherDetail : undefined)
+          );
+          const data = parse(await call("register_for_event", { eventinstance_id: "901" })).data;
+          expect(data).toMatchObject({
+            eventinstance_id: "901",
+            title: "Different Event",
+            start_date: "2027-01-01T10:00:00Z",
+            end_date: "2027-01-01T11:00:00Z",
+          });
+        });
+
         const createPreviewBody = {
           status: "preview",
           executed: false,
