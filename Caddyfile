@@ -1,3 +1,15 @@
+{
+    # The default logger carries http.log.error, so a failed proxy request to
+    # the agent logs its headers. X-Thread-Claim-Key is the secret that opens a
+    # signed-out user's thread, so it never reaches a log.
+    log default {
+        format filter {
+            request>headers>X-Thread-Claim-Key delete
+            wrap json
+        }
+    }
+}
+
 mcp.access-ci.org {
     # OAuth auth service
     handle /auth/* {
@@ -205,10 +217,32 @@ qa.access-ci.org {
         reverse_proxy dashboard:3000
     }
 
+    # Request body caps. request_body directives stack and the smallest wins,
+    # so the two matchers are mutually exclusive. The stream route carries chat
+    # uploads: 20MB raw is about 27MB as base64, under 32MB.
+    @agent_upload path /api/v1/threads/*/runs/stream
+    request_body @agent_upload {
+        max_size 32MB
+    }
+    @agent_other {
+        path /api/*
+        not path /api/v1/threads/*/runs/stream
+    }
+    request_body @agent_other {
+        max_size 1MB
+    }
+
     # Agent API (and its docs) — reachable on this Caddy's mcp-network as
     # access-agent. The agent serves only /api/v1/* plus FastAPI's /docs and
     # /openapi.json; keep the SSE-friendly settings on the streaming API path.
     handle /api/* {
+        # The agent's catalog endpoints list MCP server and tool names, and
+        # /api/v1/catalog/refresh is unauthenticated, so they are not served
+        # publicly. Callers on the server reach them on the agent's port 8000.
+        # respond runs before reverse_proxy inside this handle.
+        @internal_catalog path /api/v1/catalog /api/v1/catalog/* /api/v1/tools /api/v1/tools/*
+        respond @internal_catalog 404
+
         reverse_proxy access-agent:8000 {
             flush_interval -1
             transport http {
@@ -232,7 +266,10 @@ qa.access-ci.org {
 
     log {
         output stdout
-        format json
+        format filter {
+            request>headers>X-Thread-Claim-Key delete
+            wrap json
+        }
     }
 }
 
