@@ -99,6 +99,14 @@ describe("isCallAuthorized", () => {
 });
 
 describe("toClientTools", () => {
+  it("leaves out a tool marked listed:false and never publishes the marker", () => {
+    const internal: ToolWithAccess = { ...authedTool, name: "internal_tool", listed: false };
+    const listed: ToolWithAccess = { ...publicTool, listed: true };
+    const out = toClientTools([internal, listed, authedTool]);
+    expect(out.map((t) => t.name)).toEqual(["search_events", "create_event"]);
+    for (const t of out) expect(t).not.toHaveProperty("listed");
+  });
+
   it("removes access and mutates, keeps the rest", () => {
     const [t] = toClientTools([authedTool]);
     expect(t).not.toHaveProperty("access");

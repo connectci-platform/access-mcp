@@ -394,6 +394,49 @@ export class AllocationsServer extends BaseAccessServer {
     return this.jsonContent(this.stripStale(body));
   }
 
+  /**
+   * The acting user's ACCESS Assistant consent, read for the agent before it
+   * uses their allocations. Only the state and the last-ask date leave this
+   * tool: Drupal may add profile fields for "allow", and the agent gets those
+   * from the tools built for them, not from here.
+   */
+  private async getAssistantConsent(): Promise<CallToolResult> {
+    const actingUser = this.getActingUserAccessId();
+    const body = (await this.getDrupalAuth().get(actingUser, "/api/1.0/profile")) as
+      | Record<string, unknown>
+      | undefined;
+    const consent = body?.consent;
+    if (consent !== "allow" && consent !== "deny" && consent !== "unset") {
+      return this.errorResponse("The profile endpoint returned no readable consent state.");
+    }
+    const asked = typeof body?.asked_at === "string" ? body.asked_at : null;
+    return this.jsonContent({ consent, asked_at: asked });
+  }
+
+  /**
+   * Record the acting user's answer: allow, deny, or not_now (asked, still
+   * unanswered). Drupal answers 409 to not_now once the user has chosen.
+   */
+  private async setAssistantConsent(choice: unknown): Promise<CallToolResult> {
+    if (choice !== "allow" && choice !== "deny" && choice !== "not_now") {
+      return this.errorResponse("consent must be 'allow', 'deny' or 'not_now'.");
+    }
+    const actingUser = this.getActingUserAccessId();
+    const res = await this.getDrupalAuth().requestRaw(
+      actingUser,
+      "POST",
+      "/api/1.0/profile/consent",
+      { consent: choice }
+    );
+    if (res.status < 200 || res.status >= 300) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ status: res.status, body: res.data }) }],
+        isError: true,
+      };
+    }
+    return this.jsonContent(res.data);
+  }
+
   protected listingLinks(
     context: "list" | "search" | "details" = "list"
   ): Record<string, string> | undefined {
@@ -681,6 +724,30 @@ export class AllocationsServer extends BaseAccessServer {
         inputSchema: { type: "object" as const, properties: {}, required: [] },
         access: "authenticated",
       },
+      // Unlisted: the ACCESS agent calls these itself for the signed-in user.
+      // Neither a model nor a connector is offered them.
+      {
+        name: "get_assistant_consent",
+        mutates: false,
+        listed: false,
+        description:
+          "The acting user's ACCESS Assistant personalization consent: {consent: allow|deny|unset, asked_at}.",
+        inputSchema: { type: "object" as const, properties: {}, required: [] },
+        access: "authenticated",
+      },
+      {
+        name: "set_assistant_consent",
+        mutates: true,
+        listed: false,
+        description:
+          "Record the acting user's ACCESS Assistant personalization answer: allow, deny, or not_now.",
+        inputSchema: {
+          type: "object" as const,
+          properties: { consent: { type: "string", enum: ["allow", "deny", "not_now"] } },
+          required: ["consent"],
+        },
+        access: "authenticated",
+      },
     ];
     return tools;
   }
@@ -738,6 +805,10 @@ export class AllocationsServer extends BaseAccessServer {
           );
         case "get_my_rp_accounts":
           return await this.getMyRpAccounts();
+        case "get_assistant_consent":
+          return await this.getAssistantConsent();
+        case "set_assistant_consent":
+          return await this.setAssistantConsent(toolArgs.consent);
         default:
           throw new Error(`Unknown tool: ${name}`);
       }

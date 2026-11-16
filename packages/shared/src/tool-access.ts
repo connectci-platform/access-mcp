@@ -6,9 +6,15 @@ export type AccessTier = "public" | "authenticated";
 // clients as annotations.readOnlyHint, and the ACCESS agent refuses write
 // tools to callers without write permission. A tool that left it out would
 // read as a read everywhere, so assertToolMarkers refuses to start without it.
+//
+// `listed: false` keeps a tool out of tools/list while it stays callable by
+// name. It is for calls a server-side client makes for the user (the agent
+// reading the user's assistant consent), which neither a model nor a
+// connector should be offered. Access rules are unchanged by it.
 export type ToolWithAccess = Tool & {
   access?: AccessTier;
   mutates: boolean;
+  listed?: boolean;
 };
 
 // Default-deny: a tool is public ONLY if it explicitly says so.
@@ -77,18 +83,20 @@ export function isCallAuthorized(args: {
 }
 
 /**
- * Tools as clients see them: the internal markers removed, and `mutates`
+ * Tools as clients see them: unlisted tools left out, the internal markers removed, and `mutates`
  * published as MCP's standard `annotations.readOnlyHint`. The hint derived from
  * `mutates` wins over any `annotations.readOnlyHint` a tool sets itself. Only
  * an explicit `mutates: false` is published as read-only, so a tool that
  * somehow reaches here without its marker is listed as making changes.
  */
 export function toClientTools(tools: ToolWithAccess[]): Tool[] {
-  return tools.map((t) => {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to omit from `rest`
-    const { access: _access, mutates, ...rest } = t;
-    return { ...rest, annotations: { ...rest.annotations, readOnlyHint: mutates === false } };
-  });
+  return tools
+    .filter((t) => t.listed !== false)
+    .map((t) => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to omit from `rest`
+      const { access: _access, listed: _listed, mutates, ...rest } = t;
+      return { ...rest, annotations: { ...rest.annotations, readOnlyHint: mutates === false } };
+    });
 }
 
 /**
