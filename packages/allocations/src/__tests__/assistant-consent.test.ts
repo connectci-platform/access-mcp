@@ -38,12 +38,12 @@ describe("assistant consent tools", () => {
   const body = (result: { content: unknown[] }) =>
     JSON.parse((result.content[0] as { text: string }).text);
 
-  it("are authenticated, unlisted, and marked read and write", () => {
+  it("are authenticated, service-only, and marked read and write", () => {
     const tools = server["getTools"]();
     const get = tools.find((t) => t.name === "get_assistant_consent");
     const set = tools.find((t) => t.name === "set_assistant_consent");
-    expect(get).toMatchObject({ access: "authenticated", listed: false, mutates: false });
-    expect(set).toMatchObject({ access: "authenticated", listed: false, mutates: true });
+    expect(get).toMatchObject({ access: "authenticated", serviceOnly: true, mutates: false });
+    expect(set).toMatchObject({ access: "authenticated", serviceOnly: true, mutates: true });
     const listed = server["listToolsForClient"]().map((t: { name: string }) => t.name);
     expect(listed).not.toContain("get_assistant_consent");
     expect(listed).not.toContain("set_assistant_consent");

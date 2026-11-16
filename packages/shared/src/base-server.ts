@@ -41,6 +41,7 @@ import {
 import { StandardWriteResponse, StandardErrorResponse } from "./types.js";
 import {
   isCallAuthorized,
+  isServiceOnly,
   classifyTool,
   toClientTools,
   assertToolMarkers,
@@ -830,6 +831,14 @@ export abstract class BaseAccessServer {
       if (!tool) {
         return c.json({ error: `Tool '${toolName}' not found` }, 404);
       }
+      // A service-only tool needs the inter-server key even on a server that
+      // doesn't otherwise require it.
+      if (isServiceOnly(tool)) {
+        const expectedApiKey = process.env.MCP_API_KEY;
+        if (!expectedApiKey || c.req.header("X-Api-Key") !== expectedApiKey) {
+          return c.json({ error: "Invalid or missing API key" }, 401);
+        }
+      }
 
       const acting: ActingUserResolution = this._actsForUsers
         ? await this.resolveActingUser(c.req.header("Authorization"), c.req.header("X-Acting-User"))
@@ -920,6 +929,14 @@ export abstract class BaseAccessServer {
     });
 
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      // Service-only tools are for the ACCESS agent's keyed /tools route,
+      // never for a model or connector over the MCP protocol.
+      if (isServiceOnly(this.getTools().find((t) => t.name === request.params.name))) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: `Tool '${request.params.name}' not found` }) }],
+          isError: true,
+        };
+      }
       try {
         return await this.recordAndHandle(request);
       } catch (error: unknown) {

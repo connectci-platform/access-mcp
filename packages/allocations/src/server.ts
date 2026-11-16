@@ -724,12 +724,12 @@ export class AllocationsServer extends BaseAccessServer {
         inputSchema: { type: "object" as const, properties: {}, required: [] },
         access: "authenticated",
       },
-      // Unlisted: the ACCESS agent calls these itself for the signed-in user.
-      // Neither a model nor a connector is offered them.
+      // Service-only: the ACCESS agent calls these itself for the signed-in
+      // user, on /tools with its key. No model or connector can reach them.
       {
         name: "get_assistant_consent",
         mutates: false,
-        listed: false,
+        serviceOnly: true,
         description:
           "The acting user's ACCESS Assistant personalization consent: {consent: allow|deny|unset, asked_at}.",
         inputSchema: { type: "object" as const, properties: {}, required: [] },
@@ -738,7 +738,7 @@ export class AllocationsServer extends BaseAccessServer {
       {
         name: "set_assistant_consent",
         mutates: true,
-        listed: false,
+        serviceOnly: true,
         description:
           "Record the acting user's ACCESS Assistant personalization answer: allow, deny, or not_now.",
         inputSchema: {
