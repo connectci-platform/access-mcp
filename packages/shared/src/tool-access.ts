@@ -6,10 +6,21 @@ export type AccessTier = "public" | "authenticated";
 // clients as annotations.readOnlyHint, and the ACCESS agent refuses write
 // tools to callers without write permission. A tool that left it out would
 // read as a read everywhere, so assertToolMarkers refuses to start without it.
+//
+// `serviceOnly: true` is for calls a server-side client makes for the user,
+// such as the ACCESS agent reading the user's assistant consent. Such a tool
+// is left out of tools/list and /tools, refused over the MCP protocol
+// (/mcp, /messages, stdio), and accepted only on POST /tools/:name with a
+// valid X-Api-Key, so neither a model nor a connector can call it.
 export type ToolWithAccess = Tool & {
   access?: AccessTier;
   mutates: boolean;
+  serviceOnly?: boolean;
 };
+
+export function isServiceOnly(tool: ToolWithAccess | undefined): boolean {
+  return tool?.serviceOnly === true;
+}
 
 // Default-deny: a tool is public ONLY if it explicitly says so.
 export function classifyTool(tool: ToolWithAccess): AccessTier {
@@ -77,18 +88,20 @@ export function isCallAuthorized(args: {
 }
 
 /**
- * Tools as clients see them: the internal markers removed, and `mutates`
+ * Tools as clients see them: service-only tools left out, the internal markers removed, and `mutates`
  * published as MCP's standard `annotations.readOnlyHint`. The hint derived from
  * `mutates` wins over any `annotations.readOnlyHint` a tool sets itself. Only
  * an explicit `mutates: false` is published as read-only, so a tool that
  * somehow reaches here without its marker is listed as making changes.
  */
 export function toClientTools(tools: ToolWithAccess[]): Tool[] {
-  return tools.map((t) => {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to omit from `rest`
-    const { access: _access, mutates, ...rest } = t;
-    return { ...rest, annotations: { ...rest.annotations, readOnlyHint: mutates === false } };
-  });
+  return tools
+    .filter((t) => !isServiceOnly(t))
+    .map((t) => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to omit from `rest`
+      const { access: _access, serviceOnly: _serviceOnly, mutates, ...rest } = t;
+      return { ...rest, annotations: { ...rest.annotations, readOnlyHint: mutates === false } };
+    });
 }
 
 /**

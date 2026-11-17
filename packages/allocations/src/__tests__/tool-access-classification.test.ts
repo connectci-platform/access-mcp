@@ -111,3 +111,48 @@ describe("public reads stay keyless-reachable via the per-tool gate on /mcp", ()
     expect(res.status).not.toBe(401);
   });
 });
+
+describe("service-only consent tools: only the agent's keyed /tools route", () => {
+  const consentCall = (name: string) => ({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/call",
+    params: { name, arguments: name === "set_assistant_consent" ? { consent: "allow" } : {} },
+  });
+
+  for (const name of ["get_assistant_consent", "set_assistant_consent"]) {
+    it(`${name} without the key on /tools → 401`, async () => {
+      const res = await postTool(name, { "X-Acting-User": "victim@access-ci.org" });
+      expect(res.status).toBe(401);
+    });
+
+    it(`${name} with the key on /tools → NOT 401`, async () => {
+      const res = await postTool(name, { "X-Acting-User": "someone@access-ci.org", "x-api-key": KEY });
+      expect(res.status).not.toBe(401);
+    });
+
+    it(`${name} over /mcp, even with the key, is refused as not found`, async () => {
+      const init = await postMcp(initBody, { "x-api-key": KEY });
+      const session = init.headers.get("mcp-session-id")!;
+      await postMcp(
+        { jsonrpc: "2.0", method: "notifications/initialized" },
+        { "x-api-key": KEY, "mcp-session-id": session }
+      );
+      const res = await postMcp(consentCall(name), {
+        "x-api-key": KEY,
+        "mcp-session-id": session,
+        "X-Acting-User": "someone@access-ci.org",
+      });
+      const text = await res.text();
+      expect(text).toContain(`Tool '${name}' not found`);
+      expect(text).toContain('"isError":true');
+    });
+  }
+
+  it("neither is in GET /tools", async () => {
+    const res = await fetch(`${baseUrl}/tools`);
+    const names = ((await res.json()) as { tools: { name: string }[] }).tools.map((t) => t.name);
+    expect(names).not.toContain("get_assistant_consent");
+    expect(names).not.toContain("set_assistant_consent");
+  });
+});

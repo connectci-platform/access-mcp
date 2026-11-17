@@ -99,6 +99,14 @@ describe("isCallAuthorized", () => {
 });
 
 describe("toClientTools", () => {
+  it("leaves out a service-only tool and never publishes the marker", () => {
+    const internal: ToolWithAccess = { ...authedTool, name: "internal_tool", serviceOnly: true };
+    const listed: ToolWithAccess = { ...publicTool, serviceOnly: false };
+    const out = toClientTools([internal, listed, authedTool]);
+    expect(out.map((t) => t.name)).toEqual(["search_events", "create_event"]);
+    for (const t of out) expect(t).not.toHaveProperty("serviceOnly");
+  });
+
   it("removes access and mutates, keeps the rest", () => {
     const [t] = toClientTools([authedTool]);
     expect(t).not.toHaveProperty("access");
