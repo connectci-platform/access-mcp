@@ -194,6 +194,61 @@ describe("Resource Documentation tools", () => {
       });
     });
 
+    it("details list node types and queues reference them by label", async () => {
+      detailOverrides["1659"] = {
+        node_types: [
+          {
+            label: "H100 node",
+            description: "<p>Dense GPU</p>",
+            node_count: 10,
+            cpu_type: "Intel Xeon",
+            cpu_count: 48,
+            ram: 512,
+            gpus: [{ type: "NVIDIA H100", count: 8, vram: 80 }],
+            summary: "8 NVIDIA H100 (80 GB vRAM)",
+          },
+        ],
+        queues: [
+          {
+            name: "gpu",
+            purpose: "<p>GPU jobs</p>",
+            max_wall_time_hours: 48,
+            max_wall_time_display: "48 hours",
+            nodes: [{ node_type: "H100 node", node_count: 2 }],
+          },
+        ],
+      };
+      const { data } = await call("get_resource", { resource: "ACES" });
+
+      expect(data.node_types).toEqual([
+        {
+          label: "H100 node",
+          description: "Dense GPU",
+          nodes: 10,
+          cpus_per_node: 48,
+          cpu_type: "Intel Xeon",
+          memory_gb: 512,
+          gpus: [{ type: "NVIDIA H100", per_node: 8, memory_gb: 80 }],
+          summary: "8 NVIDIA H100 (80 GB vRAM)",
+        },
+      ]);
+      expect(data.queues).toEqual([
+        {
+          name: "gpu",
+          purpose: "GPU jobs",
+          max_wall_time_hours: 48,
+          node_types: [{ node_type: "H100 node", nodes: 2 }],
+          summary: "8 NVIDIA H100 (80 GB vRAM)",
+        },
+      ]);
+
+      const { data: compared } = await call("compare_resources", { resources: ["ACES", "Kitsune"] });
+      expect(compared.items[0]).toMatchObject({
+        node_types: [{ label: "H100 node", summary: "8 NVIDIA H100 (80 GB vRAM)" }],
+        queues: [{ name: "gpu", max_wall_time_hours: 48, node_types: ["H100 node"] }],
+      });
+    });
+
     it("keeps links in converted text", async () => {
       const { data } = await call("get_resource", { resource: "ACES" });
 
