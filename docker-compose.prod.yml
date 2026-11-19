@@ -236,9 +236,10 @@ services:
       - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
       - HONEYCOMB_DATASET=${HONEYCOMB_DATASET:-access-ci-mcp}
       - DRUPAL_API_URL=${DRUPAL_API_URL:-https://support.access-ci.org}
-      # The X-Acting-User gate requires the mcp_service role, held by the
-      # mcp_service account (uid 67615), so this service authenticates with
-      # MCP_SERVICE_DRUPAL_*.
+      # The acting-user gate requires the mcp_service role, which only the
+      # mcp_service account (uid 67615) holds. The generic ${DRUPAL_USERNAME}
+      # resolves to the roleless mcp_bot account, whose requests 403 at the
+      # route gate ("X-Acting-User requires mcp_service role").
       - DRUPAL_USERNAME=${MCP_SERVICE_DRUPAL_USERNAME}
       - DRUPAL_PASSWORD=${MCP_SERVICE_DRUPAL_PASSWORD}
       - MCP_API_KEY=${MCP_API_KEY}
@@ -291,9 +292,11 @@ services:
       - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
       - HONEYCOMB_DATASET=${HONEYCOMB_DATASET:-access-ci-mcp}
       - DRUPAL_API_URL=${DRUPAL_API_URL:-https://support.access-ci.org}
-      # The X-Acting-User gate requires the mcp_service role, held by the
-      # mcp_service account (uid 67615), so this service authenticates with
-      # MCP_SERVICE_DRUPAL_*.
+      # Drupal account holding the mcp_service role (required for the
+      # X-Acting-User header get_event/register_for_event send — same gate as
+      # get_rp_account). The generic ${DRUPAL_USERNAME} resolves to the mcp_bot
+      # account, which lacks the mcp_service role and gets 403 from the
+      # acting-user gate; use the mcp_service-role account like allocations.
       - DRUPAL_USERNAME=${MCP_SERVICE_DRUPAL_USERNAME}
       - DRUPAL_PASSWORD=${MCP_SERVICE_DRUPAL_PASSWORD}
       - MCP_API_KEY=${MCP_API_KEY}

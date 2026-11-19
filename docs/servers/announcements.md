@@ -149,7 +149,7 @@ For read-only access (searching public announcements):
 }
 ```
 
-For full access (creating/managing announcements), authentication requires a Drupal account holding the mcp_service role:
+For full access (creating/managing announcements), authentication is required:
 ```json
 {
   "mcpServers": {
@@ -158,8 +158,8 @@ For full access (creating/managing announcements), authentication requires a Dru
       "args": ["@access-mcp/announcements"],
       "env": {
         "DRUPAL_API_URL": "https://support.access-ci.org",
-        "DRUPAL_USERNAME": "your-mcp_service-account",
-        "DRUPAL_PASSWORD": "your-mcp_service-password",
+        "DRUPAL_USERNAME": "your-username",
+        "DRUPAL_PASSWORD": "your-password",
         "ACTING_USER_UID": "12345"
       }
     }
