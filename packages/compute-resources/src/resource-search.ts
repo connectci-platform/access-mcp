@@ -13,6 +13,7 @@ export interface SearchFilters {
   min_memory_gb?: number;
   min_cores_per_node?: number;
   cpu_type?: string;
+  architecture?: string;
   min_wall_time_hours?: number;
   dataset?: string;
   ondemand?: boolean;
@@ -30,6 +31,7 @@ export const FILTER_KEYS = [
   "min_memory_gb",
   "min_cores_per_node",
   "cpu_type",
+  "architecture",
   "min_wall_time_hours",
   "dataset",
   "ondemand",
@@ -46,6 +48,7 @@ const QUEUE_FILTERS = [
   "min_memory_gb",
   "min_cores_per_node",
   "cpu_type",
+  "architecture",
   "min_wall_time_hours",
 ] as const;
 
@@ -131,27 +134,49 @@ export interface Profile {
   summary: string | null;
   max_wall_time_hours: number | null;
   cpu_type: string | null;
+  architecture: string | null;
   cpu_count: number | null;
   ram: number | null;
+  /** GPU-typed accelerators only: they alone satisfy has_gpu and the GPU filters. */
   gpus: Gpu[];
+  /** Models of accelerators that aren't GPUs, such as FPGAs and vector engines. */
+  other_accelerators: string[];
   /** A queue that lists no node types: its hardware is unknown, not absent. */
   undocumented?: boolean;
 }
 
 const rowsOf = (value: unknown): Row[] => (Array.isArray(value) ? (value as Row[]) : []);
 
-// A queue can document a GPU count with no model, as Expanse's ind-gpu does.
-const legacyGpus = (row: Row): Gpu[] => {
-  const type = num(row.gpu_count) === 0 ? null : text(row.gpu_type);
-  return (num(row.gpu_count) ?? 0) > 0 || type !== null
-    ? [{ type, count: num(row.gpu_count), vram: num(row.gpu_vram) }]
-    : [];
+// A GPU can be documented by count with no model, as Expanse's ind-gpu does. A memory
+// figure alone doesn't make one.
+const gpuEntry = (model: string | null, count: number | null, vram: number | null): Gpu[] => {
+  const type = count === 0 ? null : model;
+  return (count ?? 0) > 0 || type !== null ? [{ type, count, vram }] : [];
 };
 
+const legacyGpus = (row: Row): Gpu[] => gpuEntry(text(row.gpu_type), num(row.gpu_count), num(row.gpu_vram));
+
+// Only entries typed "gpu" are GPUs.
+const isGpu = (accelerator: Row) => accelerator.type === "gpu";
+
 const nodeTypeGpus = (nodeType: Row): Gpu[] =>
-  rowsOf(nodeType.gpus)
-    .map((gpu) => ({ type: text(gpu.type), count: num(gpu.count), vram: num(gpu.vram) }))
-    .filter((gpu) => gpu.count !== 0 || gpu.type !== null);
+  rowsOf(nodeType.accelerators)
+    .filter(isGpu)
+    .flatMap((accelerator) => gpuEntry(text(accelerator.model), num(accelerator.count), num(accelerator.memory)));
+
+const nodeTypeOtherAccelerators = (nodeType: Row): string[] =>
+  rowsOf(nodeType.accelerators)
+    .filter((accelerator) => !isGpu(accelerator))
+    .flatMap((accelerator) => text(accelerator.model) ?? []);
+
+const ARCHITECTURES: Record<string, string> = {
+  x86_64: "x86_64", x86: "x86_64", "x86-64": "x86_64", amd64: "x86_64",
+  arm: "arm", arm64: "arm", aarch64: "arm",
+};
+const architectureOf = (value: unknown): string | null => {
+  const name = text(value)?.toLowerCase() ?? null;
+  return name === null ? null : (ARCHITECTURES[name] ?? name);
+};
 
 /**
  * The hardware a resource documents, one profile per queue and node type. Without
@@ -166,9 +191,11 @@ export function hardwareProfiles(detail: Row | null): Profile[] {
       summary: text(row.summary),
       max_wall_time_hours: num(row.max_wall_time_hours),
       cpu_type: text(row.cpu_type),
+      architecture: null,
       cpu_count: num(row.cpu_count),
       ram: num(row.ram),
       gpus: legacyGpus(row),
+      other_accelerators: [],
     }));
   }
 
@@ -176,9 +203,11 @@ export function hardwareProfiles(detail: Row | null): Profile[] {
     node_type: text(nodeType.label),
     summary: text(nodeType.summary),
     cpu_type: text(nodeType.cpu_type),
+    architecture: architectureOf(nodeType.cpu_architecture),
     cpu_count: num(nodeType.cpu_count),
     ram: num(nodeType.ram),
     gpus: nodeTypeGpus(nodeType),
+    other_accelerators: nodeTypeOtherAccelerators(nodeType),
   });
   const byLabel = new Map(nodeTypes.map((nodeType) => [text(nodeType.label), nodeType]));
   const referenced = new Set<string | null>();
@@ -191,7 +220,8 @@ export function hardwareProfiles(detail: Row | null): Profile[] {
     if (nodes.length === 0) {
       profiles.push({
         queue: name, node_type: null, summary: null, max_wall_time_hours: wall,
-        cpu_type: null, cpu_count: null, ram: null, gpus: [], undocumented: true,
+        cpu_type: null, architecture: null, cpu_count: null, ram: null, gpus: [],
+        other_accelerators: [], undocumented: true,
       });
     }
     for (const node of nodes) {
@@ -203,14 +233,17 @@ export function hardwareProfiles(detail: Row | null): Profile[] {
           ? { queue: name, max_wall_time_hours: wall, ...hardware(nodeType) }
           : {
               queue: name, node_type: label, summary: null, max_wall_time_hours: wall,
-              cpu_type: null, cpu_count: null, ram: null, gpus: [], undocumented: true,
+              cpu_type: null, architecture: null, cpu_count: null, ram: null, gpus: [],
+              other_accelerators: [], undocumented: true,
             }
       );
     }
   }
-  // Hardware no queue lists, such as a cloud resource's, still answers a search.
+  // A node type no queue lists, such as a login or visualization node, isn't hardware a
+  // job can use, so it only answers a search for a resource that documents no queues.
+  const queued = rowsOf(detail?.queues).length > 0;
   for (const nodeType of nodeTypes) {
-    if (!referenced.has(text(nodeType.label))) {
+    if (!queued && !referenced.has(text(nodeType.label))) {
       profiles.push({ queue: null, max_wall_time_hours: null, ...hardware(nodeType) });
     }
   }
@@ -262,6 +295,10 @@ function profileOutcome(profile: Profile, filters: SearchFilters): Outcome {
     checks.push(known(atLeast(profile.cpu_count, filters.min_cores_per_node)));
   }
   if (filters.cpu_type) checks.push(known(matches(profile.cpu_type, filters.cpu_type)));
+  if (filters.architecture) {
+    const wanted = architectureOf(filters.architecture);
+    checks.push(known(profile.architecture === null || wanted === null ? "unknown" : profile.architecture === wanted ? "match" : "miss"));
+  }
   if (filters.min_wall_time_hours !== undefined) {
     // The API calls a null wall time "no limit", but an unfilled field looks the same.
     // A node type no queue lists has no wall time to check.
@@ -327,6 +364,7 @@ function searchableText(resource: DocumentedResource): string {
       profile.node_type,
       profile.cpu_type,
       ...profile.gpus.map((gpu) => gpu.type),
+      ...profile.other_accelerators,
     ]),
     ...(hardwareProfiles(detail).some(hasAccelerator) ? ACCELERATOR_WORDS : []),
     ...datasetNames(detail),
@@ -483,7 +521,11 @@ function maxOf(profiles: Profile[], field: "ram" | "cpu_count" | "max_wall_time_
 function summarize(resource: DocumentedResource, evaluation: Evaluation) {
   const { listing, group, detail } = resource;
   const documentedQueues = hardwareProfiles(detail);
-  const accelerators = [...new Set(documentedQueues.flatMap((profile) => profile.gpus.flatMap((gpu) => gpu.type ?? [])))];
+  const accelerators = [
+    ...new Set(
+      documentedQueues.flatMap((profile) => [...profile.gpus.flatMap((gpu) => gpu.type ?? []), ...profile.other_accelerators])
+    ),
+  ];
   return {
     id: listing.global_resource_id,
     name: listing.title,

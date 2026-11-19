@@ -112,6 +112,8 @@ interface QueueDetails {
   name: string;
   purpose: string | null;
   max_wall_time_hours: number | null;
+  charged_per?: string | null;
+  access?: string | null;
   summary: string | null;
   node_types?: { node_type: string; nodes: number | null }[];
   [field: string]: unknown;
@@ -130,6 +132,8 @@ function buildQueues(d: Row): QueueDetails[] | null {
         name: row.name as string,
         purpose: htmlToText(row.purpose),
         max_wall_time_hours: value(row.max_wall_time_hours) as number | null,
+        charged_per: value(row.charged_per) as string | null,
+        access: value(row.access) as string | null,
         node_types: nodes,
         summary: described.length > 0 ? described.join("; ") : null,
       };
@@ -207,11 +211,13 @@ function buildResource(listing: Listing, group: Group | undefined, detail: Row |
       nodes: value(row.node_count),
       cpus_per_node: value(row.cpu_count),
       cpu_type: value(row.cpu_type),
+      cpu_architecture: value(row.cpu_architecture),
       memory_gb: value(row.ram),
-      gpus: rows(row.gpus).map((gpu) => ({
-        type: value(gpu.type),
-        per_node: value(gpu.count),
-        memory_gb: value(gpu.vram),
+      accelerators: rows(row.accelerators).map((accelerator) => ({
+        type: value(accelerator.type),
+        model: value(accelerator.model),
+        per_node: value(accelerator.count),
+        memory_gb: value(accelerator.memory),
       })),
       summary: value(row.summary) as string | null,
     })),
