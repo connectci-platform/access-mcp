@@ -158,8 +158,8 @@ services:
       NODE_ENV: production
       PORT: 3000
       DRUPAL_API_URL: ${DRUPAL_API_URL:-https://support.access-ci.org}
-      DRUPAL_USERNAME: ${DRUPAL_USERNAME:-}
-      DRUPAL_PASSWORD: ${DRUPAL_PASSWORD:-}
+      DRUPAL_USERNAME: ${MCP_SERVICE_DRUPAL_USERNAME:-}
+      DRUPAL_PASSWORD: ${MCP_SERVICE_DRUPAL_PASSWORD:-}
       MCP_API_KEY: ${MCP_API_KEY}
       # Acting-user tokens (D8-2946); local portal audience is https://mcp.dev.invalid.
       MCP_TOKEN_ISSUER: ${MCP_TOKEN_ISSUER:-}
@@ -206,8 +206,8 @@ services:
       NODE_ENV: production
       PORT: 3000
       DRUPAL_API_URL: ${DRUPAL_API_URL:-https://support.access-ci.org}
-      DRUPAL_USERNAME: ${DRUPAL_USERNAME:-}
-      DRUPAL_PASSWORD: ${DRUPAL_PASSWORD:-}
+      DRUPAL_USERNAME: ${MCP_SERVICE_DRUPAL_USERNAME:-}
+      DRUPAL_PASSWORD: ${MCP_SERVICE_DRUPAL_PASSWORD:-}
       MCP_API_KEY: ${MCP_API_KEY}
       # Acting-user tokens (D8-2946); local portal audience is https://mcp.dev.invalid.
       MCP_TOKEN_ISSUER: ${MCP_TOKEN_ISSUER:-}
