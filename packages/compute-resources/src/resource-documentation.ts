@@ -108,6 +108,52 @@ function waitTimes(detail: Row) {
   };
 }
 
+interface QueueDetails {
+  name: string;
+  purpose: string | null;
+  max_wall_time_hours: number | null;
+  charged_per?: string | null;
+  access?: string | null;
+  summary: string | null;
+  node_types?: { node_type: string; nodes: number | null }[];
+  [field: string]: unknown;
+}
+
+function buildQueues(d: Row): QueueDetails[] | null {
+  if (rows(d.node_types).length > 0) {
+    const summaries = new Map(rows(d.node_types).map((row) => [row.label, value(row.summary) as string | null]));
+    return list(d.queues, (row) => {
+      const nodes = rows(row.nodes).map((node) => ({
+        node_type: node.node_type as string,
+        nodes: value(node.node_count) as number | null,
+      }));
+      const described = [...new Set(nodes.flatMap(({ node_type }) => summaries.get(node_type) ?? []))];
+      return {
+        name: row.name as string,
+        purpose: htmlToText(row.purpose),
+        max_wall_time_hours: value(row.max_wall_time_hours) as number | null,
+        charged_per: value(row.charged_per) as string | null,
+        access: value(row.access) as string | null,
+        node_types: nodes,
+        summary: described.length > 0 ? described.join("; ") : null,
+      };
+    });
+  }
+  return list(d.queue_specs, (row) => ({
+    name: row.name as string,
+    purpose: htmlToText(row.purpose),
+    nodes: value(row.node_count),
+    cpus_per_node: value(row.cpu_count),
+    cpu_type: value(row.cpu_type),
+    gpus_per_node: value(row.gpu_count),
+    gpu_type: value(row.gpu_type),
+    gpu_memory_gb: value(row.gpu_vram),
+    memory_gb: value(row.ram),
+    max_wall_time_hours: value(row.max_wall_time_hours) as number | null,
+    summary: value(row.summary) as string | null,
+  }));
+}
+
 function buildResource(listing: Listing, group: Group | undefined, detail: Row | null) {
   const d = detail ?? {};
   return {
@@ -159,19 +205,25 @@ function buildResource(listing: Listing, group: Group | undefined, detail: Row |
       external: htmlToText(d.external_storage),
     },
     jobs: htmlToText(d.jobs_info),
-    queues: list(d.queue_specs, (row) => ({
-      name: row.name as string,
-      purpose: htmlToText(row.purpose),
+    node_types: list(d.node_types, (row) => ({
+      label: row.label as string,
+      description: htmlToText(row.description),
       nodes: value(row.node_count),
       cpus_per_node: value(row.cpu_count),
       cpu_type: value(row.cpu_type),
-      gpus_per_node: value(row.gpu_count),
-      gpu_type: value(row.gpu_type),
-      gpu_memory_gb: value(row.gpu_vram),
+      cpu_architecture: value(row.cpu_architecture),
       memory_gb: value(row.ram),
-      max_wall_time_hours: value(row.max_wall_time_hours) as number | null,
+      accelerators: rows(row.accelerators).map((accelerator) => ({
+        type: value(accelerator.type),
+        model: value(accelerator.model),
+        per_node: value(accelerator.count),
+        memory_gb: value(accelerator.memory),
+      })),
       summary: value(row.summary) as string | null,
     })),
+    // Queues reference node types by label. Without node types the portal's older
+    // payload repeats the hardware on each queue instead.
+    queues: buildQueues(d),
     wait_times: waitTimes(d),
     datasets: list(d.datasets, (row) => ({
       name: row.name,
@@ -200,11 +252,13 @@ export function buildComparison(resource: ResourceDetails) {
     ondemand_url: resource.login.ondemand_url,
     ssh_hosts: resource.login.ssh_hosts?.map((host) => host.hostname) ?? null,
     transfer_methods: resource.file_transfer.methods?.map((method) => method.method) ?? null,
+    node_types: resource.node_types?.map(({ label, summary }) => ({ label, summary })) ?? null,
     queues:
-      resource.queues?.map(({ name, summary, max_wall_time_hours }) => ({
+      resource.queues?.map(({ name, summary, max_wall_time_hours, node_types }) => ({
         name,
         summary,
         max_wall_time_hours,
+        ...(node_types && { node_types: node_types.map(({ node_type }) => node_type) }),
       })) ?? null,
     wait_times: resource.wait_times,
     filesystems:

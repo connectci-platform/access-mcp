@@ -47,8 +47,11 @@ export class ComputeResourcesServer extends BaseAccessServer {
           "citation_url. To find the largest, compare these fields across items. " +
           "With no filters it lists every documented resource. Hardware filters (has_gpu, " +
           "gpu_type, min_gpu_memory_gb, min_memory_gb, min_cores_per_node, cpu_type, " +
-          "min_wall_time_hours) must all hold on one queue, and matching_queues shows which " +
-          "queues do and what they have. Resources the documentation doesn't cover for a " +
+          "architecture, min_wall_time_hours) must all hold on one queue, and matching_queues shows which " +
+          "queues do and what they have. They are matched against the node types each queue " +
+          "uses, and only accelerators typed GPU count as GPUs, so FPGAs and vector engines " +
+          "don't satisfy has_gpu. Node types that no queue lists are ignored for a resource " +
+          "that documents queues. Resources the documentation doesn't cover for a " +
           "filter are listed in `unchecked` with the filters it couldn't decide, rather " +
           "than counted as not matching, and " +
           "`unavailable` lists any whose page couldn't be read, so never say a resource " +
@@ -82,11 +85,11 @@ export class ComputeResourcesServer extends BaseAccessServer {
             has_gpu: {
               type: "boolean",
               description:
-                "true: a queue has GPUs or other accelerators (Habana Gaudi, NEC Vector Engine). false: queues are documented and none has one.",
+                "true: a queue has GPU-typed accelerators. FPGAs, vector engines and other accelerators don't count. false: queues are documented and none has a GPU.",
             },
             gpu_type: {
               type: "string",
-              description: "Accelerator model text on a queue, e.g. 'H100', 'A100', 'Gaudi'",
+              description: "GPU model text on a queue, e.g. 'H100', 'A100', 'MI210'",
             },
             min_gpu_memory_gb: {
               type: "number",
@@ -103,6 +106,10 @@ export class ComputeResourcesServer extends BaseAccessServer {
             cpu_type: {
               type: "string",
               description: "CPU model text on a queue, e.g. 'EPYC', 'Sapphire Rapids', 'Grace'",
+            },
+            architecture: {
+              type: "string",
+              description: "CPU architecture of a queue's nodes: 'x86_64' or 'arm' (e.g. Grace nodes)",
             },
             min_wall_time_hours: {
               type: "number",
@@ -464,8 +471,8 @@ queues with accelerator model, count and memory.
 
 ## Finding GPU Resources
 
-1. **search_resources** with \`has_gpu: true\` — lists resources with an accelerator on at
-   least one queue, including non-NVIDIA ones such as Habana Gaudi. Add \`gpu_type\` (e.g.
+1. **search_resources** with \`has_gpu: true\` — lists resources with a GPU on at
+   least one queue, including non-NVIDIA ones such as AMD Instinct. Add \`gpu_type\` (e.g.
    'H100') or \`min_gpu_memory_gb\` to narrow it, and read \`matching_queues\` for the
    partitions that qualify. Resources listed under \`unchecked\` have no queue
    documentation, which doesn't mean they have no GPUs.

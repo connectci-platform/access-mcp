@@ -365,6 +365,161 @@ describe("searchResources", () => {
     });
   });
 
+  describe("node types", () => {
+    const nodeType = (label: string, spec: Record<string, unknown> = {}) => ({
+      label,
+      description: null,
+      node_count: null,
+      cpu_type: null,
+      cpu_architecture: null,
+      cpu_count: null,
+      ram: null,
+      accelerators: [],
+      summary: `${label} summary`,
+      ...spec,
+    });
+    const gpu = (model: string | null, count: number | null, memory: number | null, type = "gpu") => ({
+      type, model, count, memory,
+    });
+    const portalQueue = (name: string, labels: string[], spec: Record<string, unknown> = {}) => ({
+      name,
+      purpose: null,
+      max_wall_time_hours: 48,
+      nodes: labels.map((label) => ({ node_type: label, node_count: 2 })),
+      ...spec,
+    });
+    const mixed = nodeType("AMD node", {
+      cpu_count: 64,
+      ram: 512,
+      accelerators: [
+        gpu("AMD MI100", 4, 32),
+        gpu("AMD MI210", 4, 64),
+      ],
+    });
+    const find = (detail: Record<string, unknown>, filters: Parameters<typeof searchResources>[1]) =>
+      searchResources([resource(listing(90, "Typed"), detail)], filters);
+
+    it("matches MI210 on a mixed AMD node", () => {
+      const detail = { node_types: [mixed], queues: [portalQueue("amd", ["AMD node"])], queue_specs: [] };
+      const result = find(detail, { gpu_type: "MI210", min_gpu_memory_gb: 64 });
+      expect(result.items[0].matching_queues).toEqual([
+        { name: "amd", summary: "AMD node summary", node_types: ["AMD node"] },
+      ]);
+      expect(result.items[0].accelerators).toEqual(["AMD MI100", "AMD MI210"]);
+      expect(find(detail, { gpu_type: "MI210", min_gpu_memory_gb: 128 }).items).toEqual([]);
+      expect(find(detail, { gpu_type: "A100" }).items).toEqual([]);
+    });
+
+    it("min_gpu_memory_gb on a mixed node with blank vRAM is unknown", () => {
+      const blank = nodeType("Mixed", {
+        accelerators: [gpu("AMD MI100", null, null), gpu("AMD MI210", null, null)],
+      });
+      const detail = { node_types: [blank], queues: [portalQueue("amd", ["Mixed"])] };
+      const result = find(detail, { gpu_type: "MI210", min_gpu_memory_gb: 32 });
+      expect(result.items).toEqual([]);
+      expect(result.unchecked).toEqual([{ name: "Typed", filters: ["gpu_type", "min_gpu_memory_gb"] }]);
+    });
+
+    it("an FPGA-only node doesn't satisfy has_gpu but is listed as an accelerator", () => {
+      const fpga = nodeType("Bittware", {
+        accelerators: [gpu("Bittware 520N", 2, 8, "fpga")],
+      });
+      const detail = { node_types: [fpga], queues: [portalQueue("bittware", ["Bittware"])] };
+      expect(find(detail, { has_gpu: true }).items).toEqual([]);
+      expect(find(detail, { has_gpu: true }).unchecked).toEqual([]);
+      expect(find(detail, { has_gpu: false }).items.map(({ name }) => name)).toEqual(["Typed"]);
+      expect(find(detail, { gpu_type: "520N" }).items).toEqual([]);
+      expect(find({ ...detail }, {}).items[0].accelerators).toEqual(["Bittware 520N"]);
+    });
+
+    it("a vRAM-only GPU entry with no model or count isn't a GPU", () => {
+      const vramOnly = nodeType("Odd", { accelerators: [gpu(null, null, 80)] });
+      const detail = { node_types: [vramOnly], queues: [portalQueue("odd", ["Odd"])] };
+      expect(find(detail, { has_gpu: true }).items).toEqual([]);
+      expect(find(detail, { min_gpu_memory_gb: 40 }).items).toEqual([]);
+    });
+
+    it("min_gpu_memory_gb on an accelerator with blank memory is unknown", () => {
+      const blank = nodeType("Blank", { accelerators: [gpu("NVIDIA L4", 1, null)] });
+      const detail = { node_types: [blank], queues: [portalQueue("l4", ["Blank"])] };
+      const result = find(detail, { min_gpu_memory_gb: 16 });
+      expect(result.items).toEqual([]);
+      expect(result.unchecked).toEqual([{ name: "Typed", filters: ["min_gpu_memory_gb"] }]);
+    });
+
+    it("architecture matches the node type's CPU architecture", () => {
+      const detail = {
+        node_types: [
+          nodeType("Grace", { cpu_architecture: "arm", cpu_type: "NVIDIA Grace" }),
+          nodeType("Milan", { cpu_architecture: "x86_64" }),
+        ],
+        queues: [portalQueue("gh01", ["Grace"]), portalQueue("cpu", ["Milan"])],
+      };
+      const arm = find(detail, { architecture: "arm" });
+      expect(arm.items[0].matching_queues).toEqual([{ name: "gh01", summary: "Grace summary", node_types: ["Grace"] }]);
+      expect(find(detail, { architecture: "Arm64" }).items).toHaveLength(1);
+      expect(find({ node_types: [detail.node_types[1]], queues: [detail.queues[1]] }, { architecture: "arm" }).items).toEqual([]);
+      const unknown = find({ node_types: [nodeType("Plain")], queues: [portalQueue("q", ["Plain"])] }, { architecture: "arm" });
+      expect(unknown.unchecked).toEqual([{ name: "Typed", filters: ["architecture"] }]);
+    });
+
+    it("a node type no queue lists doesn't satisfy filters on a resource with queues", () => {
+      const detail = {
+        node_types: [
+          nodeType("CPU", { ram: 128 }),
+          nodeType("Viz A100", { accelerators: [gpu("A100", 4, 40)], ram: 1024 }),
+        ],
+        queues: [portalQueue("cpu", ["CPU"], { max_wall_time_hours: 24 })],
+      };
+      expect(find(detail, { has_gpu: true }).items).toEqual([]);
+      expect(find(detail, { has_gpu: true }).unchecked).toEqual([]);
+      expect(find(detail, { min_memory_gb: 512 }).items).toEqual([]);
+      expect(find(detail, { min_wall_time_hours: 48 }).items).toEqual([]);
+      expect(find(detail, { min_wall_time_hours: 24 }).items).toHaveLength(1);
+      expect(find(detail, { has_gpu: false }).items).toHaveLength(1);
+    });
+
+    it("matches hardware on node types when no queues exist", () => {
+      const detail = { node_types: [mixed], queues: [], queue_specs: [] };
+      const result = find(detail, { has_gpu: true, min_memory_gb: 256 });
+      expect(result.items.map(({ name }) => name)).toEqual(["Typed"]);
+      expect(result.items[0].matching_queues).toEqual([]);
+      expect(find(detail, { min_memory_gb: 1024 }).items).toEqual([]);
+      expect(find(detail, { min_memory_gb: 1024 }).unchecked).toEqual([]);
+    });
+
+    it("queue with no node types is unknown, not a miss", () => {
+      const detail = { node_types: [], queues: [portalQueue("empty", [])], queue_specs: [] };
+      const withTypes = { ...detail, node_types: [nodeType("CPU", { ram: 128 })] };
+      expect(find(detail, { has_gpu: true }).unchecked).toEqual([{ name: "Typed", filters: ["has_gpu"] }]);
+      // The other queue's node type is a known miss, but the empty queue could still match.
+      const result = find({ ...withTypes, queues: [portalQueue("empty", []), portalQueue("cpu", ["CPU"])] }, { min_memory_gb: 512 });
+      expect(result.items).toEqual([]);
+      expect(result.unchecked).toEqual([{ name: "Typed", filters: ["min_memory_gb"] }]);
+    });
+
+    it("lists each queue once with its matching node types", () => {
+      const detail = {
+        node_types: [nodeType("A100", { accelerators: [gpu("A100", 4, 40)] }), nodeType("H100", { accelerators: [gpu("H100", 4, 80)] })],
+        queues: [portalQueue("gpu", ["A100", "H100"]), portalQueue("share", ["A100"])],
+      };
+      expect(find(detail, { has_gpu: true }).items[0].matching_queues).toEqual([
+        { name: "gpu", summary: "A100 summary; H100 summary", node_types: ["A100", "H100"] },
+        { name: "share", summary: "A100 summary", node_types: ["A100"] },
+      ]);
+      expect(find(detail, { gpu_type: "H100" }).items[0].matching_queues).toEqual([
+        { name: "gpu", summary: "H100 summary", node_types: ["H100"] },
+      ]);
+    });
+
+    it("falls back to queue_specs when node_types is absent", () => {
+      const detail = { queue_specs: [queue("big", { gpu_count: 8, gpu_type: "NVIDIA H200", gpu_vram: 141 })] };
+      const result = find(detail, { gpu_type: "H200", min_gpu_memory_gb: 100 });
+      expect(result.items[0].matching_queues).toEqual([{ name: "big", summary: "big summary" }]);
+      expect(find({ ...detail, node_types: [] }, { gpu_type: "H200" }).items).toHaveLength(1);
+    });
+  });
+
   describe("query words", () => {
     const bridges = resource(listing(80, "Bridges-2 GPU"), { queue_specs: [] });
     const stampede = resource(listing(81, "Stampede3"), { queue_specs: [] });

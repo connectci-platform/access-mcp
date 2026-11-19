@@ -36,8 +36,13 @@ longest wall time, OnDemand URL, transfer methods and `citation_url`.
 Hardware filters are checked per queue, and a resource matches only when one queue meets
 all of them at once. `matching_queues` names those queues with a one-line summary of
 their hardware, so an answer can cite the partition rather than combine figures from
-different ones. Any accelerator counts for `has_gpu`, including Habana Gaudi and NEC
-Vector Engines.
+different ones. Filters match the node types each queue uses (from `node_types` and
+`queues[].nodes`), falling back to the older `queue_specs` rows when a resource has no
+node types. Only accelerators typed GPU count for `has_gpu` and the GPU filters, so FPGAs
+and vector engines don't, and a memory figure with no model or count isn't a GPU. A node
+type that no queue lists, such as a login or visualization node, only counts for a
+resource that documents no queues. `architecture` matches a node type's CPU architecture,
+and a node type that doesn't document one is unknown.
 
 The documentation doesn't cover every field for every resource. A resource that can't be
 checked against a filter is listed in `unchecked` with the filters it couldn't be
@@ -63,12 +68,13 @@ nothing. When nothing matches, `hint` says why.
 | `type` | string | `Compute` or `Storage` |
 | `organization` | string | Organization name or abbreviation (`NCSA`, `PSC`, `SDSC`, `TACC`, `IU`, `TAMU`…), or a center's university, such as `University of Illinois` for NCSA or `Carnegie Mellon` for PSC |
 | `status` | string | `production`, `pre-production` or `post-production` |
-| `has_gpu` | boolean | `true`: a queue has an accelerator. `false`: queues are documented and none has one |
-| `gpu_type` | string | Accelerator model text, such as `H100` or `Gaudi` (per queue) |
+| `has_gpu` | boolean | `true`: a queue has a GPU-typed accelerator. `false`: queues are documented and none has one |
+| `gpu_type` | string | GPU model text, such as `H100` or `MI210` (per queue) |
 | `min_gpu_memory_gb` | number | Minimum memory per GPU (per queue) |
 | `min_memory_gb` | number | Minimum RAM per node (per queue) |
 | `min_cores_per_node` | number | Minimum CPU cores per node (per queue) |
 | `cpu_type` | string | CPU model text, such as `EPYC` or `Grace` (per queue) |
+| `architecture` | string | CPU architecture, `x86_64` or `arm` (per queue) |
 | `min_wall_time_hours` | number | Minimum job length a queue allows (per queue) |
 | `dataset` | string | Hosted dataset name, such as `AlphaFold` |
 | `ondemand` | boolean | `true` keeps resources with a documented Open OnDemand portal |

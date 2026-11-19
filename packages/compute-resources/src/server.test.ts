@@ -48,6 +48,7 @@ const FILTER_KEYS = [
   "min_memory_gb",
   "min_cores_per_node",
   "cpu_type",
+  "architecture",
   "min_wall_time_hours",
   "dataset",
   "ondemand",
