@@ -16,6 +16,7 @@ import {
 import axios, { AxiosInstance } from "axios";
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
+import { cleanVersions } from "./versions.js";
 const { version } = require("../package.json");
 
 interface SoftwareQueryParams {
@@ -97,10 +98,18 @@ type Coverage = "indexed" | "not_indexed" | "lookup_failed";
 // assistant's software grid does and says not to show the status codes.
 const GAP_NOTE =
   "not_listed is \"Not listed\": the package isn't in that resource's software list, not that it can't be used. " +
-  'not_indexed is "Not indexed": no software list exists for that resource, so nothing is known about its software. ' +
+  'not_indexed is "Not indexed": the index has no software list for that resource, or only a few packages, so little is known about its software. ' +
   "lookup_failed is \"Couldn't check\": the check for that resource's list failed. " +
   "None of these mean the software is unavailable; point the user to the resource's documentation or support. " +
   "Say Not listed, Not indexed or Couldn't check to the user, never the status codes.";
+
+/**
+ * A resource with fewer packages than this in the index has a list that is
+ * missing most of its software. In Nov 2026 Bridges-2 had 2 (lmod and
+ * settarg) after a partial reload, and every fully loaded resource had 130+.
+ */
+const MIN_INDEXED_PACKAGES = 20;
+const INDEX_SIZES_TTL_MS = 60 * 60 * 1000;
 
 /** "anvil.purdue.access-ci.org" and "Bridges2" read as "anvil" and "bridges2". */
 function resourceKey(value: string): string {
@@ -511,8 +520,9 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
         if (rpInfo.rp_resource_id) {
           resourceIds.push(...rpInfo.rp_resource_id);
         }
-        if (rpInfo.software_versions) {
-          versionsPerResource[rpInfo.rp_name || rpKey] = rpInfo.software_versions;
+        const versions = cleanVersions(item.software_name, rpInfo.software_versions);
+        if (versions.length > 0) {
+          versionsPerResource[rpInfo.rp_name || rpKey] = versions;
         }
       }
     }
@@ -599,7 +609,7 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
 
     try {
       // API returns results pre-sorted: exact > starts-with > contains > other (alphabetically within each)
-      const results = await this.queryApi(params);
+      const [results, indexNote] = await Promise.all([this.queryApi(params), this.indexNote()]);
 
       const pagination = buildPagination({
         requestedLimit: limit,
@@ -641,6 +651,7 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
         documentation: {
           links: this.listingLinks("search"),
         },
+        ...(indexNote ? { index_note: indexNote } : {}),
       };
 
       return {
@@ -739,7 +750,7 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
     }
 
     try {
-      const results = await this.queryApi(params);
+      const [results, indexNote] = await Promise.all([this.queryApi(params), this.indexNote()]);
 
       if (results.length === 0) {
         return {
@@ -751,6 +762,7 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
                 found: false,
                 message: `No software found matching '${software_name}'${resource ? ` on resource '${resource}'` : ""}`,
                 suggestion: "Try a different search term or enable fuzzy matching",
+                ...(indexNote ? { index_note: indexNote } : {}),
               }),
             },
           ],
@@ -777,6 +789,7 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
               ...(resource ? { resource_matched: bestMatch.available_on_resources } : {}),
               details: bestMatch,
               other_matches: otherMatches.length > 0 ? otherMatches : undefined,
+              ...(indexNote ? { index_note: indexNote } : {}),
               metadata: {
                 filters_applied: {
                   resource: resource ?? null,
@@ -812,7 +825,7 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
         params.fuzz_rp = true;
       }
 
-      const results = await this.queryApi(params);
+      const [results, indexNote] = await Promise.all([this.queryApi(params), this.indexNote()]);
 
       // Build availability matrix
       const availabilityMap: Record<string, Set<string>> = {};
@@ -834,8 +847,9 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
             if (rpName) {
               availabilityMap[softwareName].add(rpName);
               allResources.add(rpName);
-              if (rpInfo.software_versions?.length) {
-                versionsMap[softwareName][rpName] = rpInfo.software_versions;
+              const versions = cleanVersions(item.software_name, rpInfo.software_versions);
+              if (versions.length > 0) {
+                versionsMap[softwareName][rpName] = versions;
               }
             }
           }
@@ -909,6 +923,7 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
               resources_not_indexed: unmatched.filter((r) => coverage.get(r) === "not_indexed"),
               resources_lookup_failed: unmatched.filter((r) => coverage.get(r) === "lookup_failed"),
               gap_note: GAP_NOTE,
+              ...(indexNote ? { index_note: indexNote } : {}),
               summary: {
                 total_software_requested: software_names.length,
                 software_found: comparison.filter((c) => c.found).length,
@@ -923,18 +938,63 @@ export class SoftwareDiscoveryServer extends BaseAccessServer {
     }
   }
 
-  /** Whether the index holds any software list for a resource. */
+  /** Whether the index holds a real software list for a resource, not just a few packages. */
   private async coverageOf(resource: string): Promise<Coverage> {
     try {
       const items = await this.queryApi({
         software: ["*"],
         rps: [normalizeGlobalResourceId(resource)],
         fuzz_rp: true,
+        columns: ["software_name"],
       });
-      return items.length > 0 ? "indexed" : "not_indexed";
+      return items.length >= MIN_INDEXED_PACKAGES ? "indexed" : "not_indexed";
     } catch {
       return "lookup_failed";
     }
+  }
+
+  private indexSizesCache?: { at: number; sizes: Map<string, number> };
+
+  /** Packages per resource in the whole index, cached for an hour. Null when the lookup fails. */
+  protected async indexSizes(): Promise<Map<string, number> | null> {
+    const cached = this.indexSizesCache;
+    if (cached && Date.now() - cached.at < INDEX_SIZES_TTL_MS) return cached.sizes;
+    try {
+      const items = await this.queryApi({ software: ["*"], columns: ["software_name", "rps"] });
+      const sizes = new Map<string, number>();
+      for (const item of items) {
+        for (const [rpKey, rpInfo] of Object.entries(item.rps ?? {})) {
+          const name = rpInfo.rp_name || rpKey;
+          sizes.set(name, (sizes.get(name) ?? 0) + 1);
+        }
+      }
+      this.indexSizesCache = { at: Date.now(), sizes };
+      return sizes;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * A note naming the resources whose list in the index is mostly missing, so
+   * the model says a package may still be there instead of leaving the
+   * resource out. Undefined when every listed resource looks complete.
+   */
+  private async indexNote(): Promise<string | undefined> {
+    const sizes = await this.indexSizes();
+    if (!sizes) return undefined;
+    const thin = [...sizes.entries()]
+      .filter(([, count]) => count < MIN_INDEXED_PACKAGES)
+      .map(([name]) => name)
+      .sort();
+    if (thin.length === 0) return undefined;
+    const names =
+      thin.length === 1 ? thin[0] : `${thin.slice(0, -1).join(", ")} and ${thin.at(-1)}`;
+    return (
+      `The software index has only a few packages for ${names}, so its list for ${thin.length === 1 ? "that resource" : "those resources"} is incomplete. ` +
+      "Don't treat a package missing on those resources as unavailable. Say their list is incomplete " +
+      "and point to their documentation."
+    );
   }
 
   private async discoverFilterValues(): Promise<CallToolResult> {

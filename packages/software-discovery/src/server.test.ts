@@ -131,6 +131,11 @@ describe("SoftwareDiscoveryServer", () => {
     });
     // Set a mock API key for tests
     process.env.SDS_API_KEY = "test-api-key";
+    // The index-size lookup is its own call; the index_note tests exercise it.
+    vi.spyOn(
+      server as unknown as { indexSizes: () => Promise<Map<string, number>> },
+      "indexSizes"
+    ).mockResolvedValue(new Map());
   });
 
   describe("search_software", () => {
@@ -697,10 +702,12 @@ describe("SoftwareDiscoveryServer", () => {
         },
       },
     };
-    const anyOn = (rp: string) => ({
-      software_name: "gcc",
-      rps: { [rp]: { rp_name: rp, rp_resource_id: [], software_versions: [] } },
-    });
+    // A full list: enough packages that the resource counts as indexed.
+    const fullListOn = (rp: string) =>
+      Array.from({ length: 25 }, (_, i) => ({
+        software_name: `pkg${i}`,
+        rps: { [rp]: { rp_name: rp, rp_resource_id: [], software_versions: [] } },
+      }));
 
     type Params = { software: string[]; rps?: string[] };
     function mockIndex(main: unknown[], probe: (rp: string) => MockResponse | Error): void {
@@ -740,7 +747,9 @@ describe("SoftwareDiscoveryServer", () => {
       });
       expect(data.comparison[1].resource_status.expanse).toBe("not_indexed");
       expect(data.gap_note).toMatch(/not_listed is "Not listed": .* not that it can't be used/);
-      expect(data.gap_note).toMatch(/not_indexed is "Not indexed": no software list exists/);
+      expect(data.gap_note).toMatch(
+        /not_indexed is "Not indexed": the index has no software list for that resource/
+      );
       expect(data.gap_note).toContain("never the status codes");
     });
 
@@ -761,7 +770,7 @@ describe("SoftwareDiscoveryServer", () => {
 
     it("marks a resource that has a list without this package as not_listed", async () => {
       // Expanse has a software list, it just has none of these packages.
-      mockIndex([pytorch], (rp) => ({ status: 200, data: { data: [anyOn(rp)] } }));
+      mockIndex([pytorch], (rp) => ({ status: 200, data: { data: fullListOn(rp) } }));
 
       const data = await compare(["pytorch"], ["anvil", "expanse"]);
 
@@ -770,6 +779,27 @@ describe("SoftwareDiscoveryServer", () => {
         anvil: "listed",
         expanse: "not_listed",
       });
+    });
+
+    it("marks a resource with only a few packages as not_indexed", async () => {
+      // Bridges-2 on 2026-11-17: lmod and settarg, nothing else.
+      const few = ["lmod", "settarg"].map((software_name) => ({
+        software_name,
+        rps: {
+          "bridges2.psc.access-ci.org": {
+            rp_name: "bridges-2",
+            rp_resource_id: [],
+            software_versions: [],
+          },
+        },
+      }));
+      mockIndex([gromacs], () => ({ status: 200, data: { data: few } }));
+
+      const data = await compare(["gromacs"], ["anvil", "bridges-2"]);
+
+      expect(data.resources_not_indexed).toEqual(["bridges-2"]);
+      expect(data.comparison[0].resource_status["bridges-2"]).toBe("not_indexed");
+      expect(data.gap_note).toMatch(/or only a few packages/);
     });
 
     it("says a lookup failed instead of calling the resource unindexed", async () => {
@@ -1685,6 +1715,176 @@ describe("SoftwareDiscoveryServer", () => {
         expect(responseData).not.toHaveProperty("metadata");
         expect(responseData).not.toHaveProperty("filters_applied");
       });
+    });
+  });
+
+  describe("version cleanup", () => {
+    it("drops split fragments, the package's own name, blanks and repeats", async () => {
+      // The GROMACS record on 2026-11-17.
+      mockSdsClient.post.mockResolvedValue({
+        status: 200,
+        data: {
+          data: [
+            {
+              software_name: "gromacs",
+              rps: {
+                "anvil.purdue.access-ci.org": {
+                  rp_name: "anvil",
+                  rp_resource_id: [],
+                  software_versions: ["2024.1", "2021.2", "2021.2", "2021", "2021", " 2020.2"],
+                },
+                "stampede3.tacc.access-ci.org": {
+                  rp_name: "stampede3",
+                  rp_resource_id: [],
+                  software_versions: ["gromacs"],
+                },
+                "kyric.uky.access-ci.org": {
+                  rp_name: "kyric",
+                  rp_resource_id: [],
+                  software_versions: ["2025.3-openmpi4.1.6-gcc12", "2"],
+                },
+              },
+            },
+          ],
+        },
+      });
+
+      const details = await server["handleToolCall"]({
+        method: "tools/call",
+        params: { name: "get_software_details", arguments: { software_name: "gromacs" } },
+      });
+      const data = JSON.parse((details.content[0] as TextContent).text);
+
+      expect(data.details.versions_by_resource).toEqual({
+        anvil: ["2024.1", "2021.2", "2021", "2020.2"],
+        kyric: ["2025.3-openmpi4.1.6-gcc12"],
+      });
+      expect(data.details.versions).toEqual([
+        "2024.1",
+        "2021.2",
+        "2021",
+        "2020.2",
+        "2025.3-openmpi4.1.6-gcc12",
+      ]);
+      // Stampede3 still lists GROMACS, it just gives no real version.
+      expect(data.details.available_on_resources).toContain("stampede3");
+
+      const compared = await server["handleToolCall"]({
+        method: "tools/call",
+        params: {
+          name: "compare_software_availability",
+          arguments: { software_names: ["gromacs"] },
+        },
+      });
+      const row = JSON.parse((compared.content[0] as TextContent).text).comparison[0];
+      expect(row.versions_by_resource.kyric).toEqual(["2025.3-openmpi4.1.6-gcc12"]);
+      expect(row.versions_by_resource.stampede3).toBeUndefined();
+    });
+  });
+
+  describe("index_note", () => {
+    const gromacsOnAnvil = {
+      software_name: "gromacs",
+      rps: {
+        "anvil.purdue.access-ci.org": {
+          rp_name: "anvil",
+          rp_resource_id: [],
+          software_versions: ["2024.1"],
+        },
+      },
+    };
+    // The whole index, shaped like 2026-11-17: Bridges-2 has 2 packages, Anvil plenty.
+    const wholeIndex = [
+      ...["lmod", "settarg"].map((software_name) => ({
+        software_name,
+        rps: {
+          "bridges2.psc.access-ci.org": {
+            rp_name: "bridges-2",
+            rp_resource_id: [],
+            software_versions: [],
+          },
+        },
+      })),
+      ...Array.from({ length: 30 }, (_, i) => ({
+        software_name: `pkg${i}`,
+        rps: {
+          "anvil.purdue.access-ci.org": {
+            rp_name: "anvil",
+            rp_resource_id: [],
+            software_versions: [],
+          },
+        },
+      })),
+    ];
+
+    function useRealIndexSizes(whole: () => MockResponse | Error): void {
+      vi.mocked(
+        (server as unknown as { indexSizes: () => Promise<unknown> }).indexSizes
+      ).mockRestore();
+      mockSdsClient.post.mockImplementation(async (_url, data) => {
+        const params = data as { software: string[]; columns?: string[] };
+        if (params.software[0] === "*" && params.columns?.includes("rps")) {
+          const answer = whole();
+          if (answer instanceof Error) throw answer;
+          return answer;
+        }
+        return { status: 200, data: { data: [gromacsOnAnvil] } };
+      });
+    }
+
+    async function call(name: string, args: Record<string, unknown>) {
+      const result = await server["handleToolCall"]({
+        method: "tools/call",
+        params: { name, arguments: args },
+      });
+      return JSON.parse((result.content[0] as TextContent).text);
+    }
+
+    it("names resources with only a few packages on each software tool", async () => {
+      useRealIndexSizes(() => ({ status: 200, data: { data: wholeIndex } }));
+
+      for (const [name, args] of [
+        ["get_software_details", { software_name: "gromacs" }],
+        ["search_software", { query: "gromacs" }],
+        ["compare_software_availability", { software_names: ["gromacs"] }],
+      ] as const) {
+        const data = await call(name, args);
+        expect(data.index_note).toMatch(
+          /only a few packages for bridges-2, so its list for that resource is incomplete/
+        );
+        expect(data.index_note).not.toMatch(/anvil/);
+      }
+    });
+
+    it("looks the index up once an hour, not on every call", async () => {
+      useRealIndexSizes(() => ({ status: 200, data: { data: wholeIndex } }));
+
+      await call("get_software_details", { software_name: "gromacs" });
+      await call("get_software_details", { software_name: "gromacs" });
+
+      const wholeCalls = mockSdsClient.post.mock.calls.filter(([, data]) =>
+        (data as { columns?: string[] }).columns?.includes("rps")
+      );
+      expect(wholeCalls).toHaveLength(1);
+    });
+
+    it("leaves the note out when every resource has a full list", async () => {
+      useRealIndexSizes(() => ({ status: 200, data: { data: wholeIndex.slice(2) } }));
+
+      const data = await call("get_software_details", { software_name: "gromacs" });
+
+      expect(data.found).toBe(true);
+      expect(data.index_note).toBeUndefined();
+    });
+
+    it("still answers when the index-size lookup fails", async () => {
+      useRealIndexSizes(() => new Error("timeout of 30000ms exceeded"));
+
+      const data = await call("get_software_details", { software_name: "gromacs" });
+
+      expect(data.found).toBe(true);
+      expect(data.details.versions).toEqual(["2024.1"]);
+      expect(data.index_note).toBeUndefined();
     });
   });
 });
